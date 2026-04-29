@@ -633,8 +633,45 @@ public class ServerCommandHandler {
         WorkerThread.doAsync(() -> {
             int disconnected = 0;
             int deleted = 0;
+            int orphans = 0;
 
-            // Shutdown all bot clients
+            // Step 1: Scan ALL realms for orphan bot Players whose StressTestClient
+            // is no longer tracked (server was restarted, client crashed, etc.).
+            // The in-memory ACTIVE_BOTS list is JVM-static and gets wiped on
+            // restart while the bot Player objects + DB accounts persist —
+            // before this scan, /killbots would report "0 bots" even though
+            // ghost bots were visible standing around in the realm. Bots are
+            // identified by the canonical "Bot_" name prefix (see spawnbots
+            // line ~531) which never collides with real players.
+            try {
+                final java.util.List<Player> allPlayers = mgr.getPlayers();
+                for (final Player p : allPlayers) {
+                    final String name = p.getName();
+                    if (name != null && name.startsWith("Bot_")) {
+                        try {
+                            mgr.disconnectPlayer(p, "killbots cleanup");
+                            orphans++;
+                            // Track the account guid for deletion below.
+                            if (p.getAccountUuid() != null) {
+                                synchronized (BOT_ACCOUNT_GUIDS) {
+                                    if (!BOT_ACCOUNT_GUIDS.contains(p.getAccountUuid())) {
+                                        BOT_ACCOUNT_GUIDS.add(p.getAccountUuid());
+                                    }
+                                }
+                            }
+                        } catch (Exception e) {
+                            log.error("[BOTS] Failed to disconnect orphan bot {}: {}", name, e.getMessage());
+                        }
+                    }
+                }
+                if (orphans > 0) {
+                    log.info("[BOTS] Disconnected {} orphan bot players (untracked StressTestClient)", orphans);
+                }
+            } catch (Exception e) {
+                log.error("[BOTS] Orphan scan failed: {}", e.getMessage());
+            }
+
+            // Step 2: Shutdown all tracked bot clients
             synchronized (ACTIVE_BOTS) {
                 for (StressTestClient bot : ACTIVE_BOTS) {
                     try {
@@ -668,10 +705,11 @@ public class ServerCommandHandler {
                 BOT_ACCOUNT_GUIDS.clear();
             }
 
-            log.info("[BOTS] Killed {} bots, deleted {} accounts", disconnected, deleted);
+            log.info("[BOTS] Killed {} bots ({} orphans), deleted {} accounts", disconnected, orphans, deleted);
             try {
                 mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
-                        "Killed " + disconnected + " bots, deleted " + deleted + " accounts"));
+                        "Killed " + (disconnected + orphans) + " bots ("
+                                + orphans + " orphans), deleted " + deleted + " accounts"));
             } catch (Exception e) {
                 // ignore
             }

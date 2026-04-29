@@ -88,48 +88,51 @@ public class LoadPacket extends Packet {
     	if(other == null) {
     		return false;
     	}
-        final List<Long> playerIdsThis = Stream.of(this.players).map(NetPlayer::getId).collect(Collectors.toList());
-        final List<Long> playerIdsOther = Stream.of(other.getPlayers()).map(NetPlayer::getId).collect(Collectors.toList());
+        // Visibility-set equality must be ORDER-INDEPENDENT. The spatial grid
+        // stores cells as ConcurrentHashMap.newKeySet(), whose iteration order
+        // is not stable — when ANY entity (most often a bullet) is added or
+        // removed from a cell, the rebucketing can shuffle the iteration
+        // order of OTHER entities in that cell. Comparing as Lists then
+        // returned false even when the visible entity SETS were identical,
+        // forcing a full LoadPacket on every tick (~140 kbit/s of redundant
+        // player snapshots for 6 stationary test bots). Sets fix that.
+        final java.util.Set<Long> playerIdsThis = Stream.of(this.players).map(NetPlayer::getId)
+                .collect(Collectors.toSet());
+        final java.util.Set<Long> playerIdsOther = Stream.of(other.getPlayers()).map(NetPlayer::getId)
+                .collect(Collectors.toSet());
 
-        final List<Long> lootIdsThis = Stream.of(this.containers).map(NetLootContainer::getLootContainerId)
-                .collect(Collectors.toList());
-        final List<Long> lootIdsOther = Stream.of(other.getContainers()).map(NetLootContainer::getLootContainerId)
-                .collect(Collectors.toList());
+        final java.util.Set<Long> lootIdsThis = Stream.of(this.containers).map(NetLootContainer::getLootContainerId)
+                .collect(Collectors.toSet());
+        final java.util.Set<Long> lootIdsOther = Stream.of(other.getContainers()).map(NetLootContainer::getLootContainerId)
+                .collect(Collectors.toSet());
 
-        final List<Long> enemyIdsThis = Stream.of(this.enemies).map(NetEnemy::getId).collect(Collectors.toList());
-        final List<Long> enemyIdsOther = Stream.of(other.getEnemies()).map(NetEnemy::getId).collect(Collectors.toList());
+        final java.util.Set<Long> enemyIdsThis = Stream.of(this.enemies).map(NetEnemy::getId)
+                .collect(Collectors.toSet());
+        final java.util.Set<Long> enemyIdsOther = Stream.of(other.getEnemies()).map(NetEnemy::getId)
+                .collect(Collectors.toSet());
 
-        final List<Long> bulletIdsThis = Stream.of(this.bullets).map(NetBullet::getId).collect(Collectors.toList());
-        final List<Long> bulletIdsOther = Stream.of(other.getBullets()).map(NetBullet::getId).collect(Collectors.toList());
+        final java.util.Set<Long> bulletIdsThis = Stream.of(this.bullets).map(NetBullet::getId)
+                .collect(Collectors.toSet());
+        final java.util.Set<Long> bulletIdsOther = Stream.of(other.getBullets()).map(NetBullet::getId)
+                .collect(Collectors.toSet());
 
-        final List<Long> portalIdsThis = Stream.of(this.portals).map(NetPortal::getId).collect(Collectors.toList());
-        final List<Long> portalIdsOther = Stream.of(other.getPortals()).map(NetPortal::getId).collect(Collectors.toList());
+        final java.util.Set<Long> portalIdsThis = Stream.of(this.portals).map(NetPortal::getId)
+                .collect(Collectors.toSet());
+        final java.util.Set<Long> portalIdsOther = Stream.of(other.getPortals()).map(NetPortal::getId)
+                .collect(Collectors.toSet());
 
-        boolean containersEq = true;
-        if (this.containers.length != other.getContainers().length) {
-            containersEq = false;
-        }
-
+        boolean containersEq = lootIdsThis.equals(lootIdsOther);
         if (containersEq) {
-            for (int i = 0; i < this.containers.length; i++) {
-                if (!this.containers[i].equals(other.getContainers()[i])) {
+            for (final NetLootContainer c : this.containers) {
+                if (c.isContentsChanged()) {
                     containersEq = false;
                     break;
                 }
             }
         }
 
-        for (final NetLootContainer c : this.containers) {
-            if (c.isContentsChanged()) {
-                containersEq = false;
-                break;
-            }
-        }
-
-
-        return (playerIdsThis.equals(playerIdsOther) && lootIdsThis.equals(lootIdsOther)
-                && enemyIdsThis.equals(enemyIdsOther) && bulletIdsThis.equals(bulletIdsOther) && containersEq
-                && portalIdsThis.equals(portalIdsOther));
+        return (playerIdsThis.equals(playerIdsOther) && enemyIdsThis.equals(enemyIdsOther)
+                && bulletIdsThis.equals(bulletIdsOther) && portalIdsThis.equals(portalIdsOther) && containersEq);
 
     }
 
