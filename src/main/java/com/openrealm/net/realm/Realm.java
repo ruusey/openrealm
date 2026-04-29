@@ -45,6 +45,7 @@ import com.openrealm.game.tile.TileManager;
 import com.openrealm.net.client.packet.LoadPacket;
 import com.openrealm.net.client.packet.ObjectMovePacket;
 import com.openrealm.net.client.packet.UpdatePacket;
+import com.openrealm.net.entity.NetObjectMovement;
 import com.openrealm.net.server.ServerGameLogic;
 import com.openrealm.util.GameObjectUtils;
 import com.openrealm.util.WorkerThread;
@@ -89,6 +90,27 @@ public class Realm {
 
     // Spatial hash grid for O(1) neighbor lookups (cell size = viewport radius)
     private transient SpatialHashGrid spatialGrid;
+    // Per-tick cache of NetObjectMovement instances keyed by entity id. Lets
+    // multiple viewers in the same realm share a single allocation per entity
+    // per tick instead of building a fresh instance each. Cleared at the
+    // start of each enqueueGameData() pass via clearTickMovementCache().
+    // Critical for two scenarios:
+    //   1. ~40 players clustered in nexus — without sharing, each of 40
+    //      viewers built its own NetObjectMovement[] of the other ~39
+    //      players + N enemies; with the cache each entity is built ONCE.
+    //   2. ~10K total enemies with sparse viewers — the spatial query
+    //      already filters off-screen enemies; cache only ever holds the
+    //      few that are actually in someone's viewport.
+    private transient Map<Long, NetObjectMovement> tickMovementCache;
+    // Per-tick cache of stripped (no-inventory) UpdatePacket instances for
+    // other-player broadcast at 8 Hz. Each viewer's broadcast loop iterates
+    // up to 20 nearby players and previously built each one's stripped
+    // UpdatePacket from scratch — 40 viewers × 20 nearby × 8 Hz = 6400
+    // builds/sec, each doing 20 inventory ModelMapper.map() calls before
+    // throwing the inventory away. With the cache, each player is built
+    // ONCE per 8-Hz tick total. ~50× CPU win on the other-player broadcast
+    // path during 40-player nexus scenarios.
+    private transient Map<Long, UpdatePacket> tickStrippedUpdateCache;
 
     // Overseer AI for ecosystem management (enemy population, events, taunts)
     private transient RealmOverseer overseer;
@@ -798,7 +820,61 @@ public class Realm {
     }
 
     /**
+     * Reset the per-tick NetObjectMovement cache. Called by RealmManagerServer
+     * once per realm at the top of enqueueGameData() so subsequent
+     * getGameObjectsAsPacketsCircularFast() calls (one per viewer) share
+     * NetObjectMovement instances instead of each allocating a fresh copy.
+     */
+    public void clearTickMovementCache() {
+        if (this.tickMovementCache != null) {
+            this.tickMovementCache.clear();
+        }
+    }
+
+    /** Reset the per-tick stripped-UpdatePacket cache. */
+    public void clearTickStrippedUpdateCache() {
+        if (this.tickStrippedUpdateCache != null) {
+            this.tickStrippedUpdateCache.clear();
+        }
+    }
+
+    /**
+     * Get-or-build a stripped (no-inventory) UpdatePacket for this player,
+     * cached for the duration of the current tick so all viewers share one
+     * instance instead of each rebuilding from scratch.
+     */
+    public UpdatePacket getOrBuildStrippedUpdate(Player p) {
+        if (p == null) return null;
+        if (this.tickStrippedUpdateCache == null) {
+            this.tickStrippedUpdateCache = new HashMap<>(64);
+        }
+        UpdatePacket u = this.tickStrippedUpdateCache.get(p.getId());
+        if (u == null) {
+            u = UpdatePacket.fromPlayerWithoutInventory(p);
+            this.tickStrippedUpdateCache.put(p.getId(), u);
+        }
+        return u;
+    }
+
+    /** Get-or-build a NetObjectMovement for this entity for the current tick. */
+    private NetObjectMovement getOrBuildMovement(GameObject obj) {
+        if (this.tickMovementCache == null) {
+            // Sized for typical nexus density; HashMap auto-grows if needed.
+            this.tickMovementCache = new HashMap<>(64);
+        }
+        NetObjectMovement m = this.tickMovementCache.get(obj.getId());
+        if (m == null) {
+            m = new NetObjectMovement(obj);
+            this.tickMovementCache.put(obj.getId(), m);
+        }
+        return m;
+    }
+
+    /**
      * Grid-accelerated ObjectMovePacket construction (players + enemies only).
+     * Uses the per-tick movement cache so 40 viewers in nexus only allocate
+     * ~50 NetObjectMovement instances per tick total (one per visible
+     * entity), not 40×50 = 2000.
      */
     public ObjectMovePacket getGameObjectsAsPacketsCircularFast(Vector2f center, float radius) throws Exception {
         if (this.spatialGrid == null) {
@@ -806,14 +882,14 @@ public class Realm {
         }
         final float radiusSq = radius * radius;
         final List<Long> candidates = this.spatialGrid.queryRadius(center.x, center.y, radius);
-        final List<GameObject> validObjects = new ArrayList<>();
+        final List<NetObjectMovement> mvts = new ArrayList<>();
         for (int i = 0; i < candidates.size(); i++) {
             final long id = candidates.get(i);
             Player p = this.players.get(id);
             if (p != null) {
                 float dx = p.getPos().x - center.x;
                 float dy = p.getPos().y - center.y;
-                if (dx * dx + dy * dy <= radiusSq) validObjects.add(p);
+                if (dx * dx + dy * dy <= radiusSq) mvts.add(getOrBuildMovement(p));
                 if (p.getTeleported()) p.setTeleported(false);
                 continue;
             }
@@ -821,17 +897,15 @@ public class Realm {
             if (e != null) {
                 float dx = e.getPos().x - center.x;
                 float dy = e.getPos().y - center.y;
-                if (dx * dx + dy * dy <= radiusSq) validObjects.add(e);
+                if (dx * dx + dy * dy <= radiusSq) mvts.add(getOrBuildMovement(e));
                 if (e.getTeleported()) e.setTeleported(false);
                 continue;
             }
-            // Skip bullets in ObjectMovePacket - clients predict bullet positions
-            // locally using initial velocity from LoadPacket (deterministic trajectory).
-            // This dramatically reduces bandwidth under heavy projectile load.
+            // Skip bullets — clients predict their positions locally using
+            // initial velocity from LoadPacket. Saves enormous bandwidth.
         }
-        if (validObjects.size() > 0)
-            return ObjectMovePacket.from(validObjects.toArray(new GameObject[0]));
-        return null;
+        if (mvts.isEmpty()) return null;
+        return ObjectMovePacket.from(mvts.toArray(new NetObjectMovement[0]));
     }
 
     /**

@@ -1,7 +1,9 @@
 package com.openrealm.net.client.packet;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import com.openrealm.net.Packet;
 import com.openrealm.net.Streamable;
@@ -46,48 +48,70 @@ public class LoadMapPacket extends Packet {
     	return new LoadMapPacket(realmId, mapId, mapWidth, mapHeight, tiles);
     }
 
+    /**
+     * Pack a NetTile's identifying fields (tileId, layer, x, y) into a single
+     * long for O(1) Set lookup. Avoids the per-comparison reflection / equals
+     * overhead and lets diff() / equals() run in O(N) instead of O(N²).
+     * Layout: [tileId 16 | layer 8 | x 20 | y 20] — 64 bits total.
+     * Sign-extension safe for tileId (short) and layer (byte).
+     */
+    private static long packTileKey(NetTile t) {
+        return ((long) (t.getTileId() & 0xFFFF) << 48)
+             | ((long) (t.getLayer() & 0xFF) << 40)
+             | ((long) (t.getXIndex() & 0xFFFFF) << 20)
+             |  ((long) (t.getYIndex() & 0xFFFFF));
+    }
+
     public LoadMapPacket difference(LoadMapPacket other) throws Exception {
-        List<NetTile> diff = new ArrayList<>();
         // If the player is changing realms, force the new tiles to be sent
         if (this.realmId != other.getRealmId())
             return other;
+        // Build a hash set of THIS packet's tile keys ONCE, then check each
+        // tile in `other` in O(1). Was O(N²): with 40 viewers × ~628 tiles
+        // per viewport at 4 Hz LoadMap rate, the old linear scan was costing
+        // ~63 M comparisons/sec — the dominant CPU sink in 40-player
+        // scenarios on a 2-vCPU box (TPS dropped to 7).
+        final NetTile[] myTiles = this.getTiles();
+        final Set<Long> myKeys = new HashSet<>(myTiles.length * 2);
+        for (final NetTile t : myTiles) myKeys.add(packTileKey(t));
+
+        final List<NetTile> diff = new ArrayList<>();
         for (final NetTile tileOther : other.getTiles()) {
-            if (!LoadMapPacket.tilesContains(tileOther, this.getTiles())) {
+            if (!myKeys.contains(packTileKey(tileOther))) {
                 diff.add(tileOther);
             }
         }
-        if (diff.size() == 0)
+        if (diff.isEmpty())
             return null;
-        return LoadMapPacket.from(other.getRealmId(), other.getMapId(), other.getMapWidth(), other.getMapHeight(), diff);
+        return LoadMapPacket.from(other.getRealmId(), other.getMapId(),
+                other.getMapWidth(), other.getMapHeight(), diff);
     }
 
     public boolean equals(LoadMapPacket other) {
-    	final NetTile[] myTiles = this.getTiles();
-    	final NetTile[] otherTiles = other.getTiles();
-        if (myTiles.length != otherTiles.length)
-            return false;
+        if (other == null) return false;
+        if (this.realmId != other.getRealmId()) return false;
+        if (this.mapId != other.getMapId()) return false;
+        if (this.mapHeight != other.getMapHeight() || this.mapWidth != other.getMapWidth()) return false;
 
-        if (this.getRealmId() != other.getRealmId())
-            return false;
-        
-        if(this.getMapId()!=other.getMapId()) {
-        	return false;
-        }
+        final NetTile[] myTiles = this.getTiles();
+        final NetTile[] otherTiles = other.getTiles();
+        if (myTiles.length != otherTiles.length) return false;
 
-        if(this.getMapHeight()!=other.getMapHeight() || this.getMapWidth()!=other.getMapWidth()) {
-            return false;
-        }
-        
-        // Calculate per-tile difference
-        for (int i = 0; i < myTiles.length; i++) {
-        	final NetTile myTile = myTiles[i];
-        	final NetTile otherTile = otherTiles[i];
-            if (!myTile.equals(otherTile))
-                return false;
+        // Set-based content equality. Order doesn't matter — getLoadMapTiles
+        // re-iterates the player viewport every call so even an unchanged
+        // player position can produce arrays in slightly different order if
+        // anything in the realm shifts. Set comparison correctly returns
+        // true for "same tiles, any order".
+        final Set<Long> myKeys = new HashSet<>(myTiles.length * 2);
+        for (final NetTile t : myTiles) myKeys.add(packTileKey(t));
+        for (final NetTile t : otherTiles) {
+            if (!myKeys.contains(packTileKey(t))) return false;
         }
         return true;
     }
 
+    /** Kept for backward-compatibility callers; new code should use the
+     *  Set-based {@link #difference(LoadMapPacket)} which is O(N) total. */
     public static boolean tilesContains(NetTile tile, NetTile[] array) {
         for (NetTile netTile : array) {
             if (tile.equals(netTile))

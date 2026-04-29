@@ -576,6 +576,12 @@ public class RealmManagerServer implements Runnable {
 
 				// Update spatial grid positions once per tick for this realm
 				realm.updateSpatialGrid();
+				// Reset per-tick caches so the first viewer in this realm
+				// builds the shared instances and subsequent viewers reuse
+				// them. Major win for nexus (40 players seeing each other
+				// → 40× fewer allocations per shared entity per tick).
+				realm.clearTickMovementCache();
+				realm.clearTickStrippedUpdateCache();
 
 				final Map<Player, String> toRemoveReasons = new java.util.LinkedHashMap<>();
 				final float viewportRadius = 10 * GlobalConstants.BASE_TILE_SIZE;
@@ -629,16 +635,19 @@ public class RealmManagerServer implements Runnable {
 								this.enqueueServerPacket(player.getValue(), updatePacket);
 							}
 
-							// Nearby other players — send their updates TO this player (only when changed)
+							// Nearby other players — send their updates TO this player (only when changed).
+							// Use the realm's per-tick stripped-UpdatePacket cache so 40 viewers
+							// in nexus all reuse a single allocation per other-player. Without
+							// the cache this loop ran ~6400 reflection-heavy inventory builds
+							// per second at 40 players, dwarfing the rest of the tick budget.
 							final Player[] otherPlayers = realm.getPlayersInRadiusFast(playerCenter, viewportRadius);
 							final int maxOtherUpdates = Math.min(otherPlayers.length, 20);
 							for (int opi = 0; opi < maxOtherUpdates; opi++) {
 								final Player other = otherPlayers[opi];
 								if (other.getId() == player.getKey()) continue;
 								try {
-									final UpdatePacket otherUpdate = realm.getPlayerAsPacket(other.getId());
-									if (otherUpdate == null) continue;
-									final UpdatePacket stripped = otherUpdate.withoutInventory();
+									final UpdatePacket stripped = realm.getOrBuildStrippedUpdate(other);
+									if (stripped == null) continue;
 									// Delta check: only send if this player's view of the other player changed
 									final Map<Long, UpdatePacket> viewerCache = this.otherPlayerUpdateState
 										.computeIfAbsent(player.getKey(), k -> new ConcurrentHashMap<>());
@@ -902,10 +911,10 @@ public class RealmManagerServer implements Runnable {
 	// (otherwise a 40-player non-spam test floods the queue with moves and
 	// the operator can't recover the box).
 	private static final Set<Class<? extends Packet>> PRIORITY_PACKETS = Set.of(
-			com.openrealm.net.server.packet.PlayerShootPacket.class,
-			com.openrealm.net.server.packet.PlayerMovePacket.class,
-			com.openrealm.net.server.packet.HeartbeatPacket.class,
-			com.openrealm.net.server.packet.CommandPacket.class
+			PlayerShootPacket.class,
+			PlayerMovePacket.class,
+			HeartbeatPacket.class,
+			CommandPacket.class
 	);
 
 	public void processServerPackets() {

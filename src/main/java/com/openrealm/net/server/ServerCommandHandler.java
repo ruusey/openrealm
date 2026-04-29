@@ -304,23 +304,24 @@ public class ServerCommandHandler {
         if (from == null) {
             throw new IllegalArgumentException("No realm for player");
         }
-        // Spread N copies in a small jittered ring around the caller so they
-        // don't all overlap on the same tile (which would also fail collision
-        // de-spawn checks and stack rendering).
+        // Spawn N copies inside a fixed confined disc around the caller —
+        // the radius does NOT grow with count so 1000+ enemies pile up in
+        // the same testable space (the whole point of the stress-test
+        // command). Random angle + sqrt(rand) radius gives a uniform-area
+        // distribution within the disc instead of clumping at the edge.
         final Random rng = new Random();
         final float baseX = target.getPos().x;
         final float baseY = target.getPos().y;
+        final float SPAWN_RADIUS = 4f * GlobalConstants.BASE_TILE_SIZE; // ~4 tiles
         for (int i = 0; i < count; i++) {
             final float dx, dy;
             if (count == 1) {
                 dx = 0f; dy = 0f;
             } else {
-                // Concentric rings: ring radius scales with sqrt(i) so density
-                // is roughly uniform in area; jitter keeps spawns off the grid.
-                final float ringR = 32f + 16f * (float) Math.sqrt(i);
                 final float angle = (float) (rng.nextFloat() * Math.PI * 2.0);
-                dx = (float) (Math.cos(angle) * ringR);
-                dy = (float) (Math.sin(angle) * ringR);
+                final float r = SPAWN_RADIUS * (float) Math.sqrt(rng.nextFloat());
+                dx = (float) (Math.cos(angle) * r);
+                dy = (float) (Math.sin(angle) * r);
             }
             final Vector2f spawnPos = new Vector2f(baseX + dx, baseY + dy);
             from.addEnemy(GameObjectUtils.getEnemyFromId(enemyId, spawnPos));

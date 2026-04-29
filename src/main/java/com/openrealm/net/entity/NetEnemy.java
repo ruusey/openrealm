@@ -1,7 +1,9 @@
 package com.openrealm.net.entity;
 
+import com.openrealm.game.data.GameDataManager;
 import com.openrealm.game.entity.Enemy;
 import com.openrealm.game.math.Vector2f;
+import com.openrealm.game.model.EnemyModel;
 import com.openrealm.net.Streamable;
 import com.openrealm.net.core.SerializableField;
 import com.openrealm.net.core.SerializableFieldType;
@@ -57,8 +59,9 @@ public class NetEnemy extends SerializableFieldType<NetEnemy> {
 		n.dY = e.getDy();
 		n.difficulty = e.getDifficulty();
 		n.health = e.getHealth();
-		n.maxHealth = (int) (com.openrealm.game.data.GameDataManager.ENEMIES.get(e.getEnemyId()) != null
-				? com.openrealm.game.data.GameDataManager.ENEMIES.get(e.getEnemyId()).getHealth() * e.getDifficulty()
+		final EnemyModel enemyModel = GameDataManager.ENEMIES.get(e.getEnemyId());
+		n.maxHealth = (int) (enemyModel != null
+				? enemyModel.getHealth() * e.getDifficulty()
 				: e.getHealth());
 		// shortId is set by the LoadPacket.from(...allocator) overload.
 		return n;

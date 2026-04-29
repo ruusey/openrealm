@@ -98,6 +98,30 @@ public class UpdatePacket extends Packet {
 		return light;
 	}
 
+	/**
+	 * Build a stripped UpdatePacket directly from a Player WITHOUT mapping
+	 * the inventory. Used for the broadcast of nearby-other-player updates,
+	 * which strips inventory before sending anyway. The old path went
+	 * UpdatePacket.from(player) → withoutInventory(), which paid for a full
+	 * 20-slot inventory ModelMapper reflection round just to throw the
+	 * result away. Skipping the inventory map saves ~50× per call.
+	 */
+	public static UpdatePacket fromPlayerWithoutInventory(Player player) {
+		if (player == null) return null;
+		final UpdatePacket light = new UpdatePacket();
+		light.setPlayerId(player.getId());
+		light.setPlayerName(player.getName());
+		light.setStats(NetStats.fromStats(player.getStats()));
+		light.setHealth(player.getHealth());
+		light.setMana(player.getMana());
+		light.setExperience(player.getExperience());
+		light.setInventory(EMPTY_INVENTORY);
+		light.setHpPotions((byte) player.getHpPotions());
+		light.setMpPotions((byte) player.getMpPotions());
+		light.setDyeId(player.getDyeId());
+		return light;
+	}
+
 	public static UpdatePacket from(Enemy enemy) throws Exception {
 		if (enemy == null)
 			return null;
