@@ -28,6 +28,7 @@ import com.openrealm.game.data.GameDataManager;
 import com.openrealm.game.entity.Player;
 import com.openrealm.game.entity.item.GameItem;
 import com.openrealm.game.entity.item.LootContainer;
+import com.openrealm.game.entity.Enemy;
 import com.openrealm.game.math.Vector2f;
 import java.util.Random;
 import com.openrealm.game.contants.CharacterClass;
@@ -329,6 +330,50 @@ public class ServerCommandHandler {
                     TextPacket.from("SYSTEM", target.getName(),
                             "Spawned " + count + " of enemy " + enemyId));
         }
+    }
+
+    @CommandHandler(value="kill", description="Admin: kill all enemies within a radius. Usage: /kill {RADIUS_TILES}")
+	@AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_MODERATOR})
+    public static void invokeKillEnemiesInRadius(RealmManagerServer mgr, Player target,
+            ServerCommandMessage message) throws Exception {
+        if (message.getArgs() == null || message.getArgs().size() != 1)
+            throw new IllegalArgumentException("Usage: /kill {RADIUS_TILES}");
+
+        final float radiusTiles = Float.parseFloat(message.getArgs().get(0));
+        if (radiusTiles <= 0f)
+            throw new IllegalArgumentException("RADIUS_TILES must be > 0");
+
+        final Realm realm = mgr.findPlayerRealm(target.getId());
+        if (realm == null)
+            throw new IllegalArgumentException("No realm for player");
+
+        final float radius = radiusTiles * GlobalConstants.BASE_TILE_SIZE;
+        final float radiusSq = radius * radius;
+        final Vector2f center = target.getPos();
+
+        // Snapshot first — we mutate the enemies map while iterating, so do
+        // a separate pass to collect IDs and a second pass to remove. Skip
+        // the heavy enemyDeath() flow (XP, loot, overseer notify, level-up
+        // text) since this is intended for stress-test cleanup, not gameplay.
+        final List<Enemy> toKill = new ArrayList<>();
+        for (final Enemy e : realm.getEnemies().values()) {
+            if (e == null || e.getDeath()) continue;
+            final float dx = e.getPos().x - center.x;
+            final float dy = e.getPos().y - center.y;
+            if (dx * dx + dy * dy <= radiusSq) {
+                toKill.add(e);
+            }
+        }
+        for (final Enemy e : toKill) {
+            realm.getExpiredEnemies().add(e.getId());
+            realm.removeEnemy(e);
+        }
+
+        log.info("Player {} /kill: removed {} enemies within {} tiles at {}",
+                target.getName(), toKill.size(), radiusTiles, center);
+        mgr.enqueueServerPacket(target,
+                TextPacket.from("SYSTEM", target.getName(),
+                        "Killed " + toKill.size() + " enemies within " + radiusTiles + " tiles"));
     }
 
     @CommandHandler(value="seteffect", description="Add or remove Player stat effects")
