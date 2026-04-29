@@ -4,12 +4,15 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
 import java.util.Queue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicLong;
 
 import com.openrealm.game.contants.PacketType;
 import com.openrealm.net.NetConstants;
 import com.openrealm.net.Packet;
 import com.openrealm.net.core.IOService;
+import com.openrealm.net.core.PacketCompression;
 
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
@@ -31,9 +34,14 @@ public class ClientSession {
     private final Queue<byte[]> writeQueue = new ConcurrentLinkedQueue<>();
     private final Queue<Packet> pendingSerialize = new ConcurrentLinkedQueue<>();
 
-    // Shared bandwidth counters — set by RealmManagerServer, updated by write thread
-    private java.util.concurrent.atomic.AtomicLong sharedBytesWritten;
-    private java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong> sharedBytesPerType;
+    // Shared bandwidth counters — set by RealmManagerServer, updated by
+    // write thread (out) and NIO read thread (in). All counters track the
+    // POST-COMPRESSION byte counts — i.e. true on-the-wire size — not the
+    // decompressed payload, so the rate logged matches actual network use.
+    private AtomicLong sharedBytesWritten;
+    private AtomicLong sharedBytesRead;
+    private ConcurrentHashMap<String, AtomicLong> sharedBytesPerType;
+    private ConcurrentHashMap<String, AtomicLong> sharedBytesReadPerType;
     private ByteBuffer pendingWrite = null;
 
     public ClientSession(SocketChannel channel, String clientKey) {
@@ -49,6 +57,13 @@ public class ClientSession {
             return;
         }
         if (bytesRead > 0) {
+            // Track true on-the-wire inbound bytes — TCP delivers the
+            // compressed framing as-is, so this counter measures real
+            // network usage. Per-packet-type accounting happens inside
+            // parsePackets() once the packet type is known.
+            if (this.sharedBytesRead != null) {
+                this.sharedBytesRead.addAndGet(bytesRead);
+            }
             this.readBuffer.flip();
             int remaining = this.readBuffer.remaining();
             if (this.remoteBufferIndex + remaining > this.remoteBuffer.length) {
@@ -96,15 +111,25 @@ public class ClientSession {
             }
             this.remoteBufferIndex -= packetLength;
             try {
+                // The on-wire frame length is `packetLength` regardless of
+                // compression — both compressed and uncompressed framings
+                // include the 5-byte header. Capture before mutating the
+                // packet ID for per-type accounting.
+                final int wireLen = packetLength;
                 // Decompress if compression flag is set
-                if (com.openrealm.net.core.PacketCompression.isCompressed(packetId)) {
-                    packetId = com.openrealm.net.core.PacketCompression.getRealPacketId(packetId);
-                    packetBytes = com.openrealm.net.core.PacketCompression.decompressPayload(packetBytes);
+                if (PacketCompression.isCompressed(packetId)) {
+                    packetId = PacketCompression.getRealPacketId(packetId);
+                    packetBytes = PacketCompression.decompressPayload(packetBytes);
                 }
                 final Class<?> packetClass = PacketType.valueOf(packetId);
                 final Packet nPacket = IOService.readStream(packetClass, packetBytes);
                 nPacket.setId(packetId);
                 nPacket.setSrcIp(this.clientKey);
+                if (this.sharedBytesReadPerType != null && packetClass != null) {
+                    this.sharedBytesReadPerType
+                            .computeIfAbsent(packetClass.getSimpleName(), k -> new AtomicLong(0))
+                            .addAndGet(wireLen);
+                }
                 this.packetQueue.add(nPacket);
             } catch (Exception e) {
                 log.error("[NIO] Failed to parse packet from client {}. Reason: {}", this.clientKey, e.getMessage());
@@ -113,9 +138,14 @@ public class ClientSession {
     }
 
     public void enqueueWrite(byte[] frame) {
-        this.writeQueue.add(com.openrealm.net.core.PacketCompression.compressFrame(frame));
+        // Track the COMPRESSED frame length — that's the true wire cost.
+        // Was tracking the pre-compression frame size, which over-reported
+        // the actual on-wire bandwidth by ~2× (deflate compresses our
+        // packet payloads by 40-60%).
+        final byte[] wireFrame = PacketCompression.compressFrame(frame);
+        this.writeQueue.add(wireFrame);
         if (this.sharedBytesWritten != null) {
-            this.sharedBytesWritten.addAndGet(frame.length);
+            this.sharedBytesWritten.addAndGet(wireFrame.length);
         }
     }
 
@@ -136,14 +166,19 @@ public class ClientSession {
         while ((packet = this.pendingSerialize.poll()) != null) {
             try {
                 final byte[] frame = packet.serializeToBytes();
-                this.writeQueue.add(com.openrealm.net.core.PacketCompression.compressFrame(frame));
-                final int len = frame.length;
+                // Track the post-compression length — that's what actually
+                // hits the wire. compressFrame returns the original frame
+                // unchanged when below threshold or when compression doesn't
+                // save space, so the count is accurate either way.
+                final byte[] wireFrame = PacketCompression.compressFrame(frame);
+                this.writeQueue.add(wireFrame);
+                final int len = wireFrame.length;
                 if (this.sharedBytesWritten != null) {
                     this.sharedBytesWritten.addAndGet(len);
                 }
                 if (this.sharedBytesPerType != null) {
                     this.sharedBytesPerType
-                            .computeIfAbsent(packet.getClass().getSimpleName(), k -> new java.util.concurrent.atomic.AtomicLong(0))
+                            .computeIfAbsent(packet.getClass().getSimpleName(), k -> new AtomicLong(0))
                             .addAndGet(len);
                 }
             } catch (Exception e) {

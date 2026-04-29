@@ -122,7 +122,9 @@ public class UpdatePacket extends Packet {
 		updatePacket.setHealth(player.getHealth());
 		updatePacket.setMana(player.getMana());
 		updatePacket.setPlayerName(player.getName());
-		updatePacket.setStats(IOService.mapModel(player.getStats(), NetStats.class));
+		// Use hand-rolled fromStats() instead of IOService.mapModel — same
+		// reflection-avoidance reason as in LoadPacket.from().
+		updatePacket.setStats(NetStats.fromStats(player.getStats()));
 		// Build inventory explicitly to guarantee enchantments + stack counts +
 		// forge metadata are preserved (ModelMapper can drop nested generics).
 		updatePacket.setInventory(toNetInventory(player.getInventory()));

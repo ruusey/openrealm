@@ -34,6 +34,18 @@ public class NetPortal extends SerializableFieldType<NetPortal> {
 	@SerializableField(order = 5, type = Vector2f.class)
 	private Vector2f pos;
 	
+	/** Hand-rolled construction from Portal — bypasses ModelMapper reflection. */
+	public static NetPortal fromPortal(Portal p) {
+		final NetPortal n = new NetPortal();
+		n.id = p.getId();
+		n.portalId = (short) p.getPortalId();
+		n.fromRealmId = p.getFromRealmId();
+		n.toRealmId = p.getToRealmId();
+		n.expires = p.getExpires();
+		n.pos = p.getPos();
+		return n;
+	}
+
 	public Portal asPortal() {
 		Portal p = new Portal();
 		p.setId(this.getId());

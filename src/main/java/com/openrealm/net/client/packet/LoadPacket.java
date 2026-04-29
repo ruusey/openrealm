@@ -54,11 +54,35 @@ public class LoadPacket extends Packet {
             Portal[] portals) throws Exception {
     	 LoadPacket load = null;
     	try {
-            final NetPlayer[] mappedPlayers = IOService.mapModel(players, NetPlayer[].class);
-            final NetEnemy[] mappedEnemies = IOService.mapModel(enemies, NetEnemy[].class);
-            final NetBullet[] mappedBullets = IOService.mapModel(bullets, NetBullet[].class);
+            // Hand-rolled mapping for all entity types — replaces
+            // IOService.mapModel(...) which used ModelMapper reflection.
+            // ModelMapper walks 10-20 fields per entity reflectively per
+            // call; with ~200 visible bullets + 11 players + 50 enemies +
+            // 6 portals × 11 viewers × 32 Hz that was 90K+ reflective
+            // mappings/sec — the dominant CPU sink during ability spam
+            // and the cause of the TPS drop on a 2-vCPU instance. Direct
+            // field copy is 10-100× faster.
+            final NetPlayer[] mappedPlayers = new NetPlayer[players.length];
+            for (int i = 0; i < players.length; i++) {
+                mappedPlayers[i] = NetPlayer.fromPlayer(players[i]);
+            }
+            final NetEnemy[] mappedEnemies = new NetEnemy[enemies.length];
+            for (int i = 0; i < enemies.length; i++) {
+                mappedEnemies[i] = NetEnemy.fromEnemy(enemies[i]);
+            }
+            final NetBullet[] mappedBullets = new NetBullet[bullets.length];
+            for (int i = 0; i < bullets.length; i++) {
+                mappedBullets[i] = NetBullet.fromBullet(bullets[i]);
+            }
+            // Loot containers retain ModelMapper for now — they have nested
+            // NetGameItem arrays whose mapping is more involved, and they're
+            // low-volume (typically 0-5 per realm) so reflection cost is
+            // negligible.
             final NetLootContainer[] mappedLoot = IOService.mapModel(loot, NetLootContainer[].class);
-            final NetPortal[] mappedPortals = IOService.mapModel(portals, NetPortal[].class);
+            final NetPortal[] mappedPortals = new NetPortal[portals.length];
+            for (int i = 0; i < portals.length; i++) {
+                mappedPortals[i] = NetPortal.fromPortal(portals[i]);
+            }
             load = new LoadPacket(mappedPlayers, mappedEnemies, mappedBullets, mappedLoot, mappedPortals, (byte) 0);
     	}catch(Exception e) {
     		log.error("Failed to build load packet from mapped game data. Reason {}", e);
@@ -259,6 +283,61 @@ public class LoadPacket extends Packet {
         return new LoadPacket(other.getPlayers(), other.getEnemies(),
                 bulletsDiff.toArray(new NetBullet[0]), lootDiff.toArray(new NetLootContainer[0]),
                 other.getPortals(), other.getDifficulty());
+    }
+
+    /**
+     * Like combine() but emits ONLY entities new to the client (delta) for
+     * players/enemies/portals — instead of the full snapshot. This is the
+     * default path for entity-set-change events (e.g. a bot walked into
+     * another player's viewport). The full-snapshot self-heal is preserved
+     * by the caller's periodic 3s refresh which routes through combine().
+     *
+     * Cuts slow-path bandwidth from ~6.6 KB (11-player snapshot) to typically
+     * ~600 B (just the entity that crossed the boundary). With 11 viewers all
+     * walking around, this saves the bulk of LoadPacket bandwidth.
+     */
+    public LoadPacket combineDelta(final LoadPacket other) throws Exception {
+        if (other == null) return this;
+
+        final java.util.Set<Long> playerIdsThis = Stream.of(this.players).map(NetPlayer::getId)
+                .collect(Collectors.toSet());
+        final java.util.Set<Long> enemyIdsThis = Stream.of(this.enemies).map(NetEnemy::getId)
+                .collect(Collectors.toSet());
+        final java.util.Set<Long> portalIdsThis = Stream.of(this.portals).map(NetPortal::getId)
+                .collect(Collectors.toSet());
+        final java.util.Set<Long> bulletIdsThis = Stream.of(this.bullets).map(NetBullet::getId)
+                .collect(Collectors.toSet());
+        final java.util.Set<Long> lootIdsThis = Stream.of(this.containers).map(NetLootContainer::getLootContainerId)
+                .collect(Collectors.toSet());
+
+        final List<NetPlayer> playersDiff = new ArrayList<>();
+        for (final NetPlayer p : other.getPlayers()) {
+            if (!playerIdsThis.contains(p.getId())) playersDiff.add(p);
+        }
+        final List<NetEnemy> enemiesDiff = new ArrayList<>();
+        for (final NetEnemy e : other.getEnemies()) {
+            if (!enemyIdsThis.contains(e.getId())) enemiesDiff.add(e);
+        }
+        final List<NetPortal> portalsDiff = new ArrayList<>();
+        for (final NetPortal p : other.getPortals()) {
+            if (!portalIdsThis.contains(p.getId())) portalsDiff.add(p);
+        }
+        final List<NetBullet> bulletsDiff = new ArrayList<>();
+        for (final NetBullet b : other.getBullets()) {
+            if (!bulletIdsThis.contains(b.getId())) bulletsDiff.add(b);
+        }
+        final List<NetLootContainer> lootDiff = new ArrayList<>();
+        for (final NetLootContainer p : other.getContainers()) {
+            if (!lootIdsThis.contains(p.getLootContainerId()) || p.isContentsChanged()) lootDiff.add(p);
+        }
+
+        return new LoadPacket(
+                playersDiff.toArray(new NetPlayer[0]),
+                enemiesDiff.toArray(new NetEnemy[0]),
+                bulletsDiff.toArray(new NetBullet[0]),
+                lootDiff.toArray(new NetLootContainer[0]),
+                portalsDiff.toArray(new NetPortal[0]),
+                other.getDifficulty());
     }
 
     public UnloadPacket difference(LoadPacket other) throws Exception {

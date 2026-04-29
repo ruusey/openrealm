@@ -13,6 +13,7 @@ import java.util.Calendar;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -154,12 +155,17 @@ public class RealmManagerServer implements Runnable {
 	
 	private Map<Long, Long> playerAbilityState = new ConcurrentHashMap<>();
 	private Map<Long, LoadPacket> playerLoadState = new ConcurrentHashMap<>();
+	// Per-realm last-tick wall-clock used to compute bulletScale ONCE per
+	// realm per tick instead of per-bullet — eliminates ~12K nanoTime
+	// syscalls/sec when 200 bullets are in flight.
+	private Map<Long, Long> lastBulletUpdateNanos = new ConcurrentHashMap<>();
 	// Last wall-clock time we forced a full LoadPacket snapshot to the player.
 	// Used to periodically refresh players/enemies/portals so a dropped
-	// fast-path packet self-heals — the rest of the time we only ship bullet/
-	// loot deltas (saves ~90% of LoadPacket bandwidth in spam combat).
+	// delta packet self-heals. WebSocket TCP makes drops rare so we don't
+	// need a tight interval — 10s balances recovery time against the
+	// per-cycle cost of repeatedly shipping the full N-player snapshot.
 	private Map<Long, Long> playerLastFullSnapshotMs = new ConcurrentHashMap<>();
-	private static final long FULL_SNAPSHOT_INTERVAL_MS = 3000L;
+	private static final long FULL_SNAPSHOT_INTERVAL_MS = 10000L;
 	private Map<Long, UpdatePacket> playerUpdateState = new ConcurrentHashMap<>();
 	private Map<Long, PlayerStatePacket> playerStateState = new ConcurrentHashMap<>();
 	private Map<Long, UpdatePacket> enemyUpdateState = new ConcurrentHashMap<>();
@@ -212,8 +218,13 @@ public class RealmManagerServer implements Runnable {
 	private boolean  isSetup = false;
 	
 	private long lastWriteSampleTime = Instant.now().toEpochMilli();
-	private final java.util.concurrent.atomic.AtomicLong bytesWritten = new java.util.concurrent.atomic.AtomicLong(0);
-	private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong> bytesWrittenByPacketType = new java.util.concurrent.ConcurrentHashMap<>();
+	private final AtomicLong bytesWritten = new AtomicLong(0);
+	private final ConcurrentHashMap<String, AtomicLong> bytesWrittenByPacketType = new ConcurrentHashMap<>();
+	// Inbound bandwidth (post-compression, on-the-wire). Mirrors the
+	// outbound counters above so we can log a true read-rate that matches
+	// the bytes actually crossing the network.
+	private final AtomicLong bytesRead = new AtomicLong(0);
+	private final ConcurrentHashMap<String, AtomicLong> bytesReadByPacketType = new ConcurrentHashMap<>();
 	
 	public RealmManagerServer() {
 		// Probably dont want to auto start the server so migrating
@@ -471,10 +482,13 @@ public class RealmManagerServer implements Runnable {
 		for (final Map.Entry<String, ClientSession> client : this.server.getClients().entrySet()) {
 			try {
 				final ClientSession session = client.getValue();
-				// Inject bandwidth counters so write thread can track stats
+				// Inject bandwidth counters so write thread can track stats.
+				// All four counters track POST-COMPRESSION (true wire) bytes.
 				if (session.getSharedBytesWritten() == null) {
 					session.setSharedBytesWritten(this.bytesWritten);
 					session.setSharedBytesPerType(this.bytesWrittenByPacketType);
+					session.setSharedBytesRead(this.bytesRead);
+					session.setSharedBytesReadPerType(this.bytesReadByPacketType);
 				}
 				final Player player = this.getPlayerByRemoteAddress(client.getKey());
 				if (player == null) {
@@ -500,13 +514,19 @@ public class RealmManagerServer implements Runnable {
 			}
 		}
 
-		// Print server write rate (kbit/s) — bytes tracked by write thread via AtomicLong
+		// Print server write + read rates (kbit/s) — both report TRUE
+		// on-the-wire bytes (post-compression for write; raw inbound bytes
+		// for read, which arrive already-compressed if the client used the
+		// compression flag). Sampled once per second by draining the
+		// AtomicLong counters.
 		if (Instant.now().toEpochMilli() - this.lastWriteSampleTime > 1000) {
 			this.lastWriteSampleTime = Instant.now().toEpochMilli();
 			final long written = this.bytesWritten.getAndSet(0);
-			RealmManagerServer.log.info("[SERVER] current write rate = {} kbit/s",
-					(float) (written / 1024.0f) * 8.0f);
-			final StringBuilder sb = new StringBuilder("[SERVER] Bandwidth by packet type: ");
+			final long read = this.bytesRead.getAndSet(0);
+			RealmManagerServer.log.info("[SERVER] current write rate = {} kbit/s (wire), read rate = {} kbit/s (wire)",
+					(float) (written / 1024.0f) * 8.0f,
+					(float) (read / 1024.0f) * 8.0f);
+			final StringBuilder sb = new StringBuilder("[SERVER] Outbound by packet type: ");
 			for (var entry : this.bytesWrittenByPacketType.entrySet()) {
 				final long typeBytes = entry.getValue().getAndSet(0);
 				if (typeBytes > 0) {
@@ -516,6 +536,16 @@ public class RealmManagerServer implements Runnable {
 				}
 			}
 			RealmManagerServer.log.info(sb.toString());
+			final StringBuilder sbR = new StringBuilder("[SERVER] Inbound by packet type:  ");
+			for (var entry : this.bytesReadByPacketType.entrySet()) {
+				final long typeBytes = entry.getValue().getAndSet(0);
+				if (typeBytes > 0) {
+					sbR.append(entry.getKey()).append("=")
+					   .append(String.format("%.1f", (typeBytes / 1024.0f) * 8.0f))
+					   .append("kbit/s ");
+				}
+			}
+			RealmManagerServer.log.info(sbR.toString());
 		}
 		long nanosDiff = System.nanoTime() - startNanos;
 		log.debug("Game data broadcast in {} nanos ({}ms}", nanosDiff, ((double) nanosDiff / (double) 1000000l));
@@ -679,11 +709,29 @@ public class RealmManagerServer implements Runnable {
 										this.enqueueServerPacket(player.getValue(), bulletUnload);
 									}
 									this.playerLoadState.put(player.getKey(), loadPacket);
-								} else if (!oldLoad.equals(loadPacket) || periodicFullDue) {
-									// SLOW PATH — full snapshot for entity-set change or self-heal.
+								} else if (periodicFullDue) {
+									// PERIODIC SELF-HEAL — full snapshot every 3s so a dropped
+									// delta packet self-recovers within one cycle.
 									final LoadPacket toSend = oldLoad.combine(loadPacket);
 									this.playerLoadState.put(player.getKey(), loadPacket);
 									this.playerLastFullSnapshotMs.put(player.getKey(), nowMs);
+									if (!toSend.isEmpty()) {
+										this.enqueueServerPacket(player.getValue(), toSend);
+									}
+									final UnloadPacket unloadDelta = oldLoad.difference(loadPacket);
+									if (unloadDelta.isNotEmpty()) {
+										this.enqueueServerPacket(player.getValue(), unloadDelta);
+										for (long unloadedEnemy : unloadDelta.getEnemies()) {
+											this.enemyUpdateState.remove(unloadedEnemy);
+										}
+									}
+								} else if (!oldLoad.equals(loadPacket)) {
+									// ENTITY-SET CHANGE PATH — emit ONLY new entities (true delta)
+									// instead of the full 11-player snapshot. Saves ~90% on slow-
+									// path bandwidth when bots cross each other's visibility
+									// boundaries; self-heal is preserved by the periodic refresh above.
+									final LoadPacket toSend = oldLoad.combineDelta(loadPacket);
+									this.playerLoadState.put(player.getKey(), loadPacket);
 									if (!toSend.isEmpty()) {
 										this.enqueueServerPacket(player.getValue(), toSend);
 									}
@@ -738,13 +786,14 @@ public class RealmManagerServer implements Runnable {
 											&& !teleportedPlayers.contains(player.getKey())) {
 										continue;
 									}
-									// Dead reckoning: skip stationary entities whose state hasn't
-								// changed. Moving entities (non-zero velocity) are always sent
-								// because the client lerps to target positions rather than
-								// extrapolating from velocity.
-									final boolean isEntityMoving = m.getVelX() != 0 || m.getVelY() != 0;
+									// Dead reckoning: skip ANY entity whose actual state matches the
+									// client's velocity-extrapolated prediction. The webclient
+									// now extrapolates non-local players + enemies by velocity
+									// (dx*64*dt) every frame in updateInterpolation(), so steady-
+									// velocity motion needs no per-tick server correction. Direction
+									// changes / pos drift > 4px / 48-tick staleness still trigger sends.
 									final EntityMotionState lastSent = drState.get(m.getEntityId());
-									if (!isEntityMoving && lastSent != null && !lastSent.needsUpdate(
+									if (lastSent != null && !lastSent.needsUpdate(
 											m.getPosX(), m.getPosY(), m.getVelX(), m.getVelY(),
 											this.tickCounter, tickDuration)) {
 										continue;
@@ -1320,20 +1369,23 @@ public class RealmManagerServer implements Runnable {
 				p.removeExpiredEffects();
 				this.movePlayer(realm.getRealmId(), p);
 			}
-			// Once per tick update all non player game objects (bullets, enemies)
-			final GameObject[] gameObject = realm.getAllGameObjects();
-			for (int i = 0; i < gameObject.length; i++) {
-				if (gameObject[i] instanceof Enemy || gameObject[i] instanceof Monster) {
-					final Enemy enemy = ((Enemy) gameObject[i]);
-					enemy.update(realm.getRealmId(), this, time);
-					enemy.removeExpiredEffects();
-				}
-				if (gameObject[i] instanceof Bullet) {
-					final Bullet bullet = ((Bullet) gameObject[i]);
-					if (bullet != null) {
-						bullet.update();
-					}
-				}
+			// Once per tick: update enemies, then bullets. Iterating the maps
+			// directly avoids 200+ instanceof+cast dispatches per tick that
+			// the old getAllGameObjects() path incurred. bulletScale is also
+			// computed ONCE per realm tick (instead of per-bullet) so we drop
+			// 12 800 nanoTime() syscalls/sec at 200 bullets in flight.
+			final long nowNanos = System.nanoTime();
+			final long lastNanos = this.lastBulletUpdateNanos.getOrDefault(realm.getRealmId(), nowNanos);
+			final float bulletDt = Math.min((nowNanos - lastNanos) / 1_000_000_000.0f, 0.1f);
+			this.lastBulletUpdateNanos.put(realm.getRealmId(), nowNanos);
+			final float bulletScale = bulletDt * 64.0f;
+
+			for (final Enemy enemy : realm.getEnemies().values()) {
+				enemy.update(realm.getRealmId(), this, time);
+				enemy.removeExpiredEffects();
+			}
+			for (final Bullet bullet : realm.getBullets().values()) {
+				bullet.update(bulletScale);
 			}
 		}
 
@@ -1646,12 +1698,16 @@ public class RealmManagerServer implements Runnable {
 	}
 
 	public void removeExpiredBullets() {
+		// Use the realm's tickCounter for the lifetime check so we don't run
+		// Instant.now().toEpochMilli() once per bullet per tick (~12 K
+		// syscalls/sec at 200 bullets in flight).
+		final long currentTick = this.tickCounter;
 		for (final Map.Entry<Long, Realm> realmEntry : this.realms.entrySet()) {
 			final Realm realm = realmEntry.getValue();
 
 			final List<Bullet> toRemove = new ArrayList<>();
 			for (final Bullet b : realm.getBullets().values()) {
-				if (b.remove()) {
+				if (b.remove(currentTick)) {
 					toRemove.add(b);
 				}
 			}
@@ -1747,19 +1803,44 @@ public class RealmManagerServer implements Runnable {
 		// player hugging a tree gets hit by an "invisible" projectile).
 		final Map<Long, Bullet> liveBullets = targetRealm.getBullets();
 
+		// Pre-partition nearby bullets by source so we don't iterate the
+		// "wrong half" against the wrong target. Previously we walked the
+		// full bullet list against both players and enemies and let a
+		// boolean flag filter inside proccessEnemyHit / processPlayerHit —
+		// each call still paid the cost of a Map lookup + entity-state
+		// check before bailing. Splitting upfront cuts collision-loop work
+		// roughly in half during ability spam (where ~50% of nearby
+		// bullets are enemy-side).
+		List<Bullet> enemyBullets = null;
+		List<Bullet> playerBullets = null;
+		for (int i = 0; i < nearbyBullets.size(); i++) {
+			final Bullet b = nearbyBullets.get(i);
+			if (b.isEnemy()) {
+				if (enemyBullets == null) enemyBullets = new ArrayList<>(nearbyBullets.size());
+				enemyBullets.add(b);
+			} else {
+				if (playerBullets == null) playerBullets = new ArrayList<>(nearbyBullets.size());
+				playerBullets.add(b);
+			}
+		}
+
 		// Player-bullet collision (enemy bullets hitting player)
-		if (!player.hasEffect(StatusEffectType.INVINCIBLE)) {
-			for (final Bullet b : nearbyBullets) {
+		if (enemyBullets != null && !player.hasEffect(StatusEffectType.INVINCIBLE)) {
+			for (int i = 0; i < enemyBullets.size(); i++) {
+				final Bullet b = enemyBullets.get(i);
 				if (!liveBullets.containsKey(b.getId())) continue;
 				this.processPlayerHit(realmId, b, player);
 			}
 		}
 
 		// Bullet-enemy collision (player bullets hitting enemies)
-		for (final Enemy enemy : nearbyEnemies) {
-			for (final Bullet b : nearbyBullets) {
-				if (!liveBullets.containsKey(b.getId())) continue;
-				this.proccessEnemyHit(realmId, b, enemy);
+		if (playerBullets != null) {
+			for (final Enemy enemy : nearbyEnemies) {
+				for (int i = 0; i < playerBullets.size(); i++) {
+					final Bullet b = playerBullets.get(i);
+					if (!liveBullets.containsKey(b.getId())) continue;
+					this.proccessEnemyHit(realmId, b, enemy);
+				}
 			}
 		}
 	}
@@ -2027,6 +2108,7 @@ public class RealmManagerServer implements Runnable {
 		final Bullet b = new Bullet(idToUse, projectileId, src, dest, size, magnitude, range, damage, isEnemy);
 		b.setSrcEntityId(srcEntityId);
 		b.setFlags(flags);
+		b.setCreatedTick(this.tickCounter);
 		targetRealm.addBullet(b);
 		return b;
 	}
@@ -2050,6 +2132,7 @@ public class RealmManagerServer implements Runnable {
 		b.setAmplitude(amplitude);
 		b.setFrequency(frequency);
 		b.setFlags(flags);
+		b.setCreatedTick(this.tickCounter);
 		targetRealm.addBullet(b);
 		return b;
 	}

@@ -44,6 +44,25 @@ public class NetPlayer extends SerializableFieldType<NetPlayer>{
 	@SerializableField(order = 11, type = SerializableInt.class)
 	private int dyeId;
 
+	/** Hand-rolled construction from Player — bypasses ModelMapper reflection
+	 *  on the LoadPacket build hot path. */
+	public static NetPlayer fromPlayer(Player p) {
+		final NetPlayer n = new NetPlayer();
+		n.id = p.getId();
+		n.name = p.getName();
+		n.accountUuid = p.getAccountUuid();
+		n.characterUuid = p.getCharacterUuid();
+		n.classId = p.getClassId();
+		n.size = (short) p.getSize();
+		n.pos = p.getPos();
+		n.dX = p.getDx();
+		n.dY = p.getDy();
+		n.chatRole = p.getChatRole();
+		n.dyeId = p.getDyeId();
+		// shortId is populated by the LoadPacket.from(...allocator) overload.
+		return n;
+	}
+
 	public Player toPlayer() {
 		Player p = new Player();
 		p.setId(this.id);

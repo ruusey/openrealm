@@ -65,6 +65,45 @@ public class NetBullet extends SerializableFieldType<NetBullet> {
 	@SerializableField(order = 19, type = SerializableFloat.class)
 	private float orbitPhase;
 
+	/**
+	 * Hand-rolled construction from a server-side Bullet — bypasses
+	 * ModelMapper reflection. ModelMapper.map() walks all 20 fields via
+	 * reflection per call; with ~200 visible bullets × 11 viewers × 32Hz
+	 * that's 70K reflective maps/sec, which was eating significant CPU
+	 * during ability spam and contributing to the TPS drop.
+	 *
+	 * Direct field copy is 10-100× faster than reflection-based mapping.
+	 */
+	public static NetBullet fromBullet(Bullet b) {
+		final NetBullet n = new NetBullet();
+		n.id = b.getId();
+		n.projectileId = b.getProjectileId();
+		n.size = (short) b.getSize();
+		n.pos = b.getPos();
+		n.dX = b.getDx();
+		n.dY = b.getDy();
+		n.angle = b.getAngle();
+		n.magnitude = b.getMagnitude();
+		n.range = b.getRange();
+		n.damage = b.getDamage();
+		final java.util.List<Short> bf = b.getFlags();
+		if (bf != null && !bf.isEmpty()) {
+			n.flags = bf.toArray(new Short[0]);
+		} else {
+			n.flags = new Short[0];
+		}
+		n.invert = b.isInvert();
+		n.timeStep = b.getTimeStep();
+		n.amplitude = b.getAmplitude();
+		n.frequency = b.getFrequency();
+		n.createdTime = b.getCreatedTime();
+		n.orbitCenterX = b.getOrbitCenterX();
+		n.orbitCenterY = b.getOrbitCenterY();
+		n.orbitRadius = b.getOrbitRadius();
+		n.orbitPhase = b.getOrbitPhase();
+		return n;
+	}
+
 	public Bullet asBullet() {
 		final Bullet bullet = new Bullet();
 		bullet.setId(this.id);

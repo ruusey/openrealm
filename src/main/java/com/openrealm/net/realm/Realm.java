@@ -1441,12 +1441,23 @@ public class Realm {
             if (!trap.hasLanded()) continue;
             if (!trap.armed) {
                 trap.armed = true;
-                // Broadcast armed trap visual to all players in this realm
+                // Broadcast armed trap visual ONLY to players within sight
+                // (10 tile radius — same as TextEffectPacket convention).
+                // Previously sent to every player in the realm regardless
+                // of whether the trap was on-screen for them.
+                final float armSightR = 10 * com.openrealm.game.contants.GlobalConstants.BASE_TILE_SIZE;
+                final float armSightSq = armSightR * armSightR;
+                final com.openrealm.net.client.packet.CreateEffectPacket armPkt =
+                        com.openrealm.net.client.packet.CreateEffectPacket.aoeEffect(
+                            (short) 7, trap.x, trap.y, trap.triggerRadius,
+                            (short) (trap.expireTime - java.time.Instant.now().toEpochMilli()));
                 for (final Player p : this.players.values()) {
                     if (p.isHeadless()) continue;
-                    mgr.enqueueServerPacket(p, com.openrealm.net.client.packet.CreateEffectPacket.aoeEffect(
-                            (short) 7, trap.x, trap.y, trap.triggerRadius,
-                            (short) (trap.expireTime - java.time.Instant.now().toEpochMilli())));
+                    float pdx = p.getPos().x - trap.x;
+                    float pdy = p.getPos().y - trap.y;
+                    if (pdx * pdx + pdy * pdy <= armSightSq) {
+                        mgr.enqueueServerPacket(p, armPkt);
+                    }
                 }
             }
             boolean triggered = false;
@@ -1461,11 +1472,19 @@ public class Realm {
             if (triggered) {
                 float blastRadius = trap.triggerRadius + 16.0f;
                 float blastSq = blastRadius * blastRadius;
-                // Broadcast trigger visual to all players in this realm
+                // Broadcast trigger visual ONLY to nearby (in-sight) players.
+                final float trigSightR = 10 * com.openrealm.game.contants.GlobalConstants.BASE_TILE_SIZE;
+                final float trigSightSq = trigSightR * trigSightR;
+                final com.openrealm.net.client.packet.CreateEffectPacket trigPkt =
+                        com.openrealm.net.client.packet.CreateEffectPacket.aoeEffect(
+                            (short) 8, trap.x, trap.y, blastRadius, (short) 500);
                 for (final Player p : this.players.values()) {
                     if (p.isHeadless()) continue;
-                    mgr.enqueueServerPacket(p, com.openrealm.net.client.packet.CreateEffectPacket.aoeEffect(
-                            (short) 8, trap.x, trap.y, blastRadius, (short) 500));
+                    float pdx = p.getPos().x - trap.x;
+                    float pdy = p.getPos().y - trap.y;
+                    if (pdx * pdx + pdy * pdy <= trigSightSq) {
+                        mgr.enqueueServerPacket(p, trigPkt);
+                    }
                 }
                 final com.openrealm.game.contants.StatusEffectType effectType =
                         com.openrealm.game.contants.StatusEffectType.valueOf(trap.effectId);
@@ -1508,10 +1527,16 @@ public class Realm {
             if (!t.hasLanded()) continue;
             it.remove();
 
-            // Broadcast splash AoE on landing
-            mgr.enqueueServerPacket(com.openrealm.net.client.packet.CreateEffectPacket.aoeEffect(
-                    com.openrealm.net.client.packet.CreateEffectPacket.EFFECT_POISON_SPLASH,
-                    t.landX, t.landY, t.radius, (short) 1500));
+            // Broadcast splash AoE on landing — scope to THIS realm only.
+            // The single-arg enqueueServerPacket() pushes to a global queue
+            // that fans out to every connected client across every realm,
+            // which was bloating CreateEffectPacket bandwidth on busy
+            // servers. enqueueServerPacketToRealm restricts to nearby
+            // players who can actually see the effect.
+            mgr.enqueueServerPacketToRealm(this,
+                    com.openrealm.net.client.packet.CreateEffectPacket.aoeEffect(
+                        com.openrealm.net.client.packet.CreateEffectPacket.EFFECT_POISON_SPLASH,
+                        t.landX, t.landY, t.radius, (short) 1500));
 
             // Apply poison to enemies in radius
             final float radiusSq = t.radius * t.radius;

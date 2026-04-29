@@ -45,6 +45,25 @@ public class NetEnemy extends SerializableFieldType<NetEnemy> {
 	@SerializableField(order = 10, type = SerializableShort.class)
 	private short shortId;
 
+	/** Hand-rolled construction from Enemy — bypasses ModelMapper reflection. */
+	public static NetEnemy fromEnemy(Enemy e) {
+		final NetEnemy n = new NetEnemy();
+		n.id = e.getId();
+		n.enemyId = e.getEnemyId();
+		n.weaponId = e.getWeaponId();
+		n.size = (short) e.getSize();
+		n.pos = e.getPos();
+		n.dX = e.getDx();
+		n.dY = e.getDy();
+		n.difficulty = e.getDifficulty();
+		n.health = e.getHealth();
+		n.maxHealth = (int) (com.openrealm.game.data.GameDataManager.ENEMIES.get(e.getEnemyId()) != null
+				? com.openrealm.game.data.GameDataManager.ENEMIES.get(e.getEnemyId()).getHealth() * e.getDifficulty()
+				: e.getHealth());
+		// shortId is set by the LoadPacket.from(...allocator) overload.
+		return n;
+	}
+
 	public Enemy asEnemy() {
 		final Enemy e = new Enemy();
 		e.setId(this.getId());
