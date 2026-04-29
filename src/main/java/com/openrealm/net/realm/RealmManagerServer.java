@@ -154,6 +154,12 @@ public class RealmManagerServer implements Runnable {
 	
 	private Map<Long, Long> playerAbilityState = new ConcurrentHashMap<>();
 	private Map<Long, LoadPacket> playerLoadState = new ConcurrentHashMap<>();
+	// Last wall-clock time we forced a full LoadPacket snapshot to the player.
+	// Used to periodically refresh players/enemies/portals so a dropped
+	// fast-path packet self-heals — the rest of the time we only ship bullet/
+	// loot deltas (saves ~90% of LoadPacket bandwidth in spam combat).
+	private Map<Long, Long> playerLastFullSnapshotMs = new ConcurrentHashMap<>();
+	private static final long FULL_SNAPSHOT_INTERVAL_MS = 3000L;
 	private Map<Long, UpdatePacket> playerUpdateState = new ConcurrentHashMap<>();
 	private Map<Long, PlayerStatePacket> playerStateState = new ConcurrentHashMap<>();
 	private Map<Long, UpdatePacket> enemyUpdateState = new ConcurrentHashMap<>();
@@ -644,21 +650,40 @@ public class RealmManagerServer implements Runnable {
 						}
 
 						// --- LoadPacket (32 Hz) - per-player spatial grid query ---
+						// Fast path: when only bullets/loot changed, ship a tiny delta
+						// (empty players/enemies/portals arrays). Slow path: full
+						// snapshot when the entity set actually changed OR every
+						// FULL_SNAPSHOT_INTERVAL_MS (~3s) for self-heal against drops.
+						// Cuts ~90% of LoadPacket bandwidth in spam-shoot scenarios.
 						if (doLoad) {
-							// Build a fresh LoadPacket centered on THIS player. We do not
-							// cache by cell because two players in the same cell can be at
-							// different positions, and reusing one player's perspective
-							// causes the other player to unload entities still within their
-							// own viewport (causing flicker / disappearing entities).
 							final LoadPacket loadPacket = realm.getLoadPacketCircularFast(playerCenter, viewportRadius);
+							final long nowMs = System.currentTimeMillis();
 							if (this.playerLoadState.get(player.getKey()) == null) {
 								this.playerLoadState.put(player.getKey(), loadPacket);
+								this.playerLastFullSnapshotMs.put(player.getKey(), nowMs);
 								this.enqueueServerPacket(player.getValue(), loadPacket);
 							} else {
 								final LoadPacket oldLoad = this.playerLoadState.get(player.getKey());
-								if (!oldLoad.equals(loadPacket)) {
+								final Long lastFull = this.playerLastFullSnapshotMs.get(player.getKey());
+								final boolean periodicFullDue = lastFull == null
+									|| (nowMs - lastFull) >= FULL_SNAPSHOT_INTERVAL_MS;
+								final boolean entitySetSame = oldLoad.entitySetEquals(loadPacket);
+								if (entitySetSame && !periodicFullDue) {
+									// FAST PATH — bullets/loot only.
+									final LoadPacket bulletDelta = oldLoad.bulletAndLootDelta(loadPacket);
+									if (!bulletDelta.isEmpty()) {
+										this.enqueueServerPacket(player.getValue(), bulletDelta);
+									}
+									final UnloadPacket bulletUnload = oldLoad.bulletUnloadDifference(loadPacket);
+									if (bulletUnload.isNotEmpty()) {
+										this.enqueueServerPacket(player.getValue(), bulletUnload);
+									}
+									this.playerLoadState.put(player.getKey(), loadPacket);
+								} else if (!oldLoad.equals(loadPacket) || periodicFullDue) {
+									// SLOW PATH — full snapshot for entity-set change or self-heal.
 									final LoadPacket toSend = oldLoad.combine(loadPacket);
 									this.playerLoadState.put(player.getKey(), loadPacket);
+									this.playerLastFullSnapshotMs.put(player.getKey(), nowMs);
 									if (!toSend.isEmpty()) {
 										this.enqueueServerPacket(player.getValue(), toSend);
 									}
@@ -2348,6 +2373,7 @@ public class RealmManagerServer implements Runnable {
 
 	public void clearPlayerState(long playerId) {
 		this.playerLoadState.remove(playerId);
+		this.playerLastFullSnapshotMs.remove(playerId);
 		this.playerUpdateState.remove(playerId);
 		this.playerStateState.remove(playerId);
 		this.playerUnloadState.remove(playerId);
@@ -2431,6 +2457,7 @@ public class RealmManagerServer implements Runnable {
 	public void invalidateRealmLoadState(Realm realm) {
 		for (final Long pid : realm.getPlayers().keySet()) {
 			this.playerLoadState.remove(pid);
+			this.playerLastFullSnapshotMs.remove(pid);
 		}
 	}
 

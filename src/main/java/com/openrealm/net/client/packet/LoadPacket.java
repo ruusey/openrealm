@@ -136,6 +136,92 @@ public class LoadPacket extends Packet {
 
     }
 
+    /**
+     * Returns true if the visible *entity set* (players, enemies, portals)
+     * is identical between this and other — IGNORING bullets and loot.
+     *
+     * This is the "is anything besides bullets/loot interesting" check that
+     * lets the call site take a much cheaper path when only bullets cycled.
+     * Without this split, every shot fired anywhere in the visible radius
+     * forced a full per-player+enemy+portal snapshot to every nearby client
+     * (~1.8 Mbit/s with 6 spam-shooting wizard bots).
+     */
+    public boolean entitySetEquals(LoadPacket other) {
+        if (other == null) return false;
+        final java.util.Set<Long> playerIdsThis = Stream.of(this.players).map(NetPlayer::getId)
+                .collect(Collectors.toSet());
+        final java.util.Set<Long> playerIdsOther = Stream.of(other.getPlayers()).map(NetPlayer::getId)
+                .collect(Collectors.toSet());
+        if (!playerIdsThis.equals(playerIdsOther)) return false;
+        final java.util.Set<Long> enemyIdsThis = Stream.of(this.enemies).map(NetEnemy::getId)
+                .collect(Collectors.toSet());
+        final java.util.Set<Long> enemyIdsOther = Stream.of(other.getEnemies()).map(NetEnemy::getId)
+                .collect(Collectors.toSet());
+        if (!enemyIdsThis.equals(enemyIdsOther)) return false;
+        final java.util.Set<Long> portalIdsThis = Stream.of(this.portals).map(NetPortal::getId)
+                .collect(Collectors.toSet());
+        final java.util.Set<Long> portalIdsOther = Stream.of(other.getPortals()).map(NetPortal::getId)
+                .collect(Collectors.toSet());
+        if (!portalIdsThis.equals(portalIdsOther)) return false;
+        // Loot ID set + contentsChanged: track loot churn here too so the fast
+        // path still flushes loot updates without forcing a full snapshot.
+        final java.util.Set<Long> lootIdsThis = Stream.of(this.containers).map(NetLootContainer::getLootContainerId)
+                .collect(Collectors.toSet());
+        final java.util.Set<Long> lootIdsOther = Stream.of(other.getContainers()).map(NetLootContainer::getLootContainerId)
+                .collect(Collectors.toSet());
+        if (!lootIdsThis.equals(lootIdsOther)) return false;
+        for (final NetLootContainer c : this.containers) {
+            if (c.isContentsChanged()) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Build a minimal LoadPacket containing only bullet+loot deltas with
+     * empty players/enemies/portals arrays. The client's handleLoad iterates
+     * packet.players etc. and merges entries into existing state — it does
+     * NOT delete entries missing from the packet (UnloadPacket handles
+     * removal). So empty arrays are safe and skipped client-side.
+     */
+    public LoadPacket bulletAndLootDelta(final LoadPacket other) throws Exception {
+        if (other == null) return this;
+        final java.util.Set<Long> bulletIdsThis = Stream.of(this.bullets).map(NetBullet::getId)
+                .collect(Collectors.toSet());
+        final java.util.Set<Long> lootIdsThis = Stream.of(this.containers).map(NetLootContainer::getLootContainerId)
+                .collect(Collectors.toSet());
+        final List<NetBullet> bulletsDiff = new ArrayList<>();
+        for (final NetBullet b : other.getBullets()) {
+            if (!bulletIdsThis.contains(b.getId())) bulletsDiff.add(b);
+        }
+        final List<NetLootContainer> lootDiff = new ArrayList<>();
+        for (final NetLootContainer p : other.getContainers()) {
+            if (!lootIdsThis.contains(p.getLootContainerId()) || p.isContentsChanged()) lootDiff.add(p);
+        }
+        return new LoadPacket(new NetPlayer[0], new NetEnemy[0],
+                bulletsDiff.toArray(new NetBullet[0]),
+                lootDiff.toArray(new NetLootContainer[0]),
+                new NetPortal[0], other.getDifficulty());
+    }
+
+    /**
+     * Build an UnloadPacket containing only the bullets that despawned —
+     * paired with bulletAndLootDelta() above. Players/enemies/portals/loot
+     * are intentionally empty because the entity set is unchanged; the
+     * full difference() path handles those when entitySetEquals == false.
+     */
+    public UnloadPacket bulletUnloadDifference(final LoadPacket other) throws Exception {
+        if (other == null) return UnloadPacket.from(new Long[0], new Long[0],
+                new Long[0], new Long[0], new Long[0]);
+        final java.util.Set<Long> bulletIdsOther = Stream.of(other.getBullets()).map(NetBullet::getId)
+                .collect(Collectors.toSet());
+        final List<Long> bulletsDiff = new ArrayList<>();
+        for (final NetBullet b : this.bullets) {
+            if (!bulletIdsOther.contains(b.getId())) bulletsDiff.add(b.getId());
+        }
+        return UnloadPacket.from(new Long[0], bulletsDiff.toArray(new Long[0]),
+                new Long[0], new Long[0], new Long[0]);
+    }
+
     public LoadPacket combine(final LoadPacket other) throws Exception {
     	if(other==null) {
     		return this;
