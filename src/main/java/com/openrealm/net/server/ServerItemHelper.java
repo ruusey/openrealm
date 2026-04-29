@@ -80,6 +80,7 @@ public class ServerItemHelper {
      */
     public static boolean tryDepositStackable(Player player, GameItem incoming) {
         if (incoming == null) return false;
+        final int originalCount = incoming.getStackCount();
         final GameItem[] inv = player.getInventory();
         if (incoming.isStackable()) {
             // Top up existing stacks of the same itemId
@@ -93,17 +94,28 @@ public class ServerItemHelper {
                 final int move = Math.min(room, incoming.getStackCount());
                 existing.setStackCount(existing.getStackCount() + move);
                 incoming.setStackCount(incoming.getStackCount() - move);
-                if (incoming.getStackCount() <= 0) return true;
+                if (incoming.getStackCount() <= 0) break;
             }
         }
-        // Spill remainder into first empty slot
+        // Spill any remainder into the first empty slot. CRITICAL: park a
+        // CLONE of `incoming` in the inventory and zero out `incoming`'s
+        // stack count. The caller reads incoming.getStackCount() afterward
+        // to decide how much to leave in the loot bag — without the zero,
+        // the just-deposited stack stayed in both the bag and the inventory
+        // (a full duplicate of every stackable pickup when no existing
+        // stack was available to top up).
         if (incoming.getStackCount() > 0) {
             final int empty = player.firstEmptyInvSlot();
-            if (empty < 0) return false;
-            inv[empty] = incoming;
-            return true;
+            if (empty >= 0) {
+                inv[empty] = incoming.clone();
+                incoming.setStackCount(0);
+            }
         }
-        return true;
+        // Return true if ANY portion was deposited — the top-up loop may
+        // have moved some units even when the spill slot is unavailable.
+        // The caller then sets the loot bag's stack count to the unmoved
+        // remainder so partial pickups don't duplicate the topped-up units.
+        return incoming.getStackCount() < originalCount;
     }
 
     public static void handleMoveItemPacket(RealmManagerServer mgr, Packet packet) throws Exception {
