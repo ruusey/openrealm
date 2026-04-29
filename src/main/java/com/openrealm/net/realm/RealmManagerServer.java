@@ -895,11 +895,17 @@ public class RealmManagerServer implements Runnable {
 	// Prevents ability spam from 25+ bots from starving the tick thread.
 	private static final int MAX_PACKETS_PER_TICK = 200;
 
-	// Packet types that get priority processing (shoot/move feel laggy when delayed)
+	// Packet types that get priority processing every tick — never throttled,
+	// never dropped, regardless of how saturated the rest of the queue is.
+	// CommandPacket is here so admin/console commands like /killbots stay
+	// responsive even when the server is overloaded with player input
+	// (otherwise a 40-player non-spam test floods the queue with moves and
+	// the operator can't recover the box).
 	private static final Set<Class<? extends Packet>> PRIORITY_PACKETS = Set.of(
 			com.openrealm.net.server.packet.PlayerShootPacket.class,
 			com.openrealm.net.server.packet.PlayerMovePacket.class,
-			com.openrealm.net.server.packet.HeartbeatPacket.class
+			com.openrealm.net.server.packet.HeartbeatPacket.class,
+			com.openrealm.net.server.packet.CommandPacket.class
 	);
 
 	public void processServerPackets() {
@@ -939,15 +945,34 @@ public class RealmManagerServer implements Runnable {
 			}
 		}
 
-		// Pass 1: Process ALL priority packets (shoot/move/heartbeat — always responsive)
+		// Pass 1: Process ALL priority packets (shoot/move/heartbeat/command —
+		// always responsive, no cap).
 		for (final Packet packet : priorityQueue) {
 			processPacket(packet);
 		}
 
-		// Pass 2: Process normal packets up to the per-tick cap
+		// Pass 2: Process normal packets up to the per-tick cap. Any packets
+		// beyond the cap are DEFERRED to the next tick (re-queued back into
+		// the session's inbound queue) instead of silently dropped — losing
+		// inventory operations / trade requests etc. under load was what
+		// made admin recovery impossible during a 40-player stress test.
 		final int normalCap = Math.max(0, MAX_PACKETS_PER_TICK - priorityQueue.size());
-		for (int i = 0; i < Math.min(normalQueue.size(), normalCap); i++) {
+		final int processed = Math.min(normalQueue.size(), normalCap);
+		for (int i = 0; i < processed; i++) {
 			processPacket(normalQueue.get(i));
+		}
+		if (processed < normalQueue.size()) {
+			// Re-queue the overflow back to its source session so it lands
+			// at the front of next tick's priority/normal split. Use the
+			// packet's srcIp (set when the packet was parsed in
+			// ClientSession.parsePackets) to find the right session.
+			for (int i = processed; i < normalQueue.size(); i++) {
+				final Packet overflow = normalQueue.get(i);
+				final ClientSession session = this.server.getClients().get(overflow.getSrcIp());
+				if (session != null && !session.isShutdownProcessing()) {
+					session.getPacketQueue().add(overflow);
+				}
+			}
 		}
 	}
 

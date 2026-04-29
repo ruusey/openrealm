@@ -29,6 +29,7 @@ import com.openrealm.game.entity.Player;
 import com.openrealm.game.entity.item.GameItem;
 import com.openrealm.game.entity.item.LootContainer;
 import com.openrealm.game.math.Vector2f;
+import java.util.Random;
 import com.openrealm.game.contants.CharacterClass;
 import com.openrealm.game.model.CharacterClassModel;
 import com.openrealm.game.model.DungeonGraphNode;
@@ -274,17 +275,60 @@ public class ServerCommandHandler {
         log.info("Player {} healed themselves", target.getName());
     }
 
-    @CommandHandler(value="spawn", description="Spawn a given Enemy by it's id")
+    @CommandHandler(value="spawn", description="Spawn enemies by id. Usage: /spawn {ENEMY_ID} [COUNT]")
 	@AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_MODERATOR})
     public static void invokeEnemySpawn(RealmManagerServer mgr, Player target, ServerCommandMessage message)
             throws Exception {
-        if (message.getArgs() == null || message.getArgs().size() != 1)
-            throw new IllegalArgumentException("Usage: /spawn {ENEMY_ID}");
+        if (message.getArgs() == null || message.getArgs().isEmpty() || message.getArgs().size() > 2)
+            throw new IllegalArgumentException("Usage: /spawn {ENEMY_ID} [COUNT]");
 
-        log.info("Player {} spawn enemy {} at {}", target.getName(), message.getArgs().get(0), target.getPos());
-        final Realm from = mgr.findPlayerRealm(target.getId());
         final int enemyId = Integer.parseInt(message.getArgs().get(0));
-        from.addEnemy(GameObjectUtils.getEnemyFromId(enemyId, target.getPos().clone()));
+        int count = 1;
+        if (message.getArgs().size() == 2) {
+            count = Integer.parseInt(message.getArgs().get(1));
+            if (count < 1) {
+                throw new IllegalArgumentException("COUNT must be >= 1");
+            }
+            // Cap to keep a single command from accidentally OOMing the box
+            // — 5000 enemies × ~200 bytes each + collision/AI bookkeeping
+            // is enough to stress-test a 2-vCPU instance.
+            if (count > 5000) {
+                throw new IllegalArgumentException("COUNT capped at 5000 per command");
+            }
+        }
+
+        log.info("Player {} spawn enemy {} ×{} at {}",
+                target.getName(), enemyId, count, target.getPos());
+        final Realm from = mgr.findPlayerRealm(target.getId());
+        if (from == null) {
+            throw new IllegalArgumentException("No realm for player");
+        }
+        // Spread N copies in a small jittered ring around the caller so they
+        // don't all overlap on the same tile (which would also fail collision
+        // de-spawn checks and stack rendering).
+        final Random rng = new Random();
+        final float baseX = target.getPos().x;
+        final float baseY = target.getPos().y;
+        for (int i = 0; i < count; i++) {
+            final float dx, dy;
+            if (count == 1) {
+                dx = 0f; dy = 0f;
+            } else {
+                // Concentric rings: ring radius scales with sqrt(i) so density
+                // is roughly uniform in area; jitter keeps spawns off the grid.
+                final float ringR = 32f + 16f * (float) Math.sqrt(i);
+                final float angle = (float) (rng.nextFloat() * Math.PI * 2.0);
+                dx = (float) (Math.cos(angle) * ringR);
+                dy = (float) (Math.sin(angle) * ringR);
+            }
+            final Vector2f spawnPos = new Vector2f(baseX + dx, baseY + dy);
+            from.addEnemy(GameObjectUtils.getEnemyFromId(enemyId, spawnPos));
+        }
+        if (count > 1) {
+            mgr.enqueueServerPacket(target,
+                    TextPacket.from("SYSTEM", target.getName(),
+                            "Spawned " + count + " of enemy " + enemyId));
+        }
     }
 
     @CommandHandler(value="seteffect", description="Add or remove Player stat effects")
