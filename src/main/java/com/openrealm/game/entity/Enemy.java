@@ -1,6 +1,7 @@
 package com.openrealm.game.entity;
 
 import java.util.List;
+import java.util.UUID;
 
 import com.openrealm.game.contants.ProjectileFlag;
 import com.openrealm.game.contants.StatusEffectType;
@@ -54,6 +55,7 @@ public class Enemy extends Entity {
     private String lastPhaseName = null;
     private long phaseTransitionUntil = 0;
     private static final long PHASE_TRANSITION_DURATION_MS = 1200;
+    private String uuid;
 
     public Enemy() {
         super(0, null, 0);
@@ -70,6 +72,11 @@ public class Enemy extends Entity {
         if (origin != null) {
             this.spawnPos = origin.clone();
         }
+        // Initialize fields previously only in Monster subclass
+        this.chaseRange = (int) this.model.getChaseRange();
+        this.attackRange = (int) this.model.getAttackRange();
+        this.right = true;
+        this.uuid = UUID.randomUUID().toString();
     }
 
     public void applyStats(Stats stats) {

@@ -9,7 +9,7 @@ import com.openrealm.net.core.IOService;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
-public abstract class Packet implements GameMessage {
+public abstract class Packet {
     private byte id;
     private byte[] data;
     private String srcIp;
@@ -32,7 +32,6 @@ public abstract class Packet implements GameMessage {
         this.srcIp = srcIp;
     }
     
-    @Override
     public int serializeWrite(DataOutputStream stream) throws Exception {
 		return IOService.writePacket(this, stream).length;
     }
@@ -44,7 +43,6 @@ public abstract class Packet implements GameMessage {
         return baos.toByteArray();
     }
 
-    @Override
     public void readData(byte[] data) throws Exception {
     	final Packet read = IOService.readPacket(getClass(), data);
     	this.assignData(this, read);

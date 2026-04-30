@@ -3,7 +3,6 @@ package com.openrealm.game.script.item;
 import com.openrealm.game.contants.StatusEffectType;
 import com.openrealm.game.data.GameDataManager;
 import com.openrealm.game.entity.Enemy;
-import com.openrealm.game.entity.Monster;
 import com.openrealm.game.entity.Player;
 import com.openrealm.game.entity.item.GameItem;
 import com.openrealm.game.math.Vector2f;
@@ -100,7 +99,7 @@ public class TricksterPrismScript extends UseableItemScriptBase {
         // Spawn the decoy enemy at the player's old position
         final long decoyId = Realm.RANDOM.nextLong();
         final long durationMs = abilityItem.getEffect().getDuration();
-        final Enemy decoy = new Monster(decoyId, DECOY_ENEMY_ID,
+        final Enemy decoy = new Enemy(decoyId, DECOY_ENEMY_ID,
                 new Vector2f(oldX, oldY), player.getSize(), -1);
         decoy.setChaseRange(0);
         decoy.setAttackRange(0);
