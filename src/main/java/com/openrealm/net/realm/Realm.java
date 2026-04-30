@@ -726,11 +726,31 @@ public class Realm {
         return objs.toArray(new Player[0]);
     }
 
+    /** Lightweight records used to sort candidates by distance before applying
+     *  the per-LoadPacket cap. Plain classes (not records) for compatibility
+     *  with the Java target this project compiles against. */
+    private static final class EnemyDist {
+        final Enemy enemy;
+        final float distSq;
+        EnemyDist(Enemy e, float d) { this.enemy = e; this.distSq = d; }
+    }
+    private static final class BulletDist {
+        final Bullet bullet;
+        final float distSq;
+        BulletDist(Bullet b, float d) { this.bullet = b; this.distSq = d; }
+    }
+
     /**
      * Grid-accelerated circular LoadPacket construction.
+     *
+     * Caps are intentionally generous so dense-enemy stress tests (500+
+     * enemies in viewport) don't trigger flicker artifacts from arbitrary
+     * truncation. When the cap IS hit, we keep the closest entities first
+     * (sorted before truncation) so what's visible to the player is at
+     * least deterministic rather than wobbling with HashSet iteration order.
      */
-    private static final int MAX_BULLETS_PER_LOAD = 200;
-    private static final int MAX_ENEMIES_PER_LOAD = 80;
+    private static final int MAX_BULLETS_PER_LOAD = 1000;
+    private static final int MAX_ENEMIES_PER_LOAD = 500;
 
     public LoadPacket getLoadPacketCircularFast(Vector2f center, float radius) {
         if (this.spatialGrid == null) {
@@ -738,9 +758,8 @@ public class Realm {
         }
         final float radiusSq = radius * radius;
         // Bullets use a wider radius so projectiles fired by enemies beyond the
-        // viewport edge are still sent to the client. We do a SEPARATE query for
-        // bullets so the entity iteration order (which interacts with the
-        // MAX_ENEMIES_PER_LOAD cap) is unchanged from the original behavior.
+        // viewport edge are still sent to the client. Done as a SEPARATE query
+        // so the bullet cap doesn't compete with the enemy cap.
         final float bulletRadius = radius * 2f;
         final float bulletRadiusSq = bulletRadius * bulletRadius;
         LoadPacket load = null;
@@ -748,9 +767,14 @@ public class Realm {
             final List<Long> candidates = this.spatialGrid.queryRadius(center.x, center.y, radius);
             final List<Player> playersToLoadList = new ArrayList<>();
             final List<LootContainer> containersToLoad = new ArrayList<>();
-            final List<Bullet> bulletsToLoad = new ArrayList<>();
-            final List<Enemy> enemiesToLoad = new ArrayList<>();
             final List<Portal> portalsToLoad = new ArrayList<>();
+            // Collect candidates with their squared distance so we can sort
+            // before applying the cap. Without this, which N entities are
+            // chosen flickers tick-to-tick (HashSet iteration), making the
+            // server emit UnloadPackets for entities that are still alive
+            // and producing the visible "enemies disappear/reappear" bug.
+            final List<EnemyDist> enemyCandidates = new ArrayList<>();
+            final List<BulletDist> bulletCandidatesInner = new ArrayList<>();
 
             for (int i = 0; i < candidates.size(); i++) {
                 final long id = candidates.get(i);
@@ -763,18 +787,18 @@ public class Realm {
                 }
                 Enemy e = this.enemies.get(id);
                 if (e != null) {
-                    if (enemiesToLoad.size() >= MAX_ENEMIES_PER_LOAD) continue;
                     float dx = e.getPos().x - center.x;
                     float dy = e.getPos().y - center.y;
-                    if (dx * dx + dy * dy <= radiusSq) enemiesToLoad.add(e);
+                    final float distSq = dx * dx + dy * dy;
+                    if (distSq <= radiusSq) enemyCandidates.add(new EnemyDist(e, distSq));
                     continue;
                 }
                 Bullet b = this.bullets.get(id);
                 if (b != null) {
-                    if (bulletsToLoad.size() >= MAX_BULLETS_PER_LOAD) continue;
                     float dx = b.getPos().x - center.x;
                     float dy = b.getPos().y - center.y;
-                    if (dx * dx + dy * dy <= radiusSq) bulletsToLoad.add(b);
+                    final float distSq = dx * dx + dy * dy;
+                    if (distSq <= radiusSq) bulletCandidatesInner.add(new BulletDist(b, distSq));
                     continue;
                 }
                 Portal portal = this.portals.get(id);
@@ -790,6 +814,24 @@ public class Realm {
                     float dy = lc.getPos().y - center.y;
                     if (dx * dx + dy * dy <= radiusSq) containersToLoad.add(lc);
                 }
+            }
+
+            // Sort by distance and truncate to the cap. Closest stays loaded.
+            if (enemyCandidates.size() > MAX_ENEMIES_PER_LOAD) {
+                enemyCandidates.sort((a, b1) -> Float.compare(a.distSq, b1.distSq));
+            }
+            final List<Enemy> enemiesToLoad = new ArrayList<>(
+                    Math.min(enemyCandidates.size(), MAX_ENEMIES_PER_LOAD));
+            for (int i = 0, n = Math.min(enemyCandidates.size(), MAX_ENEMIES_PER_LOAD); i < n; i++) {
+                enemiesToLoad.add(enemyCandidates.get(i).enemy);
+            }
+            if (bulletCandidatesInner.size() > MAX_BULLETS_PER_LOAD) {
+                bulletCandidatesInner.sort((a, b1) -> Float.compare(a.distSq, b1.distSq));
+            }
+            final List<Bullet> bulletsToLoad = new ArrayList<>(
+                    Math.min(bulletCandidatesInner.size(), MAX_BULLETS_PER_LOAD));
+            for (int i = 0, n = Math.min(bulletCandidatesInner.size(), MAX_BULLETS_PER_LOAD); i < n; i++) {
+                bulletsToLoad.add(bulletCandidatesInner.get(i).bullet);
             }
 
             // Second pass: query the wider bullet radius for bullets only.

@@ -732,11 +732,27 @@ public class Enemy extends Entity {
         this.extrapolate();
     }
 
+    // AI decision tick — runs at the staggered AI rate (e.g. 32Hz). Sets
+    // dx/dy and schedules attacks. Movement APPLICATION lives in tickMove()
+    // and runs every server tick (64Hz) so motion stays smooth even when
+    // AI is staggered. dx/dy persist between AI ticks: a CHASE_SPEED set
+    // on one AI tick is applied on both physics ticks before the next AI
+    // tick, preserving the same effective movement rate as un-staggered AI.
     public void update(long realmId, RealmManagerServer mgr, double time) {
         final Realm targetRealm = mgr.getRealms().get(realmId);
         final Player player = mgr.getClosestPlayer(targetRealm.getRealmId(), this.getPos(), this.chaseRange);
         super.update(time);
         if (player == null) {
+            // No target in chase range — stop moving. Without this, dx/dy from
+            // the last AI tick (while a player WAS in range) would persist and
+            // tickMove would keep applying it, causing the enemy to drift away
+            // (and clients to extrapolate it through walls / back into view).
+            this.dx = 0;
+            this.dy = 0;
+            this.up = false;
+            this.down = false;
+            this.left = false;
+            this.right = false;
             return;
         }
 
@@ -787,21 +803,30 @@ public class Enemy extends Entity {
         } else {
             this.attack = false;
         }
+    }
 
-        // Apply movement with collision checks
-        if (!frozen) {
-            if (!targetRealm.getTileManager().collisionTile(this, this.dx, 0)
-                    && !targetRealm.getTileManager().collidesXLimit(this, this.dx)
-                    && !targetRealm.getTileManager().isVoidTile(
-                            this.pos.clone(this.getSize() / 2, this.getSize() / 2), this.dx, 0)) {
-                this.pos.x += this.dx;
-            }
-            if (!targetRealm.getTileManager().collisionTile(this, 0, this.dy)
-                    && !targetRealm.getTileManager().collidesYLimit(this, this.dy)
-                    && !targetRealm.getTileManager().isVoidTile(
-                            this.pos.clone(this.getSize() / 2, this.getSize() / 2), 0, this.dy)) {
-                this.pos.y += this.dy;
-            }
+    // Lightweight per-tick movement applier. Called every server tick (64Hz)
+    // even when AI is staggered, so enemies don't visibly stutter between AI
+    // decisions. Uses dx/dy set by the most recent update() AI call.
+    public void tickMove(Realm targetRealm) {
+        if (this.dx == 0 && this.dy == 0) return;
+        // Re-check freeze state in case STASIS/PARALYZED was applied between
+        // AI ticks. Without this, a freshly-paralyzed enemy could continue
+        // sliding for one tick on its last dx/dy before the AI tick zeroes it.
+        if (System.currentTimeMillis() < this.phaseTransitionUntil) return;
+        if (this.hasEffect(StatusEffectType.PARALYZED) || this.hasEffect(StatusEffectType.STASIS)) return;
+
+        if (!targetRealm.getTileManager().collisionTile(this, this.dx, 0)
+                && !targetRealm.getTileManager().collidesXLimit(this, this.dx)
+                && !targetRealm.getTileManager().isVoidTile(
+                        this.pos.clone(this.getSize() / 2, this.getSize() / 2), this.dx, 0)) {
+            this.pos.x += this.dx;
+        }
+        if (!targetRealm.getTileManager().collisionTile(this, 0, this.dy)
+                && !targetRealm.getTileManager().collidesYLimit(this, this.dy)
+                && !targetRealm.getTileManager().isVoidTile(
+                        this.pos.clone(this.getSize() / 2, this.getSize() / 2), 0, this.dy)) {
+            this.pos.y += this.dy;
         }
     }
 

@@ -214,6 +214,11 @@ public class RealmManagerServer implements Runnable {
 	private static final int UPDATE_TICK_DIVISOR = 8;     // Stats/inventory at 8Hz (was 16Hz — stats change slowly)
 	private static final int LOADMAP_TICK_DIVISOR = 16;
 	private static final int ENEMY_UPDATE_TICK_DIVISOR = 8; // Enemy health bars at 8Hz (was 16Hz)
+	// Enemy AI tick divisor — staggered so 1/N of enemies get updated each
+	// tick. MUST be a power of 2 (used as a bitmask). Value 2 gives each
+	// enemy a 32 Hz effective AI rate; value 4 → 16 Hz. 32 Hz is plenty
+	// for chase/attack AI and halves the per-tick cost at 10K enemies.
+	private static final int ENEMY_AI_TICK_DIVISOR = 2;
 
 	private boolean  isSetup = false;
 	
@@ -727,7 +732,8 @@ public class RealmManagerServer implements Runnable {
 									if (!toSend.isEmpty()) {
 										this.enqueueServerPacket(player.getValue(), toSend);
 									}
-									final UnloadPacket unloadDelta = oldLoad.difference(loadPacket);
+									final UnloadPacket unloadDelta = filterUnloadAgainstRealm(
+											oldLoad.difference(loadPacket), realm);
 									if (unloadDelta.isNotEmpty()) {
 										this.enqueueServerPacket(player.getValue(), unloadDelta);
 										for (long unloadedEnemy : unloadDelta.getEnemies()) {
@@ -744,7 +750,8 @@ public class RealmManagerServer implements Runnable {
 									if (!toSend.isEmpty()) {
 										this.enqueueServerPacket(player.getValue(), toSend);
 									}
-									final UnloadPacket unloadDelta = oldLoad.difference(loadPacket);
+									final UnloadPacket unloadDelta = filterUnloadAgainstRealm(
+											oldLoad.difference(loadPacket), realm);
 									if (unloadDelta.isNotEmpty()) {
 										this.enqueueServerPacket(player.getValue(), unloadDelta);
 										for (long unloadedEnemy : unloadDelta.getEnemies()) {
@@ -1140,19 +1147,46 @@ public class RealmManagerServer implements Runnable {
 	}
 
 	public Player getClosestPlayer(final long realmId, final Vector2f pos, final float limit) {
-		float best = Float.MAX_VALUE;
-		Player bestPlayer = null;
 		final Realm targetRealm = this.realms.get(realmId);
-		for (final Player player : targetRealm.getPlayers().values()) {
-			final float dist = player.getPos().distanceTo(pos);
-			if ((dist < best) && (dist <= limit)) {
-				best = dist;
-				bestPlayer = player;
+		if (targetRealm == null) return null;
+		// Squared distance comparison — avoids 10K+ Math.sqrt() calls per tick
+		// at high enemy density (each enemy.update() calls this once).
+		final float limitSq = limit * limit;
+		float bestSq = limitSq;
+		Player bestPlayer = null;
+		// Use the spatial grid to scope the player iteration when available.
+		// For 10K enemies × 40 players naive iteration would be 400K dist
+		// calcs/tick; the grid limits each enemy to the few players actually
+		// within chaseRange. Falls back to full-realm scan if grid disabled.
+		if (targetRealm.getSpatialGrid() != null) {
+			final List<Long> candidates =
+				targetRealm.getSpatialGrid().queryRadius(pos.x, pos.y, limit);
+			for (int i = 0; i < candidates.size(); i++) {
+				final Player player = targetRealm.getPlayers().get(candidates.get(i));
+				if (player == null) continue;
+				final float dx = player.getPos().x - pos.x;
+				final float dy = player.getPos().y - pos.y;
+				final float distSq = dx * dx + dy * dy;
+				if (distSq < bestSq) {
+					bestSq = distSq;
+					bestPlayer = player;
+				}
+			}
+		} else {
+			for (final Player player : targetRealm.getPlayers().values()) {
+				final float dx = player.getPos().x - pos.x;
+				final float dy = player.getPos().y - pos.y;
+				final float distSq = dx * dx + dy * dy;
+				if (distSq < bestSq) {
+					bestSq = distSq;
+					bestPlayer = player;
+				}
 			}
 		}
-		// Also consider active decoys — enemies should target the closest
-		// decoy the same way they target a real player.
-		final Player decoyProxy = targetRealm.getClosestDecoyTarget(pos, best);
+		// Decoys still use linear distance (existing API takes float). Pass
+		// sqrt of best squared distance so decoys can compete on equal terms.
+		final float bestDist = (bestPlayer != null) ? (float) Math.sqrt(bestSq) : limit;
+		final Player decoyProxy = targetRealm.getClosestDecoyTarget(pos, bestDist);
 		if (decoyProxy != null) {
 			bestPlayer = decoyProxy;
 		}
@@ -1414,8 +1448,51 @@ public class RealmManagerServer implements Runnable {
 			this.lastBulletUpdateNanos.put(realm.getRealmId(), nowNanos);
 			final float bulletScale = bulletDt * 64.0f;
 
+			// Stagger enemy AI decisions across ticks. Each enemy gets its
+			// AI processed once every ENEMY_AI_TICK_DIVISOR ticks (effective
+			// AI rate 32 Hz), spread by entity id so per-tick load is even.
+			// MOVEMENT APPLICATION (tickMove) still runs every tick (64 Hz)
+			// using the dx/dy set by the most recent AI call — without this
+			// split, staggering would cause enemies to visibly stutter
+			// between AI ticks. removeExpiredEffects also runs every tick
+			// (millisecond-scale timing, cheap length scan).
+			//
+			// SLEEP optimization: any enemy with no player inside its
+			// chaseRange is "dormant" — we skip update() entirely and zero
+			// its velocity (preventing drift). For 10K stationary enemies
+			// with one player nearby, this turns 10K heavy AI calls/tick
+			// into ~50 heavy + 9950 cheap dist checks. Snapshot the player
+			// list ONCE per tick to avoid recreating an iterator per enemy.
+			final int aiTick = this.tickCounter & (ENEMY_AI_TICK_DIVISOR - 1);
+			final Player[] activePlayers = realm.getPlayers().values().toArray(new Player[0]);
+			final int playerCount = activePlayers.length;
 			for (final Enemy enemy : realm.getEnemies().values()) {
-				enemy.update(realm.getRealmId(), this, time);
+				boolean awake = false;
+				if (playerCount > 0) {
+					final float ex = enemy.getPos().x;
+					final float ey = enemy.getPos().y;
+					final float chaseRangeSq = (float) enemy.getChaseRange() * enemy.getChaseRange();
+					for (int i = 0; i < playerCount; i++) {
+						final float pdx = activePlayers[i].getPos().x - ex;
+						final float pdy = activePlayers[i].getPos().y - ey;
+						if (pdx * pdx + pdy * pdy <= chaseRangeSq) {
+							awake = true;
+							break;
+						}
+					}
+				}
+				if (!awake) {
+					if (enemy.getDx() != 0f || enemy.getDy() != 0f) {
+						enemy.setDx(0);
+						enemy.setDy(0);
+					}
+					enemy.removeExpiredEffects();
+					continue;
+				}
+				if ((enemy.getId() & (ENEMY_AI_TICK_DIVISOR - 1)) == aiTick) {
+					enemy.update(realm.getRealmId(), this, time);
+				}
+				enemy.tickMove(realm);
 				enemy.removeExpiredEffects();
 			}
 			for (final Bullet bullet : realm.getBullets().values()) {
@@ -1880,6 +1957,60 @@ public class RealmManagerServer implements Runnable {
 	}
 
 	
+	/**
+	 * Strip from an UnloadPacket any entity ids that are STILL ALIVE in the
+	 * realm — those got dropped from the LoadPacket only because the per-
+	 * packet cap was hit, not because they actually left visibility. Without
+	 * this filter the client would explicitly delete cap-trimmed entities
+	 * every tick and re-add them on the next slow-path snapshot, producing
+	 * the visible "enemies and bullets flicker" artifact during dense
+	 * stress tests (500+ enemies in a small area).
+	 *
+	 * Returns the same UnloadPacket reference with its arrays replaced —
+	 * the upstream `enqueueServerPacket(...)` then ships only the entities
+	 * that are truly gone. UnloadPacket fields are mutable via Lombok @Data.
+	 */
+	private static UnloadPacket filterUnloadAgainstRealm(UnloadPacket pkt, Realm realm) {
+		if (pkt == null) return null;
+		// Players: never trim — players that left a viewer's load really should be unloaded
+		// (they may have walked far away). The client repopulates them via LoadPacket if they
+		// come back. We don't have a "still in realm" backstop for players because moving out
+		// of viewport is the normal case.
+		final Long[] enemiesIn = pkt.getEnemies();
+		if (enemiesIn != null && enemiesIn.length > 0) {
+			final List<Long> kept = new ArrayList<>(enemiesIn.length);
+			for (final Long id : enemiesIn) {
+				if (realm.getEnemy(id) == null) kept.add(id);
+			}
+			if (kept.size() != enemiesIn.length) pkt.setEnemies(kept.toArray(new Long[0]));
+		}
+		final Long[] bulletsIn = pkt.getBullets();
+		if (bulletsIn != null && bulletsIn.length > 0) {
+			final List<Long> kept = new ArrayList<>(bulletsIn.length);
+			for (final Long id : bulletsIn) {
+				if (realm.getBullets().get(id) == null) kept.add(id);
+			}
+			if (kept.size() != bulletsIn.length) pkt.setBullets(kept.toArray(new Long[0]));
+		}
+		final Long[] containersIn = pkt.getContainers();
+		if (containersIn != null && containersIn.length > 0) {
+			final List<Long> kept = new ArrayList<>(containersIn.length);
+			for (final Long id : containersIn) {
+				if (realm.getLoot().get(id) == null) kept.add(id);
+			}
+			if (kept.size() != containersIn.length) pkt.setContainers(kept.toArray(new Long[0]));
+		}
+		final Long[] portalsIn = pkt.getPortals();
+		if (portalsIn != null && portalsIn.length > 0) {
+			final List<Long> kept = new ArrayList<>(portalsIn.length);
+			for (final Long id : portalsIn) {
+				if (realm.getPortals().get(id) == null) kept.add(id);
+			}
+			if (kept.size() != portalsIn.length) pkt.setPortals(kept.toArray(new Long[0]));
+		}
+		return pkt;
+	}
+
 	public void enqueueServerPacket(final Packet packet) {
 		this.outboundPacketQueue.add(packet);
 	}
