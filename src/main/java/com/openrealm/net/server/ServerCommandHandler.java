@@ -380,6 +380,68 @@ public class ServerCommandHandler {
                         "Killed " + toKill.size() + " enemies within " + radiusTiles + " tiles"));
     }
 
+    @CommandHandler(value="event", description="Admin: spawn a realm event by id (no id = list). Usage: /event {EVENT_ID}")
+    @AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_MODERATOR})
+    public static void invokeSpawnEvent(RealmManagerServer mgr, Player target, ServerCommandMessage message)
+            throws Exception {
+        // No args: print the event catalog so the admin can pick one without
+        // grepping the data files.
+        if (message.getArgs() == null || message.getArgs().size() < 1) {
+            final StringBuilder sb = new StringBuilder("Realm events:");
+            if (GameDataManager.REALM_EVENTS != null) {
+                final java.util.List<com.openrealm.game.model.RealmEventModel> sorted =
+                        new ArrayList<>(GameDataManager.REALM_EVENTS.values());
+                sorted.sort(java.util.Comparator.comparingInt(
+                        com.openrealm.game.model.RealmEventModel::getEventId));
+                for (final com.openrealm.game.model.RealmEventModel ev : sorted) {
+                    sb.append('\n').append("  ").append(ev.getEventId()).append(" — ").append(ev.getName());
+                }
+            }
+            mgr.enqueueServerPacket(target,
+                    TextPacket.from("SYSTEM", target.getName(), sb.toString()));
+            return;
+        }
+
+        final int eventId;
+        try {
+            eventId = Integer.parseInt(message.getArgs().get(0));
+        } catch (NumberFormatException nfe) {
+            throw new IllegalArgumentException("EVENT_ID must be an integer (got '"
+                    + message.getArgs().get(0) + "')");
+        }
+
+        if (GameDataManager.REALM_EVENTS == null) {
+            throw new IllegalStateException("Realm event registry not loaded yet");
+        }
+        final com.openrealm.game.model.RealmEventModel eventModel =
+                GameDataManager.REALM_EVENTS.get(eventId);
+        if (eventModel == null) {
+            throw new IllegalArgumentException("No realm event with id " + eventId
+                    + " — run /event with no args to list available ids");
+        }
+
+        // The overseer owns the spawn flow (setpiece stamp, boss spawn,
+        // active-event tracking, minion-wave thresholds, minimap markers).
+        // Static maps (nexus, vault) don't have an overseer — bail with a
+        // clear error so the admin retries from a regular zone.
+        final Realm playerRealm = mgr.findPlayerRealm(target.getId());
+        if (playerRealm == null) {
+            throw new IllegalStateException("No realm for player " + target.getName());
+        }
+        final com.openrealm.net.realm.RealmOverseer overseer = playerRealm.getOverseer();
+        if (overseer == null) {
+            throw new IllegalStateException(
+                    "Current realm has no overseer (nexus/vault/static map) — run from an outdoor realm");
+        }
+
+        log.info("Player {} (admin) /event {} ({}) in realm {}",
+                target.getName(), eventId, eventModel.getName(), playerRealm.getRealmId());
+        overseer.spawnRealmEvent(eventModel);
+        mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
+                "Spawned event " + eventId + " — " + eventModel.getName()
+                        + " (check minimap for the boss pin)"));
+    }
+
     @CommandHandler(value="seteffect", description="Add or remove Player stat effects")
 	@AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_MODERATOR})
     public static void invokeSetEffect(RealmManagerServer mgr, Player target, ServerCommandMessage message)

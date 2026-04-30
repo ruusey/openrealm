@@ -378,17 +378,60 @@ public class RealmOverseer {
             if (zone != null) zoneName = zone.getDisplayName();
         }
         broadcastTaunt(String.format(event.getAnnounceMessage(), zoneName));
+        // Immediate marker broadcast so the pin appears on the minimap
+        // before the next 3s periodic re-broadcast.
+        broadcastEventMarker(activeEvent, boss, event);
         log.info("[REALM_EVENT] Spawned '{}' at tile ({}, {}), boss entityId={}, duration={}s",
             event.getName(), tileX, tileY, boss.getId(), event.getDurationSeconds());
+    }
+
+    // Re-broadcast event markers every 192 ticks (~3s @ 64 TPS) so the
+    // minimap stays populated even for newly-joined players. Lower than
+    // EVENT_CHECK_INTERVAL_TICKS so markers appear quickly after spawn.
+    private static final int EVENT_MARKER_INTERVAL_TICKS = 192;
+
+    /**
+     * Broadcast a marker for one active event so clients can pin it on
+     * the minimap. Sent as a TextPacket with sender "EVENT_MARKER" —
+     * the client filters this from chat and parses the body into an
+     * {eventId, x, y, name} record. REMOVE messages clear the pin.
+     */
+    private void broadcastEventMarker(Realm.ActiveRealmEvent evt, Enemy boss, RealmEventModel eventModel) {
+        if (boss == null || eventModel == null) return;
+        // Format: "ADD|eventId|bossId|x|y|name"
+        final float x = boss.getPos().x + boss.getSize() / 2f;
+        final float y = boss.getPos().y + boss.getSize() / 2f;
+        final String body = String.format("ADD|%d|%d|%.0f|%.0f|%s",
+                evt.eventId, evt.bossEnemyId, x, y, eventModel.getName());
+        for (var p : realm.getPlayers().values()) {
+            if (p == null || p.isHeadless() || p.isBot()) continue;
+            try {
+                mgr.enqueueServerPacket(p, TextPacket.create("EVENT_MARKER", p.getName(), body));
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private void broadcastEventMarkerRemove(long bossEnemyId) {
+        final String body = "REMOVE|" + bossEnemyId;
+        for (var p : realm.getPlayers().values()) {
+            if (p == null || p.isHeadless() || p.isBot()) continue;
+            try {
+                mgr.enqueueServerPacket(p, TextPacket.create("EVENT_MARKER", p.getName(), body));
+            } catch (Exception ignored) {}
+        }
     }
 
     /**
      * Process all active realm events each tick:
      * - Check minion wave HP thresholds
      * - Check timeout
+     * - Periodically re-broadcast event-marker pins so the minimap UI
+     *   stays in sync (also covers players who joined mid-event).
      */
     private void processActiveEvents() {
         if (realm.getActiveRealmEvents().isEmpty()) return;
+
+        final boolean broadcastMarkers = (tickCounter % EVENT_MARKER_INTERVAL_TICKS == 0);
 
         final Iterator<Realm.ActiveRealmEvent> it = realm.getActiveRealmEvents().iterator();
         while (it.hasNext()) {
@@ -413,8 +456,15 @@ public class RealmOverseer {
                 continue;
             }
 
+            // Re-broadcast minimap marker every few seconds so the pin
+            // stays present and tracks the boss's current position.
+            final RealmEventModel evtModel = GameDataManager.REALM_EVENTS.get(evt.eventId);
+            if (broadcastMarkers && evtModel != null) {
+                broadcastEventMarker(evt, boss, evtModel);
+            }
+
             // Check minion wave HP thresholds
-            RealmEventModel eventModel = GameDataManager.REALM_EVENTS.get(evt.eventId);
+            RealmEventModel eventModel = evtModel;
             if (eventModel == null || eventModel.getMinionWaves() == null) continue;
 
             float bossHpPercent = (float) boss.getHealth() / (float) (boss.getStats().getHp());
@@ -470,6 +520,7 @@ public class RealmOverseer {
      */
     private void completeRealmEvent(Realm.ActiveRealmEvent evt) {
         evt.completed = true;
+        broadcastEventMarkerRemove(evt.bossEnemyId);
         RealmEventModel eventModel = GameDataManager.REALM_EVENTS.get(evt.eventId);
 
         // Remove surviving minions
@@ -497,6 +548,7 @@ public class RealmOverseer {
      */
     private void timeoutRealmEvent(Realm.ActiveRealmEvent evt) {
         evt.completed = true;
+        broadcastEventMarkerRemove(evt.bossEnemyId);
         RealmEventModel eventModel = GameDataManager.REALM_EVENTS.get(evt.eventId);
 
         // Remove boss
