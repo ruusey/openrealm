@@ -6,7 +6,6 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import com.openrealm.game.contants.GlobalConstants;
 import com.openrealm.game.data.GameDataManager;
-import com.openrealm.game.data.GameSpriteManager;
 import com.openrealm.game.entity.Enemy;
 import com.openrealm.game.entity.Monster;
 import com.openrealm.game.math.Vector2f;
@@ -162,7 +161,6 @@ public class RealmOverseer {
 
             Enemy enemy = new Monster(Realm.RANDOM.nextLong(), toSpawn.getEnemyId(),
                 spawnPos.clone(), toSpawn.getSize(), toSpawn.getAttackId());
-            enemy.setSpriteSheet(GameSpriteManager.getSpriteSheet(toSpawn));
             enemy.setDifficulty(diff);
             enemy.setHealth((int) (enemy.getHealth() * diff));
             enemy.getStats().setHp((short) (enemy.getStats().getHp() * diff));
@@ -208,7 +206,6 @@ public class RealmOverseer {
         float diff = realm.getZoneDifficulty(spawnPos.x, spawnPos.y) * 2.0f;
         Enemy boss = new Monster(Realm.RANDOM.nextLong(), eventBoss.getEnemyId(),
             spawnPos.clone(), eventBoss.getSize(), eventBoss.getAttackId());
-        boss.setSpriteSheet(GameSpriteManager.getSpriteSheet(eventBoss));
         boss.setDifficulty(diff);
         boss.setHealth((int) (boss.getHealth() * diff));
         boss.getStats().setHp((short) (boss.getStats().getHp() * diff));
@@ -300,7 +297,6 @@ public class RealmOverseer {
         float diff = realm.getZoneDifficulty(spawnPos.x, spawnPos.y) * eventMult;
         Enemy boss = new Monster(Realm.RANDOM.nextLong(), bossModel.getEnemyId(),
             spawnPos.clone(), bossModel.getSize(), bossModel.getAttackId());
-        boss.setSpriteSheet(GameSpriteManager.getSpriteSheet(bossModel));
         boss.setDifficulty(diff);
         boss.setHealth((int) (boss.getHealth() * diff));
         boss.getStats().setHp((short) (boss.getStats().getHp() * diff));
@@ -397,7 +393,6 @@ public class RealmOverseer {
             float minionDiff = realm.getZoneDifficulty(minionPos.x, minionPos.y) * waveMult;
             Enemy minion = new Monster(Realm.RANDOM.nextLong(), minionModel.getEnemyId(),
                 minionPos, minionModel.getSize(), minionModel.getAttackId());
-            minion.setSpriteSheet(GameSpriteManager.getSpriteSheet(minionModel));
             minion.setDifficulty(minionDiff);
             minion.setHealth((int) (minion.getHealth() * minionDiff));
             minion.getStats().setHp((short) (minion.getStats().getHp() * minionDiff));

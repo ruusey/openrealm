@@ -110,14 +110,4 @@ public class OpenRealmServerDataService implements OpenRealmDataService{
         return OpenRealmServerDataService.REQUEST_MAPPER.readValue(response.body(), responseClass);
     }
 
-    public static void main(String[] args) {
-        OpenRealmClientDataService service = new OpenRealmClientDataService(HttpClient.newHttpClient(), "http://localhost/", null);
-        LoginRequestDto login = new LoginRequestDto("ru-admin@jrealm.com", "password");
-        try {
-            final SessionTokenDto response = service.executePost("/admin/account/login", login, SessionTokenDto.class);
-            System.out.println(response.getToken());
-        } catch (Exception e) {
-            System.out.println("Failed to login. " + e.getMessage());
-        }
-    }
 }

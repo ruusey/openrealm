@@ -1,16 +1,12 @@
 package com.openrealm.game.entity;
 
-import com.badlogic.gdx.graphics.g2d.SpriteBatch;
-import com.badlogic.gdx.graphics.g2d.TextureRegion;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
 import com.openrealm.game.contants.ProjectileFlag;
 import com.openrealm.game.contants.StatusEffectType;
-import com.openrealm.game.data.GameDataManager;
 import com.openrealm.game.math.Vector2f;
-import com.openrealm.game.model.ProjectileGroup;
 
 import lombok.Data;
 import lombok.EqualsAndHashCode;
@@ -27,7 +23,6 @@ public class Bullet extends GameObject  {
     private boolean isEnemy;
     private boolean playerHit;
     private boolean enemyHit;
-    private float tfAngle = (float) (Math.PI / 2);
 
     /**
      * Projectile behavior flags (ProjectileFlag IDs): PLAYER_PROJECTILE(10),
@@ -327,28 +322,4 @@ public class Bullet extends GameObject  {
         this.pos.y = centerY + radius * (float) Math.sin(startPhase);
     }
 
-    @Override
-    public void render(SpriteBatch batch) {
-        if (this.getSpriteSheet() == null) return;
-        TextureRegion frame = this.getSpriteSheet().getCurrentFrame();
-        if (frame == null) return;
-
-        final ProjectileGroup group = GameDataManager.PROJECTILE_GROUPS.get(this.getProjectileId());
-        final float angleOffset = Float.parseFloat(group.getAngleOffset());
-
-        // Convert angle to degrees for LibGDX (counter-clockwise positive)
-        float rotationDeg;
-        if (angleOffset > 0.0f) {
-            rotationDeg = (float) Math.toDegrees(-this.getAngle() + (this.tfAngle + angleOffset));
-        } else {
-            rotationDeg = (float) Math.toDegrees(-this.getAngle() + this.tfAngle);
-        }
-
-        float wx = this.pos.getWorldVar().x;
-        float wy = this.pos.getWorldVar().y;
-        float halfSize = this.size / 2f;
-
-        // draw with rotation around center
-        batch.draw(frame, wx, wy, halfSize, halfSize, this.size, this.size, 1f, 1f, rotationDeg);
-    }
 }

@@ -1,6 +1,5 @@
 package com.openrealm.game.entity.item;
 
-import com.badlogic.gdx.graphics.g2d.SpriteBatch;
 import java.util.UUID;
 
 import com.openrealm.game.contants.LootTier;
@@ -53,11 +52,6 @@ public class Chest extends LootContainer {
     @Override
     public boolean isEmpty() {
         return false;
-    }
-
-    @Override
-    public void render(SpriteBatch batch) {
-        super.render(batch);
     }
 
     @Override

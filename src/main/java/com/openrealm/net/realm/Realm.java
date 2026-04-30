@@ -14,12 +14,10 @@ import java.util.stream.Collectors;
 import com.openrealm.account.dto.ChestDto;
 import com.openrealm.account.dto.GameItemRefDto;
 import com.openrealm.account.dto.PlayerAccountDto;
-import com.openrealm.game.OpenRealmGame;
 import com.openrealm.game.contants.CharacterClass;
 import com.openrealm.game.contants.GlobalConstants;
 import com.openrealm.game.contants.LootTier;
 import com.openrealm.game.data.GameDataManager;
-import com.openrealm.game.data.GameSpriteManager;
 import com.openrealm.game.entity.Bullet;
 import com.openrealm.game.entity.Enemy;
 import com.openrealm.game.entity.GameObject;
@@ -29,8 +27,6 @@ import com.openrealm.game.entity.Portal;
 import com.openrealm.game.entity.item.Chest;
 import com.openrealm.game.entity.item.GameItem;
 import com.openrealm.game.entity.item.LootContainer;
-import com.openrealm.game.graphics.Sprite;
-import com.openrealm.game.graphics.SpriteSheet;
 import com.openrealm.game.math.Rectangle;
 import com.openrealm.game.math.Vector2f;
 import com.openrealm.game.model.DungeonGraphNode;
@@ -38,7 +34,6 @@ import com.openrealm.game.model.EnemyGroup;
 import com.openrealm.game.model.EnemyModel;
 import com.openrealm.game.model.MapModel;
 import com.openrealm.game.model.OverworldZone;
-import com.openrealm.game.model.PortalModel;
 import com.openrealm.game.model.ProjectileGroup;
 import com.openrealm.game.model.TerrainGenerationParameters;
 import com.openrealm.game.tile.TileManager;
@@ -445,8 +440,6 @@ public class Realm {
     public long addPlayerIfNotExists(Player player) {
         if (!this.players.containsKey(player.getId())) {
             this.acquirePlayerLock();
-            final SpriteSheet sheet = GameSpriteManager.loadClassSprites(CharacterClass.valueOf(player.getClassId()));
-            player.setSpriteSheet(sheet);
             this.players.put(player.getId(), player);
             if (this.spatialGrid != null) {
                 this.spatialGrid.insert(player.getId(), player.getPos().x, player.getPos().y);
@@ -521,14 +514,6 @@ public class Realm {
     public long addBulletIfNotExists(Bullet b) {
         final Bullet existing = this.bullets.get(b.getId());
         if (existing == null) {
-            final ProjectileGroup pg = GameDataManager.PROJECTILE_GROUPS.get(b.getProjectileId());
-            final SpriteSheet bulletSprite = GameSpriteManager.getSpriteSheet(pg);
-            final Sprite bulletImage = bulletSprite.getSprites().get(0);
-
-            if (pg.getAngleOffset() != null) {
-                bulletImage.setAngleOffset(Float.parseFloat(pg.getAngleOffset()));
-            }
-            b.setSpriteSheet(bulletSprite);
             this.bullets.put(b.getId(), b);
             if (this.spatialGrid != null) {
                 this.spatialGrid.insert(b.getId(), b.getPos().x, b.getPos().y);
@@ -584,9 +569,6 @@ public class Realm {
     public long addPortalIfNotExists(Portal portal) {
         final Portal existing = this.portals.get(portal.getId());
         if (existing == null) {
-            final PortalModel portalModel = GameDataManager.PORTALS.get((int) portal.getPortalId());
-            final Sprite portalSprite = GameSpriteManager.loadSprite(portalModel);
-            portal.setSprite(portalSprite);
             this.portals.put(portal.getId(), portal);
             if (this.spatialGrid != null) {
                 this.spatialGrid.insert(portal.getId(), portal.getPos().x, portal.getPos().y);
@@ -609,7 +591,6 @@ public class Realm {
         if (existing == null) {
             final EnemyModel model = GameDataManager.ENEMIES.get(enemy.getEnemyId());
             if (model != null) {
-                enemy.setSpriteSheet(SpriteSheet.fromSpriteModel(model));
                 enemy.setModel(model);
                 if (enemy.getStats() == null) {
                     enemy.setStats(model.getStats().clone());
@@ -650,13 +631,6 @@ public class Realm {
 
     public long addLootContainerIfNotExists(LootContainer lc) {
         if (!this.loot.containsKey(lc.getLootContainerId())) {
-            Sprite lootSprite = LootTier.getLootSprite(lc.getTier().tierId);
-            lc.setSprite(lootSprite.clone());
-            for (GameItem item : lc.getItems()) {
-                if (item != null) {
-                    GameDataManager.loadSpriteModel(item);
-                }
-            }
             this.loot.put(lc.getLootContainerId(), lc);
             if (this.spatialGrid != null) {
                 this.spatialGrid.insert(lc.getLootContainerId(), lc.getPos().x, lc.getPos().y);
@@ -1372,7 +1346,6 @@ public class Realm {
 
                 final Enemy enemy = new Monster(Realm.RANDOM.nextLong(), toSpawn.getEnemyId(),
                         spawnPos.clone(), toSpawn.getSize(), toSpawn.getAttackId());
-                enemy.setSpriteSheet(GameSpriteManager.getSpriteSheet(toSpawn));
                 enemy.setDifficulty(diff);
                 enemy.setHealth((int) (enemy.getHealth() * diff));
                 enemy.getStats().setHp((short) (enemy.getStats().getHp() * diff));
@@ -1467,7 +1440,6 @@ public class Realm {
 
             final Enemy enemy = new Monster(Realm.RANDOM.nextLong(), toSpawn.getEnemyId(),
                     spawnPos.clone(), toSpawn.getSize(), toSpawn.getAttackId());
-            enemy.setSpriteSheet(GameSpriteManager.getSpriteSheet(toSpawn));
             enemy.setDifficulty(diff);
             enemy.setHealth((int) (enemy.getHealth() * diff));
             enemy.getStats().setHp((short) (enemy.getStats().getHp() * diff));
@@ -1962,7 +1934,6 @@ public class Realm {
 
         final Enemy enemy = new Monster(Realm.RANDOM.nextLong(), toSpawn.getEnemyId(), spawnPos, toSpawn.getSize(),
                 toSpawn.getAttackId());
-        enemy.setSpriteSheet(GameSpriteManager.getSpriteSheet(toSpawn));
 
         final float diff = this.getZoneDifficulty(spawnPos.x, spawnPos.y);
         enemy.setDifficulty(diff);

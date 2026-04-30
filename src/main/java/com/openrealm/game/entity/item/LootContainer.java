@@ -1,12 +1,10 @@
 package com.openrealm.game.entity.item;
 
-import com.badlogic.gdx.graphics.g2d.SpriteBatch;
 import java.time.Instant;
 import java.util.UUID;
 
 import com.openrealm.game.contants.LootTier;
 import com.openrealm.game.data.GameDataManager;
-import com.openrealm.game.graphics.Sprite;
 import com.openrealm.game.math.Vector2f;
 import com.openrealm.net.realm.Realm;
 
@@ -23,7 +21,6 @@ public class LootContainer {
 
     private long lootContainerId;
     private LootTier tier;
-    private Sprite sprite;
     private String uid;
     private GameItem[] items;
     private Vector2f pos;
@@ -33,7 +30,6 @@ public class LootContainer {
     private boolean contentsChanged;
     public LootContainer(LootTier tier, Vector2f pos) {
         this.tier = tier;
-        this.sprite = LootTier.getLootSprite(tier.tierId);
         this.uid = UUID.randomUUID().toString();
         this.items = new GameItem[8];
         this.pos = pos;
@@ -51,7 +47,6 @@ public class LootContainer {
 
     public LootContainer(LootTier tier, Vector2f pos, GameItem loot) {
         this.tier = tier;
-        this.sprite = LootTier.getLootSprite(tier.tierId);
         this.pos = pos;
         this.uid = UUID.randomUUID().toString();
         this.items = new GameItem[8];
@@ -62,12 +57,8 @@ public class LootContainer {
 
     public LootContainer(LootTier tier, Vector2f pos, GameItem[] loot) {
         this.tier = tier;
-        this.sprite = LootTier.getLootSprite(tier.tierId);
         this.pos = pos;
         this.uid = UUID.randomUUID().toString();
-        // Pack items contiguously from slot 0 with no gaps.
-        // Arrays.copyOf(loot, 8) would leave nulls between items if the
-        // source had gaps; instead, filter nulls and pack to the front.
         this.items = new GameItem[8];
         int slot = 0;
         for (GameItem item : loot) {
@@ -101,33 +92,14 @@ public class LootContainer {
         return false;
     }
 
-    /**
-     * Determine the appropriate loot tier based on the items inside.
-     * WHITE(4): any untiered item (tier -1)
-     * BLUE(3): only potions (consumable items)
-     * CYAN(2): any item tier 8+
-     * PURPLE(1): tiered items 0-7, plus all forge materials (crystals + essences)
-     * BROWN(0): fallback / empty
-     * CHEST, GRAVE, and BOOSTED are never reclassified — callers set those
-     * explicitly and the auto-classifier would clobber them based on contents.
-     *
-     * Forge materials (crystals, essences) are forced into PURPLE regardless
-     * of their authored tier — crystals are tier 8 (would land in CYAN) and
-     * essences are tier -1 (would land in WHITE), but neither feels right
-     * for what is essentially "common forge currency". Treating them as
-     * PURPLE keeps players from confusing forge mats with rare drops.
-     *
-     * All consumables (potions) go to BLUE. Previously they fell through to
-     * BROWN, which made stat-potion drops indistinguishable from empty bags.
-     */
     public LootTier determineTier() {
         if (this.tier.equals(LootTier.CHEST) || this.tier.equals(LootTier.GRAVE)
                 || this.tier.equals(LootTier.BOOSTED))
             return this.tier;
 
         boolean hasUntiered = false;
-        boolean hasHighTier = false; // tier 8+
-        boolean hasLowTier = false;  // tier 0-7, non-consumable, OR a forge material
+        boolean hasHighTier = false;
+        boolean hasLowTier = false;
         boolean hasPotion = false;
         boolean hasAnyItem = false;
 
@@ -136,19 +108,12 @@ public class LootContainer {
             hasAnyItem = true;
             byte t = item.getTier();
             final String cat = item.getCategory();
-            // "shard" is the partial-crystal forge material (8 stat shards
-            // combine into a full crystal). Treat it the same as full
-            // crystals + essences so it lands in a PURPLE bag instead of a
-            // WHITE one — matches player expectation that all forge mats
-            // drop in purple.
             final boolean isForgeMaterial = "crystal".equals(cat)
                     || "essence".equals(cat)
                     || "shard".equals(cat);
             if (item.isConsumable()) {
                 hasPotion = true;
             } else if (isForgeMaterial) {
-                // Crystals + essences + shards classify as PURPLE regardless
-                // of authored tier.
                 hasLowTier = true;
             } else if (t == (byte) -1) {
                 hasUntiered = true;
@@ -172,10 +137,6 @@ public class LootContainer {
         this.contentsChanged = true;
     }
 
-    /**
-     * Re-pack items to fill gaps (nulls) left by removed items.
-     * After this call, all non-null items are contiguous from slot 0.
-     */
     public void repackItems() {
         GameItem[] packed = new GameItem[8];
         int slot = 0;
@@ -202,12 +163,6 @@ public class LootContainer {
             }
         }
         return idx;
-    }
-
-    public void render(SpriteBatch batch) {
-        if (this.sprite != null && this.sprite.getRegion() != null) {
-            batch.draw(this.sprite.getRegion(), this.pos.getWorldVar().x, this.pos.getWorldVar().y, 32, 32);
-        }
     }
 
     public int getNonEmptySlotCount() {

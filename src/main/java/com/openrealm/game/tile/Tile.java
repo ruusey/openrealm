@@ -1,8 +1,5 @@
 package com.openrealm.game.tile;
 
-import com.badlogic.gdx.graphics.g2d.SpriteBatch;
-import com.badlogic.gdx.graphics.g2d.TextureRegion;
-import com.openrealm.game.data.GameSpriteManager;
 import com.openrealm.game.math.Rectangle;
 import com.openrealm.game.math.Vector2f;
 import lombok.Data;
@@ -19,7 +16,6 @@ public class Tile {
 	// Bit 0 = collision, bit 1 = slows, bit 2 = damaging, bit 3 = isWall
 	private byte flags;
 
-	// Shared TileData instances — 16 possible flag combinations (4 bits)
 	private static final TileData[] SHARED_DATA = new TileData[16];
 	static {
 		for (int i = 0; i < 16; i++) {
@@ -93,14 +89,5 @@ public class Tile {
 
 	public boolean isDiscovered() {
 		return false;
-	}
-
-	public void render(SpriteBatch batch) {
-		TextureRegion region = GameSpriteManager.TILE_SPRITES.get((int) this.tileId);
-		if (region != null) {
-			float wx = (this.col * this.tileSize) - Vector2f.worldX;
-			float wy = (this.row * this.tileSize) - Vector2f.worldY;
-			batch.draw(region, wx, wy, this.tileSize, this.tileSize);
-		}
 	}
 }

@@ -1,11 +1,7 @@
 package com.openrealm.game.entity;
 
-import com.badlogic.gdx.graphics.g2d.SpriteBatch;
 import java.time.Instant;
 
-import com.openrealm.game.data.GameDataManager;
-import com.openrealm.game.data.GameSpriteManager;
-import com.openrealm.game.graphics.Sprite;
 import com.openrealm.game.math.Vector2f;
 import com.openrealm.net.Streamable;
 import com.openrealm.net.realm.Realm;
@@ -25,9 +21,8 @@ public class Portal {
     private long toRealmId;
     private long expires;
     private Vector2f pos;
-    private Sprite sprite;
     private String targetNodeId;
-    
+
     public Portal(long id, short portalId, Vector2f pos) {
         this.id = id;
         this.portalId = portalId;
@@ -35,7 +30,6 @@ public class Portal {
         this.toRealmId = 0;
         this.pos = pos;
         this.expires = Instant.now().toEpochMilli() + 35000;
-        this.sprite = GameSpriteManager.loadSprite(GameDataManager.PORTALS.get((int) portalId));
     }
 
     public Portal(short portalId, Vector2f pos) {
@@ -44,7 +38,6 @@ public class Portal {
         this.fromRealmId = 0;
         this.toRealmId = 0;
         this.expires = Instant.now().toEpochMilli() + 35000;
-        this.sprite = GameSpriteManager.loadSprite(GameDataManager.PORTALS.get((int) portalId));
     }
 
     public void linkPortal(Realm from, Realm to) {
@@ -88,11 +81,5 @@ public class Portal {
         return (this.id == other.getId()) && (this.portalId == other.getPortalId())
                 && this.fromRealmId == other.getFromRealmId() && this.getToRealmId() == other.getToRealmId()
                 && this.getPos().equals(other.getPos()) && (this.expires == other.getExpires());
-    }
-
-    public void render(SpriteBatch batch) {
-        if (this.sprite != null && this.sprite.getRegion() != null) {
-            batch.draw(this.sprite.getRegion(), this.pos.getWorldVar().x, this.pos.getWorldVar().y, 32, 32);
-        }
     }
 }

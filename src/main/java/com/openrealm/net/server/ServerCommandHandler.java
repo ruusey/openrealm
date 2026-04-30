@@ -19,7 +19,6 @@ import com.openrealm.account.dto.AccountProvision;
 import com.openrealm.account.dto.AccountSubscription;
 import com.openrealm.account.dto.CharacterDto;
 import com.openrealm.account.dto.PlayerAccountDto;
-import com.openrealm.game.GameLauncher;
 import com.openrealm.net.test.StressTestClient;
 import com.openrealm.game.contants.StatusEffectType;
 import com.openrealm.game.contants.GlobalConstants;
@@ -212,7 +211,7 @@ public class ServerCommandHandler {
     public static void invokeAbout(RealmManagerServer mgr, Player target, ServerCommandMessage message)
             throws Exception {
         final List<String> text = Arrays.asList(
-                "OpenRealm Server " + GameLauncher.GAME_VERSION,
+                "OpenRealm Server " + ServerGameLogic.GAME_VERSION,
                 "Players connected: " + mgr.getRealms().values().stream().map(realm -> realm.getPlayers().size()).collect(Collectors.summingInt(count -> count)),
                 "Players in my realm: " + mgr.findPlayerRealm(target.getId()).getPlayers().size());
         mgr.enqueChunkedText(target, text);
@@ -356,9 +355,13 @@ public class ServerCommandHandler {
         // a separate pass to collect IDs and a second pass to remove. Skip
         // the heavy enemyDeath() flow (XP, loot, overseer notify, level-up
         // text) since this is intended for stress-test cleanup, not gameplay.
+        // Skip INVINCIBLE entities so static NPCs (nexus healers, vault
+        // healer, lobby bosses) don't get wiped by /kill stress-test cleanup
+        // — they're tagged with permanentEffects:[6] and have no respawn path.
         final List<Enemy> toKill = new ArrayList<>();
         for (final Enemy e : realm.getEnemies().values()) {
             if (e == null || e.getDeath()) continue;
+            if (e.hasEffect(StatusEffectType.INVINCIBLE)) continue;
             final float dx = e.getPos().x - center.x;
             final float dy = e.getPos().y - center.y;
             if (dx * dx + dy * dy <= radiusSq) {

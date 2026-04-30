@@ -14,7 +14,6 @@ import com.openrealm.account.dto.LoginRequestDto;
 import com.openrealm.account.dto.PlayerAccountDto;
 import com.openrealm.account.dto.SessionTokenDto;
 import com.openrealm.account.service.OpenRealmServerDataService;
-import com.openrealm.game.OpenRealmGame;
 import com.openrealm.game.contants.CharacterClass;
 import com.openrealm.game.contants.EntityType;
 import com.openrealm.game.contants.StatusEffectType;
@@ -70,6 +69,10 @@ import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 public class ServerGameLogic {
+	public static final String GAME_VERSION = "0.6.0";
+	public static final int WINDOW_WIDTH = 1920;
+	public static final int WINDOW_HEIGHT = 1080;
+
 	/**
 	 * As of release 0.3.0 DATA_SERVICE static class variable is required for Game
 	 * functionality
@@ -737,8 +740,8 @@ public class ServerGameLogic {
 					resolvedClassId = targetCharacter.getStats().getClassId();
 				}
 				final CharacterClass cls = CharacterClass.valueOf(resolvedClassId != null ? resolvedClassId : 0);
-				final Vector2f playerPos = new Vector2f((0 + (OpenRealmGame.width / 2)) - GlobalConstants.PLAYER_SIZE - 350,
-						(0 + (OpenRealmGame.height / 2)) - GlobalConstants.PLAYER_SIZE);
+				final Vector2f playerPos = new Vector2f((0 + (WINDOW_WIDTH / 2)) - GlobalConstants.PLAYER_SIZE - 350,
+						(0 + (WINDOW_HEIGHT / 2)) - GlobalConstants.PLAYER_SIZE);
 				player = new Player(assignedId, playerPos, GlobalConstants.PLAYER_SIZE, cls);
 				final Realm targetRealm = mgr.getTopRealm();
 				if (targetRealm == null) {

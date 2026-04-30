@@ -3,9 +3,6 @@ package com.openrealm.game.contants;
 import java.util.HashMap;
 import java.util.Map;
 
-import com.openrealm.game.data.GameDataManager;
-import com.openrealm.game.graphics.Sprite;
-
 public enum LootTier {
     CHEST(-1), BROWN(0), PURPLE(1), CYAN(2), BLUE(3), WHITE(4), GRAVE(5), BOOSTED(6);
 
@@ -24,13 +21,5 @@ public enum LootTier {
 
     public static LootTier valueOf(byte tier) {
         return LootTier.map.get(tier);
-    }
-
-    public static Sprite getLootSprite(byte tier) {
-        if (LootTier.valueOf(tier).equals(GRAVE))
-            return GameDataManager.getGraveSprite();
-        if (LootTier.valueOf(tier).equals(CHEST))
-            return GameDataManager.getChestSprite();
-        return GameDataManager.getLootSprite(tier);
     }
 }

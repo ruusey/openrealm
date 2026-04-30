@@ -1,10 +1,8 @@
 package com.openrealm.game.tile;
 
-import com.badlogic.gdx.graphics.g2d.SpriteBatch;
 import java.util.ArrayList;
 import java.util.List;
 
-import com.openrealm.game.contants.GlobalConstants;
 import com.openrealm.game.data.GameDataManager;
 import com.openrealm.game.math.Rectangle;
 import com.openrealm.game.math.Vector2f;
@@ -98,12 +96,6 @@ public class TileMap {
     	return x > -1 && x<this.getWidth() && y>-1 && y<this.getHeight();
     }
 
-    public void render(SpriteBatch batch, Rectangle cam) {
-        for (Tile t : this.getBlocksInBounds(cam)) {
-            t.render(batch);
-        }
-    }
-    
     @SuppressWarnings("unused")
 	private Tile[][] to2dArray(Tile[] tiles){
     	Tile[][] result = new Tile[maxY(tiles)][maxX(tiles)];

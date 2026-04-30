@@ -6,12 +6,11 @@
 	<artifactId>openrealm</artifactId>
 	<version>0.6.0</version>
 	<name>openrealm</name>
-	<description>Game Server and Client for OpenRealm</description>
+	<description>Game Server for OpenRealm</description>
 	<properties>
 		<maven.compiler.source>17</maven.compiler.source>
 		<maven.compiler.target>17</maven.compiler.target>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-		<libgdx.version>1.12.1</libgdx.version>
 	</properties>
 	<dependencies>
 	<!-- https://mvnrepository.com/artifact/com.google.guava/guava -->
@@ -59,39 +58,10 @@
 			<version>2.15.2</version>
 		</dependency>
 
-		<!-- LibGDX -->
 		<dependency>
 			<groupId>org.java-websocket</groupId>
 			<artifactId>Java-WebSocket</artifactId>
 			<version>1.5.4</version>
-		</dependency>
-
-		<dependency>
-			<groupId>com.badlogicgames.gdx</groupId>
-			<artifactId>gdx</artifactId>
-			<version>${libgdx.version}</version>
-		</dependency>
-		<dependency>
-			<groupId>com.badlogicgames.gdx</groupId>
-			<artifactId>gdx-backend-lwjgl3</artifactId>
-			<version>${libgdx.version}</version>
-		</dependency>
-		<dependency>
-			<groupId>com.badlogicgames.gdx</groupId>
-			<artifactId>gdx-platform</artifactId>
-			<version>${libgdx.version}</version>
-			<classifier>natives-desktop</classifier>
-		</dependency>
-		<dependency>
-			<groupId>com.badlogicgames.gdx</groupId>
-			<artifactId>gdx-freetype</artifactId>
-			<version>${libgdx.version}</version>
-		</dependency>
-		<dependency>
-			<groupId>com.badlogicgames.gdx</groupId>
-			<artifactId>gdx-freetype-platform</artifactId>
-			<version>${libgdx.version}</version>
-			<classifier>natives-desktop</classifier>
 		</dependency>
 
 	</dependencies>
@@ -122,7 +92,7 @@
 					<createDependencyReducedPom>false</createDependencyReducedPom>
 					<transformers>
 						<transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-							<mainClass>com.openrealm.game.GameLauncher</mainClass>
+							<mainClass>com.openrealm.net.server.ServerLauncher</mainClass>
 						</transformer>
 						<transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer" />
 					</transformers>

@@ -77,7 +77,6 @@ import com.openrealm.game.tile.decorators.Grasslands0Decorator;
 import com.openrealm.game.tile.decorators.RealmDecorator;
 import com.openrealm.game.tile.decorators.RealmDecoratorBase;
 import com.openrealm.net.Packet;
-import com.openrealm.net.client.SocketClient;
 import com.openrealm.net.client.packet.LoadMapPacket;
 import com.openrealm.net.client.packet.LoadPacket;
 import com.openrealm.net.client.packet.CompactMovePacket;
@@ -219,6 +218,17 @@ public class RealmManagerServer implements Runnable {
 	// enemy a 32 Hz effective AI rate; value 4 → 16 Hz. 32 Hz is plenty
 	// for chase/attack AI and halves the per-tick cost at 10K enemies.
 	private static final int ENEMY_AI_TICK_DIVISOR = 2;
+
+	// Hard cap on concurrent ENEMY bullets per realm. The 1000-enemy stress
+	// test produced 15K live bullets (1.5 bullets/sec/enemy × ~10s lifetime)
+	// — bullet.update() and bullet→player collision iterate the full bullet
+	// map every tick, so 15K live bullets dominate CPU and crater TPS. With
+	// the cap, excess enemy attacks fail-fast at addProjectile (return null,
+	// no spatial-grid insert, no LoadPacket entry, no per-tick update). At
+	// the cap, attacks distribute across enemies fairly via the natural
+	// arrival ordering. PLAYER bullets always succeed regardless of cap so
+	// player attack feel is preserved.
+	private static final int MAX_ENEMY_BULLETS_PER_REALM = 1500;
 
 	private boolean  isSetup = false;
 	
@@ -2265,6 +2275,12 @@ public class RealmManagerServer implements Runnable {
 		if (player == null && !isEnemy)
 			return null;
 
+		// Drop new enemy bullets when the realm is at its bullet cap. Player
+		// bullets bypass the cap so attack feel stays consistent.
+		if (isEnemy && targetRealm.getBullets().size() >= MAX_ENEMY_BULLETS_PER_REALM) {
+			return null;
+		}
+
 		if (!isEnemy && player != null) {
 			damage = (short) (damage + player.getStats().getAtt());
 		}
@@ -2286,6 +2302,12 @@ public class RealmManagerServer implements Runnable {
 		final Player player = targetRealm.getPlayer(targetPlayerId);
 		if (player == null && !isEnemy)
 			return null;
+
+		// Same enemy-bullet cap as the dest-targeted overload above.
+		if (isEnemy && targetRealm.getBullets().size() >= MAX_ENEMY_BULLETS_PER_REALM) {
+			return null;
+		}
+
 		final ProjectileGroup pg = GameDataManager.PROJECTILE_GROUPS.get(projectileGroupId);
 		if (!isEnemy && player != null) {
 			damage = (short) (damage + player.getStats().getAtt());

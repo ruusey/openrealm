@@ -152,7 +152,6 @@ public class GameItem extends SpriteModel {
         } else {
             item.setEnchantments(new ArrayList<>());
         }
-        GameDataManager.loadSpriteModel(item);
         return item;
     }
 
@@ -161,7 +160,6 @@ public class GameItem extends SpriteModel {
         if (template == null) return null;
         final GameItem item = template.clone();
         item.setUid(gameItem.getItemUuid());
-        GameDataManager.loadSpriteModel(item);
         return item;
     }
     

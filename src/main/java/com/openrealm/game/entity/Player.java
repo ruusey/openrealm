@@ -1,7 +1,5 @@
 package com.openrealm.game.entity;
 
-import com.badlogic.gdx.graphics.g2d.SpriteBatch;
-import com.badlogic.gdx.graphics.g2d.TextureRegion;
 import java.io.DataOutputStream;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -13,21 +11,14 @@ import java.util.Set;
 import com.openrealm.account.dto.CharacterStatsDto;
 import com.openrealm.account.dto.GameItemRefDto;
 import com.openrealm.game.contants.CharacterClass;
-import com.openrealm.game.contants.GlobalConstants;
 import com.openrealm.game.contants.StatusEffectType;
 import com.openrealm.game.data.GameDataManager;
 import com.openrealm.game.entity.item.GameItem;
 import com.openrealm.game.entity.item.LootContainer;
 import com.openrealm.game.entity.item.Stats;
-import com.openrealm.game.graphics.Sprite;
 import com.openrealm.game.math.Vector2f;
 import com.openrealm.game.model.CharacterClassModel;
-import com.openrealm.game.state.PlayState;
-import com.openrealm.net.client.packet.UpdatePacket;
-import com.openrealm.net.core.IOService;
 import com.openrealm.net.entity.NetGameItemRef;
-import com.openrealm.util.KeyHandler;
-import com.openrealm.util.MouseHandler;
 import com.openrealm.util.Tuple;
 
 import lombok.AllArgsConstructor;
@@ -50,26 +41,19 @@ public class Player extends Entity {
 	private boolean headless;
 	@Builder.Default
 	private boolean bot = false;
-	// Chat role prefix cached at login for name coloring in chat.
-	// Values: "sysadmin", "admin", "mod", "editor", or null (regular player)
 	@Builder.Default
 	private String chatRole = "";
-	// Last input sequence number processed by the server (for client reconciliation)
 	@Builder.Default
 	private int lastInputSeq = 0;
-	// Sequence-numbered input queue fields for new movement netcode
 	@Builder.Default
 	private int lastProcessedInputSeq = 0;
-	// Last move direction observed from client (unit vector). (0,0) = stopped.
 	@Builder.Default
 	private float currentVx = 0f;
 	@Builder.Default
 	private float currentVy = 0f;
-	// Queue elements: float[]{seq (cast from int), vx, vy}
 	@Builder.Default
 	private transient java.util.Queue<float[]> inputQueue = new java.util.concurrent.ConcurrentLinkedQueue<>();
 
-	// Consumable potion storage (separate from inventory)
 	public static final int MAX_CONSUMABLE_POTIONS = 6;
 	public static final int HP_POTION_ITEM_ID = 296;
 	public static final int MP_POTION_ITEM_ID = 297;
@@ -78,18 +62,9 @@ public class Player extends Entity {
 	@Builder.Default
 	private int mpPotions = 0;
 
-	// Cosmetic dye id keyed in the client's dye-assets.json registry. 0 = no
-	// dye. Renderer resolves the id to a recolor strategy (solid color today;
-	// patterned cloths in the future). Persisted on the character so it
-	// survives logout but is implicitly cleared on permadeath (character is
-	// deleted, fresh char starts at dyeId=0).
 	@Builder.Default
 	private int dyeId = 0;
 
-	// Last known account fame for this player, refreshed at login and after
-	// each fame-shop purchase. NOT serialized to other clients; only used by
-	// the server to validate purchases without re-fetching the account on
-	// every request. Source of truth is the data service.
 	@Builder.Default
 	private transient long cachedAccountFame = 0L;
 
@@ -285,8 +260,6 @@ public class Player extends Entity {
 		for (GameItem item : equipment) {
 			if (item != null) {
 				stats = stats.concat(item.getStats());
-				// Pixel-forge enchantments: each entry adds +deltaValue to the
-				// matching stat. statId order: 0=VIT 1=WIS 2=HP 3=MP 4=ATT 5=DEF 6=SPD 7=DEX
 				if (item.getEnchantments() != null && !item.getEnchantments().isEmpty()) {
 					for (com.openrealm.game.entity.item.Enchantment e : item.getEnchantments()) {
 						final short delta = e.getDeltaValue();
@@ -304,11 +277,9 @@ public class Player extends Entity {
 				}
 			}
 		}
-		// ARMOR_BROKEN zeroes defense
 		if (this.hasEffect(StatusEffectType.ARMOR_BROKEN)) {
 			stats.setDef((short) 0);
 		}
-		// ARMORED doubles defense (cannot apply while armor broken)
 		else if (this.hasEffect(StatusEffectType.ARMORED)) {
 			stats.setDef((short) (stats.getDef() * 2));
 		}
@@ -362,194 +333,6 @@ public class Player extends Entity {
 	@Override
 	public int getMana() {
 		return this.mana;
-	}
-
-	@Override
-	public void updateEffectState() {
-		if (this.getSpriteSheet() == null)
-			return;
-		if (this.hasEffect(StatusEffectType.INVINCIBLE)) {
-			if (!this.getSpriteSheet().hasEffect(Sprite.EffectEnum.INVINCIBLE)) {
-				this.getSpriteSheet().setEffect(Sprite.EffectEnum.INVINCIBLE);
-			}
-		} else if (this.hasEffect(StatusEffectType.INVISIBLE)) {
-			if (!this.getSpriteSheet().hasEffect(Sprite.EffectEnum.SEPIA)) {
-				this.getSpriteSheet().setEffect(Sprite.EffectEnum.SEPIA);
-			}
-		} else if (this.hasEffect(StatusEffectType.HEALING)) {
-			if (!this.getSpriteSheet().hasEffect(Sprite.EffectEnum.REDISH)) {
-				this.getSpriteSheet().setEffect(Sprite.EffectEnum.REDISH);
-			}
-		} else if (this.hasEffect(StatusEffectType.ARMOR_BROKEN)) {
-			if (!this.getSpriteSheet().hasEffect(Sprite.EffectEnum.ARMOR_BROKEN)) {
-				this.getSpriteSheet().setEffect(Sprite.EffectEnum.ARMOR_BROKEN);
-			}
-		} else if (this.hasEffect(StatusEffectType.ARMORED)) {
-			if (!this.getSpriteSheet().hasEffect(Sprite.EffectEnum.ARMORED)) {
-				this.getSpriteSheet().setEffect(Sprite.EffectEnum.ARMORED);
-			}
-		} else if (this.hasEffect(StatusEffectType.SPEEDY)) {
-			if (!this.getSpriteSheet().hasEffect(Sprite.EffectEnum.DECAY)) {
-				this.getSpriteSheet().setEffect(Sprite.EffectEnum.DECAY);
-			}
-		} else if (this.hasNoEffects()) {
-			if (!this.getSpriteSheet().hasEffect(Sprite.EffectEnum.NORMAL)) {
-				this.getSpriteSheet().setEffect(Sprite.EffectEnum.NORMAL);
-			}
-		}
-	}
-
-	@Override
-	public void render(SpriteBatch batch) {
-		if (this.getSpriteSheet() == null)
-			return;
-
-		this.updateEffectState();
-
-		// Draw outline: 4 offset black silhouettes
-		TextureRegion frame = this.getSpriteSheet().getCurrentFrame();
-		if (frame != null) {
-			int rs = GlobalConstants.PLAYER_RENDER_SIZE;
-			float offset = (rs - this.size) / 2f;
-			float wx = this.pos.getWorldVar().x - offset;
-			float wy = this.pos.getWorldVar().y - offset;
-			float ox = 2.5f;
-			com.openrealm.game.graphics.ShaderManager.applyEffect(batch, Sprite.EffectEnum.SILHOUETTE);
-			if (this.left) {
-				batch.draw(frame, wx + rs + ox, wy, -rs, rs);
-				batch.draw(frame, wx + rs - ox, wy, -rs, rs);
-				batch.draw(frame, wx + rs, wy + ox, -rs, rs);
-				batch.draw(frame, wx + rs, wy - ox, -rs, rs);
-			} else {
-				batch.draw(frame, wx + ox, wy, rs, rs);
-				batch.draw(frame, wx - ox, wy, rs, rs);
-				batch.draw(frame, wx, wy + ox, rs, rs);
-				batch.draw(frame, wx, wy - ox, rs, rs);
-			}
-			com.openrealm.game.graphics.ShaderManager.clearEffect(batch);
-
-			// Apply shader effect
-			Sprite.EffectEnum currentEffect = this.getSpriteSheet().getCurrentEffect();
-			com.openrealm.game.graphics.ShaderManager.applyEffect(batch, currentEffect);
-
-			if (this.left) {
-				batch.draw(frame, wx + rs, wy, -rs, rs);
-			} else {
-				batch.draw(frame, wx, wy, rs, rs);
-			}
-
-			// Clear shader
-			com.openrealm.game.graphics.ShaderManager.clearEffect(batch);
-		}
-	}
-
-	public void input(MouseHandler mouse, KeyHandler key) {
-		if (key.up.down) {
-			this.up = true;
-		} else {
-			this.up = false;
-		}
-		if (key.down.down) {
-			this.down = true;
-		} else {
-			this.down = false;
-		}
-		if (key.left.down) {
-			this.left = true;
-		} else {
-			this.left = false;
-		}
-		if (key.right.down) {
-			this.right = true;
-		} else {
-			this.right = false;
-		}
-		if (this.up && this.down) {
-			this.up = false;
-			this.down = false;
-		}
-		if (this.right && this.left) {
-			this.right = false;
-			this.left = false;
-		}
-	}
-
-	public void queueInput(int seq, float vx, float vy) {
-		if (this.inputQueue == null) this.inputQueue = new java.util.concurrent.ConcurrentLinkedQueue<>();
-		if (seq > this.lastProcessedInputSeq) {
-			this.inputQueue.add(new float[]{(float) seq, vx, vy});
-		}
-	}
-
-	public int getUpperExperienceBound() {
-		if (this.experience > GameDataManager.EXPERIENCE_LVLS.maxExperience())
-			return GameDataManager.EXPERIENCE_LVLS.maxExperience();
-
-		final Tuple<Integer, Integer> expRange = GameDataManager.EXPERIENCE_LVLS.getParsedMap()
-				.get(GameDataManager.EXPERIENCE_LVLS.getLevel(this.experience));
-
-		return expRange.getY();
-	}
-
-	public float getExperiencePercent() {
-		if (this.experience > GameDataManager.EXPERIENCE_LVLS.maxExperience())
-			return 1.0f;
-
-		final Tuple<Integer, Integer> expRange = GameDataManager.EXPERIENCE_LVLS.getParsedMap()
-				.get(GameDataManager.EXPERIENCE_LVLS.getLevel(this.experience));
-
-		return ((float) this.experience / (float) expRange.getY());
-	}
-
-	public float getHealthPercent() {
-		return this.healthpercent;
-	}
-
-	public float getManaPercent() {
-		return this.manapercent;
-	}
-
-	public int incrementExperience(long experience) {
-		final long newExperience = this.getExperience() + experience;
-		final int currentLevel = GameDataManager.EXPERIENCE_LVLS.getLevel(this.experience);
-		final int newLevel = GameDataManager.EXPERIENCE_LVLS.getLevel(newExperience);
-		final CharacterClassModel classModel = GameDataManager.CHARACTER_CLASSES.get(this.getClassId());
-		final int levelsGained = newLevel - currentLevel;
-		if (levelsGained > 0) {
-			// Apply random stat increases for EACH level gained
-			for (int i = 0; i < levelsGained; i++) {
-				this.setStats(this.getStats().concat(classModel.getRandomLevelUpStats()));
-			}
-			// Restore health and mana to new max after all stat increases
-			this.setHealth(this.stats.getHp());
-			this.setMana(this.stats.getMp());
-		}
-		this.setExperience(newExperience);
-		return levelsGained;
-	}
-
-	public void applyUpdate(UpdatePacket packet, PlayState state) {
-		this.name = packet.getPlayerName();
-		this.stats = packet.getStats().asStats();
-		this.inventory = packet.getInventory() == null ? null
-				: IOService.mapModel(packet.getInventory(), GameItem[].class);
-		if (this.inventory != null) {
-			for (GameItem item : this.inventory) {
-				if (item != null) {
-					GameDataManager.loadSpriteModel(item);
-				}
-			}
-		}
-		this.health = packet.getHealth();
-		this.mana = packet.getMana();
-		if (packet.getPlayerId() == state.getPlayerId()) {
-			state.getPui().setEquipment(this.inventory);
-		}
-		this.experience = packet.getExperience();
-		// Update animation speeds based on current stats
-		if (this.getSpriteSheet() != null && this.stats != null) {
-			this.getSpriteSheet().updateDurationsFromStats(this.stats.getSpd(), this.stats.getDex());
-		}
 	}
 
 	public void applyState(com.openrealm.net.client.packet.PlayerStatePacket packet) {
@@ -638,6 +421,58 @@ public class Player extends Entity {
 		return this.right;
 	}
 
+	public void queueInput(int seq, float vx, float vy) {
+		if (this.inputQueue == null) this.inputQueue = new java.util.concurrent.ConcurrentLinkedQueue<>();
+		if (seq > this.lastProcessedInputSeq) {
+			this.inputQueue.add(new float[]{(float) seq, vx, vy});
+		}
+	}
+
+	public int getUpperExperienceBound() {
+		if (this.experience > GameDataManager.EXPERIENCE_LVLS.maxExperience())
+			return GameDataManager.EXPERIENCE_LVLS.maxExperience();
+
+		final Tuple<Integer, Integer> expRange = GameDataManager.EXPERIENCE_LVLS.getParsedMap()
+				.get(GameDataManager.EXPERIENCE_LVLS.getLevel(this.experience));
+
+		return expRange.getY();
+	}
+
+	public float getExperiencePercent() {
+		if (this.experience > GameDataManager.EXPERIENCE_LVLS.maxExperience())
+			return 1.0f;
+
+		final Tuple<Integer, Integer> expRange = GameDataManager.EXPERIENCE_LVLS.getParsedMap()
+				.get(GameDataManager.EXPERIENCE_LVLS.getLevel(this.experience));
+
+		return ((float) this.experience / (float) expRange.getY());
+	}
+
+	public float getHealthPercent() {
+		return this.healthpercent;
+	}
+
+	public float getManaPercent() {
+		return this.manapercent;
+	}
+
+	public int incrementExperience(long experience) {
+		final long newExperience = this.getExperience() + experience;
+		final int currentLevel = GameDataManager.EXPERIENCE_LVLS.getLevel(this.experience);
+		final int newLevel = GameDataManager.EXPERIENCE_LVLS.getLevel(newExperience);
+		final CharacterClassModel classModel = GameDataManager.CHARACTER_CLASSES.get(this.getClassId());
+		final int levelsGained = newLevel - currentLevel;
+		if (levelsGained > 0) {
+			for (int i = 0; i < levelsGained; i++) {
+				this.setStats(this.getStats().concat(classModel.getRandomLevelUpStats()));
+			}
+			this.setHealth(this.stats.getHp());
+			this.setMana(this.stats.getMp());
+		}
+		this.setExperience(newExperience);
+		return levelsGained;
+	}
+
 	public void write(DataOutputStream stream) throws Exception {
 		stream.writeLong(this.getId());
 		stream.writeUTF(this.getName());
@@ -685,10 +520,6 @@ public class Player extends Entity {
 		for (GameItem item : items) {
 			if (item == null)
 				continue;
-			// Stackable items (shards, essence) merge into existing stacks of
-			// the same itemId before spilling into a free slot, mirroring the
-			// pickup logic in ServerItemHelper. This keeps trade-received
-			// stacks consistent with how loot pickups behave.
 			if (item.isStackable()) {
 				int remaining = item.getStackCount();
 				for (int i = 4; i < this.inventory.length && remaining > 0; i++) {

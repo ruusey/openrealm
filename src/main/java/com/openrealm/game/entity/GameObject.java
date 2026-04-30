@@ -1,8 +1,5 @@
 package com.openrealm.game.entity;
 
-import com.badlogic.gdx.graphics.g2d.SpriteBatch;
-import com.badlogic.gdx.graphics.g2d.TextureRegion;
-import com.openrealm.game.graphics.SpriteSheet;
 import com.openrealm.game.math.Rectangle;
 import com.openrealm.game.math.Vector2f;
 import com.openrealm.net.entity.NetObjectMovement;
@@ -27,14 +24,9 @@ public abstract class GameObject {
     protected String name = "";
 
     public boolean discovered;
-    private SpriteSheet spriteSheet;
 
     public GameObject(long id, Vector2f origin, int spriteX, int spriteY, int size) {
         this(id, origin, size);
-    }
-
-    public void setSpriteSheet(final SpriteSheet spriteSheet) {
-        this.spriteSheet = spriteSheet;
     }
 
     public GameObject(long id, Vector2f origin, int size) {
@@ -77,15 +69,12 @@ public abstract class GameObject {
         this.pos = new Vector2f(lerpX, lerpY);
     }
 
-    // Snap threshold: if server position is more than 3 tiles away, snap instead of lerp.
-    // This handles teleports (planewalker cloak, portals) where lerp would cause a slow slide.
     private static final float SNAP_DISTANCE_SQ = (3 * 32) * (3 * 32);
 
     public void applyMovementLerp(NetObjectMovement packet, float pct) {
         float dx = packet.getPosX() - this.pos.x;
         float dy = packet.getPosY() - this.pos.y;
         if (dx * dx + dy * dy > SNAP_DISTANCE_SQ) {
-            // Large jump — snap directly (teleport, portal, etc.)
             this.pos.x = packet.getPosX();
             this.pos.y = packet.getPosY();
         } else {
@@ -114,66 +103,35 @@ public abstract class GameObject {
         this.dy = packet.getVelY();
     }
 
-    // --- Dead reckoning support ---
-    // When a server correction arrives, we store the offset between where we
-    // predicted the entity to be and where the server says it actually is.
-    // Each frame, we blend this offset toward zero so the entity smoothly
-    // converges on the corrected position without visible snapping.
     protected float correctionOffsetX = 0f;
     protected float correctionOffsetY = 0f;
-    // Correction blend rate per tick — higher = faster snap, lower = smoother.
-    // 0.15 means ~85% of error corrected within 10 ticks (~160ms at 64Hz client).
     private static final float CORRECTION_BLEND_RATE = 0.15f;
-    // If correction offset exceeds this, snap immediately (teleport/portal)
     private static final float CORRECTION_SNAP_THRESHOLD_SQ = (3 * 32) * (3 * 32);
 
-    /**
-     * Apply a dead reckoning server correction. Instead of snapping the entity,
-     * we compute the error between our local position and the server's corrected
-     * position, and store it as an offset to be blended out over subsequent frames.
-     * Velocity is always updated immediately since it affects future extrapolation.
-     */
     public void applyServerCorrection(NetObjectMovement packet) {
         float errorX = packet.getPosX() - this.pos.x;
         float errorY = packet.getPosY() - this.pos.y;
 
         if (errorX * errorX + errorY * errorY > CORRECTION_SNAP_THRESHOLD_SQ) {
-            // Large error — snap directly (teleport, realm transition, etc.)
             this.pos.x = packet.getPosX();
             this.pos.y = packet.getPosY();
             this.correctionOffsetX = 0f;
             this.correctionOffsetY = 0f;
         } else {
-            // Accumulate correction offset — will be blended out each tick
             this.correctionOffsetX += errorX;
             this.correctionOffsetY += errorY;
         }
-        // Always update velocity immediately — it drives future extrapolation
         this.dx = packet.getVelX();
         this.dy = packet.getVelY();
         this.bounds = new Rectangle(this.pos, this.size, this.size);
     }
 
-    /**
-     * Advance position by velocity (dead reckoning extrapolation) and blend
-     * any pending correction offset. Call this once per client tick for entities
-     * that use dead reckoning (enemies). For players, use blendCorrectionOffset()
-     * instead since movePlayer() handles velocity advancement with collision checks.
-     */
     public void extrapolate() {
-        // Advance position using current velocity
         this.pos.x += this.dx;
         this.pos.y += this.dy;
-
-        // Blend correction offset
         this.blendCorrectionOffset();
     }
 
-    /**
-     * Blend pending correction offset toward zero without advancing by velocity.
-     * Use this for entities where velocity advancement is handled elsewhere
-     * (e.g., players with collision-checked movement in PlayState.movePlayer).
-     */
     public void blendCorrectionOffset() {
         if (this.correctionOffsetX != 0f || this.correctionOffsetY != 0f) {
             float blendX = this.correctionOffsetX * CORRECTION_BLEND_RATE;
@@ -183,7 +141,6 @@ public abstract class GameObject {
             this.correctionOffsetX -= blendX;
             this.correctionOffsetY -= blendY;
 
-            // Zero out tiny residuals to avoid perpetual micro-corrections
             if (this.correctionOffsetX * this.correctionOffsetX +
                 this.correctionOffsetY * this.correctionOffsetY < 0.01f) {
                 this.correctionOffsetX = 0f;
@@ -205,17 +162,6 @@ public abstract class GameObject {
     public Vector2f clone() {
         Vector2f newVector = new Vector2f(this.pos.x, this.pos.y);
         return newVector;
-    }
-
-    public void render(SpriteBatch batch) {
-        if (this.spriteSheet == null) {
-            GameObject.log.warn("GameObject {} does not have a sprite sheet!");
-            return;
-        }
-        TextureRegion frame = this.spriteSheet.getCurrentFrame();
-        if (frame != null) {
-            batch.draw(frame, this.pos.getWorldVar().x, this.pos.getWorldVar().y, this.size, this.size);
-        }
     }
 
     @Override
