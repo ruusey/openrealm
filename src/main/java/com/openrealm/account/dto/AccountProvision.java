@@ -32,6 +32,11 @@ public enum AccountProvision {
      */
     public boolean satisfies(AccountProvision required) {
         if (this == required) return true;
+        // OPENREALM_DEMO is a *flag*, not a privilege tier — it marks an
+        // account as a guest with restricted features. ADMIN and SYS_ADMIN
+        // must NOT satisfy DEMO; otherwise admins get the 1-character /
+        // 1-chest cap intended for guest accounts. DEMO only matches DEMO.
+        if (required == OPENREALM_DEMO) return false;
         if (this == OPENREALM_SYS_ADMIN) return true;
         if (this == OPENREALM_ADMIN) return required != OPENREALM_SYS_ADMIN;
         if (required == OPENREALM_PLAYER) return true; // everyone satisfies PLAYER
