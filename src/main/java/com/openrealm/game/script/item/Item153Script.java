@@ -38,10 +38,13 @@ public class Item153Script extends UseableItemScriptBase {
                 com.openrealm.game.contants.EntityType.PLAYER, target,
                 com.openrealm.game.contants.TextEffect.PLAYER_INFO, "HEALING + DAMAGING");
         }
-        // Broadcast paladin seal visual (golden heal ring)
+        // Broadcast paladin seal — its own holy-cross visual so it doesn't
+        // read as a priest heal. Tier carries through for the colour tint.
+        final int tier = (abilityItem.getItemId() >= 263 && abilityItem.getItemId() <= 269)
+                ? abilityItem.getItemId() - 263 : Math.max(0, abilityItem.getTier());
         final Vector2f center = player.getPos().clone(player.getSize() / 2, player.getSize() / 2);
         this.mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.aoeEffect(
-            CreateEffectPacket.EFFECT_HEAL_RADIUS, center.x, center.y, 160.0f, (short) 1500));
+            CreateEffectPacket.EFFECT_PALADIN_SEAL, center.x, center.y, 160.0f, (short) 1500, (byte) tier));
     }
 
     @Override

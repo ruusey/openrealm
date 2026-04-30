@@ -385,16 +385,98 @@ public class ServerCommandHandler {
     public static void invokeSetEffect(RealmManagerServer mgr, Player target, ServerCommandMessage message)
             throws Exception {
         if (message.getArgs() == null || message.getArgs().size() < 1)
-            throw new IllegalArgumentException("Usage: /seteffect {add | clear} {EFFECT_ID} {DURATION (sec)}");
+            throw new IllegalArgumentException("Usage: /seteffect {add | clear} [EFFECT_ID] [DURATION_SEC]");
         log.info("Player {} set effect {}", target.getName(), message);
-        switch (message.getArgs().get(0)) {
-        case "add":
-            target.addEffect(StatusEffectType.valueOf(Short.valueOf(message.getArgs().get(1))),
-                    1000 * Long.parseLong(message.getArgs().get(2)));
+        final String sub = message.getArgs().get(0);
+        switch (sub) {
+        case "add": {
+            if (message.getArgs().size() < 3)
+                throw new IllegalArgumentException("Usage: /seteffect add {EFFECT_ID} {DURATION_SEC}");
+            final short effectIdRaw;
+            try {
+                effectIdRaw = Short.parseShort(message.getArgs().get(1));
+            } catch (NumberFormatException nfe) {
+                throw new IllegalArgumentException("EFFECT_ID must be an integer (got '" + message.getArgs().get(1) + "')");
+            }
+            final StatusEffectType effect = StatusEffectType.valueOf(effectIdRaw);
+            if (effect == null)
+                throw new IllegalArgumentException("Unknown EFFECT_ID " + effectIdRaw + " — see StatusEffectType for valid ids");
+            final long durationSec;
+            try {
+                durationSec = Long.parseLong(message.getArgs().get(2));
+            } catch (NumberFormatException nfe) {
+                throw new IllegalArgumentException("DURATION_SEC must be an integer (got '" + message.getArgs().get(2) + "')");
+            }
+            if (durationSec <= 0)
+                throw new IllegalArgumentException("DURATION_SEC must be > 0");
+            target.addEffect(effect, 1000L * durationSec);
+            mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
+                    "Applied " + effect.name() + " for " + durationSec + "s"));
             break;
+        }
         case "clear":
             target.resetEffects();
+            mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
+                    "Cleared all status effects"));
             break;
+        default:
+            throw new IllegalArgumentException("Unknown subcommand '" + sub + "' — expected 'add' or 'clear'");
+        }
+    }
+
+    @CommandHandler(value="fame", description="Admin: award ACCOUNT fame to self or another player. Usage: /fame {AMOUNT} [PLAYER_NAME]")
+    @AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_MODERATOR})
+    public static void invokeGrantFame(RealmManagerServer mgr, Player target, ServerCommandMessage message)
+            throws Exception {
+        if (message.getArgs() == null || message.getArgs().size() < 1)
+            throw new IllegalArgumentException("Usage: /fame {AMOUNT} [PLAYER_NAME]");
+
+        final long amount;
+        try {
+            amount = Long.parseLong(message.getArgs().get(0));
+        } catch (NumberFormatException nfe) {
+            throw new IllegalArgumentException("AMOUNT must be a positive integer (got '" + message.getArgs().get(0) + "')");
+        }
+        if (amount <= 0)
+            throw new IllegalArgumentException("AMOUNT must be > 0");
+
+        // Resolve recipient: caller by default, or named player if provided.
+        final Player recipient;
+        if (message.getArgs().size() >= 2) {
+            final String name = message.getArgs().get(1);
+            recipient = mgr.findPlayerByName(name);
+            if (recipient == null)
+                throw new IllegalArgumentException("Player '" + name + "' is not online");
+        } else {
+            recipient = target;
+        }
+
+        final Long newTotal;
+        try {
+            newTotal = ServerGameLogic.DATA_SERVICE.executePost(
+                    "/data/account/" + recipient.getAccountUuid() + "/fame/grant?amount=" + amount,
+                    null, Long.class);
+        } catch (Exception ex) {
+            log.warn("[FAME] grant failed for {} ({} fame): {}", recipient.getName(), amount, ex.getMessage());
+            throw new IllegalArgumentException("Grant failed: " + ex.getMessage());
+        }
+        // Refresh the cached fame total so the next /fame-store open reflects it.
+        if (newTotal != null) recipient.setCachedAccountFame(newTotal);
+
+        log.info("[FAME] Player {} granted {} account fame to {} (now {})",
+                target.getName(), amount, recipient.getName(),
+                newTotal != null ? newTotal.toString() : "?");
+
+        // Confirm to the granter.
+        mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
+                "Granted " + amount + " account fame to "
+                        + (recipient.getId() == target.getId() ? "yourself" : recipient.getName())
+                        + (newTotal != null ? " (now " + newTotal + ")" : "")));
+        // Notify the recipient if it's a different player.
+        if (recipient.getId() != target.getId()) {
+            mgr.enqueueServerPacket(recipient, TextPacket.from("SYSTEM", recipient.getName(),
+                    target.getName() + " granted you " + amount + " account fame"
+                            + (newTotal != null ? " (now " + newTotal + ")" : "")));
         }
     }
 

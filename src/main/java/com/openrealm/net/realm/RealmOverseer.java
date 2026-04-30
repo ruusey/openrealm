@@ -30,9 +30,17 @@ import lombok.extern.slf4j.Slf4j;
  */
 @Slf4j
 public class RealmOverseer {
-    private static final int CHECK_INTERVAL_TICKS = 640; // ~10 seconds at 64 TPS
+    // Population top-up cadence. Was 640 ticks (~10s) which made the realm
+    // feel empty after a single sweep — players cleared an area and waited
+    // 10s with nothing to fight. 320 ticks (~5s) gives a noticeable
+    // refresh rate without hammering CPU.
+    private static final int CHECK_INTERVAL_TICKS = 320;
     private static final float REPOPULATE_THRESHOLD = 0.5f;
     private static final float OVERPOPULATE_THRESHOLD = 1.5f;
+    /** Hard cap on enemies spawned per population check, so a freshly
+     *  cleared zone doesn't get carpet-bombed in one tick — the refill
+     *  drips in over a few cycles, ~5 enemies/sec sustained. */
+    private static final int MAX_REFILL_PER_CHECK = 25;
     private static final double EVENT_SPAWN_CHANCE = 0.25;
 
     // Realm events
@@ -113,14 +121,19 @@ public class RealmOverseer {
             if (targetPopulation == 0) targetPopulation = 500;
         }
 
-        int currentPop = realm.getEnemies().size();
-        float ratio = (float) currentPop / targetPopulation;
-
-        if (ratio < REPOPULATE_THRESHOLD) {
-            int toSpawn = (int) ((targetPopulation * 0.75f) - currentPop);
-            spawnReplacements(Math.min(toSpawn, 50));
-            log.debug("[OVERSEER] Population low ({}/{}), spawned {} replacements",
-                currentPop, targetPopulation, Math.min(toSpawn, 50));
+        // Always-top-up policy: refill any deficit between the target and
+        // the current count, capped at MAX_REFILL_PER_CHECK per cycle.
+        // Old behaviour waited until population dropped below 50% which
+        // made the realm feel persistently empty after even modest
+        // farming. Now there's a steady trickle of new enemies as
+        // players clear them, so each zone keeps its identity over time.
+        final int currentPop = realm.getEnemies().size();
+        final int deficit = targetPopulation - currentPop;
+        if (deficit > 0) {
+            final int toSpawn = Math.min(deficit, MAX_REFILL_PER_CHECK);
+            spawnReplacements(toSpawn);
+            log.debug("[OVERSEER] Top-up: pop {}/{}, spawned {} replacements",
+                currentPop, targetPopulation, toSpawn);
         }
     }
 

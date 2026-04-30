@@ -15,12 +15,22 @@ public class ServerLauncher {
     public static void main(String[] args) {
         ServerLauncher.log.info("Starting OpenRealm Server {}...", ServerGameLogic.GAME_VERSION);
 
-        if (args.length == 0) {
-            ServerLauncher.log.info("NO ARGS PROVIDED. Assuming local data service is running at 127.0.0.1");
-            args = new String[] { "127.0.0.1" };
+        // Pick the first arg that looks like a data-service address (URL or
+        // IP/hostname). Skips legacy flag-style args (e.g. "-server") that
+        // may still be in deployed systemd units after the launcher stopped
+        // using them — without this, an old unit-file would feed "-server"
+        // as args[0], producing "http://-server/ping" and a startup crash.
+        String addr = null;
+        for (final String a : args) {
+            if (a == null || a.isEmpty() || a.startsWith("-")) continue;
+            addr = a;
+            break;
+        }
+        if (addr == null) {
+            ServerLauncher.log.info("NO USABLE ADDR ARG. Assuming local data service is running at 127.0.0.1");
+            addr = "127.0.0.1";
         }
 
-        final String addr = args[0];
         final String dataServiceUrl;
         if (addr.startsWith("http://")) {
             dataServiceUrl = addr.endsWith("/") ? addr : addr + "/";

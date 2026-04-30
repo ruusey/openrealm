@@ -189,7 +189,16 @@ public class Realm {
     }
 
     static class TrapState {
+        /** Time between landing and the trap becoming dangerous. Without
+         *  this gap, an enemy already standing where the throw lands would
+         *  arm + trigger the trap on the same tick — the player saw enemies
+         *  vanish without ever seeing the placed-trap or trigger visuals.
+         *  500ms gives both visuals time to display and matches the
+         *  expected "huntress sets trap, lures enemy in" gameplay loop. */
+        static final long ARM_TIME_MS = 500;
+
         final long placeTime;   // when the trap was placed (after throw lands)
+        final long armReadyTime;// when the trap becomes dangerous (placeTime + ARM_TIME_MS)
         final long expireTime;  // when the trap disappears if not triggered
         final long sourcePlayerId;
         final float x, y;
@@ -205,6 +214,7 @@ public class Realm {
                   float triggerRadius, short effectId, long effectDuration, int damage,
                   long lifetimeMs, byte tier) {
             this.placeTime = java.time.Instant.now().toEpochMilli() + throwDelayMs;
+            this.armReadyTime = this.placeTime + ARM_TIME_MS;
             this.expireTime = this.placeTime + lifetimeMs;
             this.sourcePlayerId = sourcePlayerId;
             this.x = x;
@@ -217,6 +227,7 @@ public class Realm {
         }
 
         boolean hasLanded() { return java.time.Instant.now().toEpochMilli() >= placeTime; }
+        boolean isArmed()   { return java.time.Instant.now().toEpochMilli() >= armReadyTime; }
         boolean isExpired() { return java.time.Instant.now().toEpochMilli() >= expireTime; }
     }
 
@@ -1565,6 +1576,12 @@ public class Realm {
                     }
                 }
             }
+            // Don't allow the trap to trigger until its arm window has
+            // elapsed. Without this, an enemy already standing on the
+            // landing spot would arm + trigger the trap in the same tick
+            // and the placed-trap visual would never be visible — players
+            // saw enemies vanish without ever seeing a snare.
+            if (!trap.isArmed()) continue;
             boolean triggered = false;
             final float triggerSq = trap.triggerRadius * trap.triggerRadius;
             for (final Enemy enemy : this.enemies.values()) {

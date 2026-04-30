@@ -11,6 +11,7 @@ import com.openrealm.game.entity.Player;
 public enum CharacterClass {
     ROGUE(0), ARCHER(1), WIZARD(2), PRIEST(3), WARRIOR(4), KNIGHT(5), PALLADIN(6),
     ASSASSIN(7), NECROMANCER(8), MYSTIC(9), TRICKSTER(10), SORCERER(11), HUNTRESS(12),
+    NINJA(13),
 
     ROBE(-1), LEATHER(-2), HEAVY(-3), ALL(-4),
     STAFF_USER(-5), WAND_USER(-6), DAGGER_USER(-7), BOW_USER(-8);
@@ -41,7 +42,7 @@ public enum CharacterClass {
     public static boolean isLeatherClass(CharacterClass c) {
         return c.equals(CharacterClass.ARCHER) || c.equals(CharacterClass.ROGUE)
             || c.equals(CharacterClass.ASSASSIN) || c.equals(CharacterClass.TRICKSTER)
-            || c.equals(CharacterClass.HUNTRESS);
+            || c.equals(CharacterClass.HUNTRESS) || c.equals(CharacterClass.NINJA);
     }
 
     public static boolean isHeavyClass(CharacterClass c) {
@@ -73,7 +74,7 @@ public enum CharacterClass {
     }
 
     public static boolean isDaggerUser(CharacterClass c) {
-        return c.equals(ROGUE) || c.equals(ASSASSIN) || c.equals(TRICKSTER);
+        return c.equals(ROGUE) || c.equals(ASSASSIN) || c.equals(TRICKSTER) || c.equals(NINJA);
     }
 
     public static boolean isBowUser(CharacterClass c) {

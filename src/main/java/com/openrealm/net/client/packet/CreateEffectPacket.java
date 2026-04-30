@@ -69,6 +69,8 @@ public class CreateEffectPacket extends Packet {
 	public static final short EFFECT_WIZARD_BURST = 10;    // Wizard spell
 	public static final short EFFECT_KNIGHT_SHOCKWAVE = 11;// Knight shield
 	public static final short EFFECT_WARRIOR_BUFF = 12;    // Warrior helm
+	public static final short EFFECT_NINJA_DASH = 13;      // Ninja dash trail
+	public static final short EFFECT_PALADIN_SEAL = 14;    // Paladin holy cross
 
 	public static CreateEffectPacket aoeEffect(short type, float x, float y, float radius, short duration) {
 		return aoeEffect(type, x, y, radius, duration, (byte) 0);
