@@ -33,8 +33,10 @@ public class NinjaDashScript extends UseableItemScriptBase {
     // Distance scales linearly with tier: T0 = 3 tiles, T6 = 5 tiles.
     private static final float MIN_DASH_TILES = 3.0f;
     private static final float MAX_DASH_TILES = 5.0f;
-    // Blade-fury hit radius around the dash line segment.
-    private static final float BLADE_RADIUS_TILES = 2.0f;
+    // Blade-fury hit radius around the dash line segment. 3 tiles (was
+    // 2) so the vortex of blades reliably catches enemies the ninja
+    // *passes near* — not just the ones directly on the dash line.
+    private static final float BLADE_RADIUS_TILES = 3.0f;
     // INVINCIBLE window. Slightly longer than the visual dash duration so
     // the brief gap between teleport and client interpolation is covered.
     private static final long INVINCIBLE_DURATION_MS = 400L;
