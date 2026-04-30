@@ -97,11 +97,14 @@ public class SorcererScepterScript extends UseableItemScriptBase {
                 this.mgr.enemyDeath(targetRealm, currentTarget);
             }
 
-            // Broadcast chain lightning arc visual from origin to target
+            // Broadcast chain lightning arc visual from origin to target.
+            // Tier (item id − MIN_ID) tints the bolt so a T6 scepter zaps
+            // with a more dramatic colour than a T0.
             Vector2f targetCenter = currentTarget.getPos().clone(currentTarget.getSize() / 2, currentTarget.getSize() / 2);
+            final byte arcTier = (byte) Math.max(0, abilityItem.getItemId() - MIN_ID);
             this.mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.lineEffect(
                 CreateEffectPacket.EFFECT_CHAIN_LIGHTNING,
-                chainOrigin.x, chainOrigin.y, targetCenter.x, targetCenter.y, (short) 1200));
+                chainOrigin.x, chainOrigin.y, targetCenter.x, targetCenter.y, (short) 1200, arcTier));
 
             // Track hit and prepare next chain
             hitEnemyIds.add(currentTarget.getId());

@@ -79,9 +79,10 @@ public class NecromancerSkullScript extends UseableItemScriptBase {
             }
         }
 
-        // Broadcast vampirism visual
+        // Broadcast vampirism visual — tier drives the colour so players
+        // can tell a T0 skull from a T6 at a glance.
         this.mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.aoeEffect(
-            CreateEffectPacket.EFFECT_VAMPIRISM, center.x, center.y, radius, (short) 1500));
+            CreateEffectPacket.EFFECT_VAMPIRISM, center.x, center.y, radius, (short) 1500, (byte) tier));
 
         // Flat heal (matches RotMG wiki) — heals regardless of damage dealt
         int maxHp = player.getComputedStats().getHp();

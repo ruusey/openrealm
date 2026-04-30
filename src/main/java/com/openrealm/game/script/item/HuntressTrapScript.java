@@ -17,7 +17,8 @@ import com.openrealm.net.realm.RealmManagerServer;
  */
 public class HuntressTrapScript extends UseableItemScriptBase {
 
-    private static final int ITEM_ID = 288;
+    private static final int MIN_ID = 288;
+    private static final int MAX_ID = 294;
     private static final long THROW_DURATION_MS = 1060;
     private static final long TRAP_LIFETIME_MS = 10000;
 
@@ -27,12 +28,12 @@ public class HuntressTrapScript extends UseableItemScriptBase {
 
     @Override
     public boolean handles(int itemId) {
-        return itemId == ITEM_ID;
+        return itemId >= MIN_ID && itemId <= MAX_ID;
     }
 
     @Override
     public int getTargetItemId() {
-        return ITEM_ID;
+        return MIN_ID;
     }
 
     @Override
@@ -64,14 +65,18 @@ public class HuntressTrapScript extends UseableItemScriptBase {
         // Default 3.5 tiles = 112px
         float radiusPx = 3.5f * 32.0f;
 
-        // Broadcast throw arc visual
+        // Broadcast throw arc visual. Tier flows through to the throw, the
+        // armed-trap ground ring, and the trigger snap so the whole sequence
+        // shares one colour family per tier.
+        final byte tier = (byte) Math.max(0, abilityItem.getItemId() - MIN_ID);
         final Vector2f playerCenter = player.getPos().clone(player.getSize() / 2, player.getSize() / 2);
         this.mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.lineEffect(
                 CreateEffectPacket.EFFECT_TRAP_THROW,
-                playerCenter.x, playerCenter.y, center.x, center.y, (short) THROW_DURATION_MS));
+                playerCenter.x, playerCenter.y, center.x, center.y, (short) THROW_DURATION_MS, tier));
 
-        // Register the trap
+        // Register the trap (tier is propagated to TrapState so the
+        // armed-ring + trigger-snap visuals match the throw colour).
         targetRealm.registerTrap(THROW_DURATION_MS, player.getId(),
-                center.x, center.y, radiusPx, effectId, effectDuration, damage, TRAP_LIFETIME_MS);
+                center.x, center.y, radiusPx, effectId, effectDuration, damage, TRAP_LIFETIME_MS, tier);
     }
 }

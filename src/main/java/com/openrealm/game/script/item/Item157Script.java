@@ -41,10 +41,12 @@ public class Item157Script extends UseableItemScriptBase {
         }
         final int healAmount = HEAL_BY_TIER[Math.min(tier, HEAL_BY_TIER.length - 1)];
 
-        // Broadcast heal radius visual
+        // Broadcast heal radius visual — tier carries through so a T6 tome
+        // pulses a different colour from a T0, signalling rare loot at a glance.
         final Vector2f center = player.getPos().clone(player.getSize() / 2, player.getSize() / 2);
         this.mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.aoeEffect(
-            CreateEffectPacket.EFFECT_HEAL_RADIUS, center.x, center.y, 224.0f, (short) 1500));
+            CreateEffectPacket.EFFECT_HEAL_RADIUS, center.x, center.y, 224.0f, (short) 1500,
+            (byte) Math.max(0, tier)));
 
         // Heal ALL players in range (including self) and apply healing effect
         final Player[] targets = targetRealm

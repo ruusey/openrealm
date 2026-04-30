@@ -1,8 +1,6 @@
 package com.openrealm.game.script.item;
 
-import com.openrealm.game.contants.StatusEffectType;
 import com.openrealm.game.entity.Player;
-import com.openrealm.game.entity.item.Effect;
 import com.openrealm.game.entity.item.GameItem;
 import com.openrealm.game.math.Vector2f;
 import com.openrealm.net.client.packet.CreateEffectPacket;
@@ -10,8 +8,14 @@ import com.openrealm.net.realm.Realm;
 import com.openrealm.net.realm.RealmManagerServer;
 
 /**
- * Priest Tome ability — heals self and nearby players.
- * Handles test tome (157) and tiered tomes (228-234).
+ * Rogue Cloak ability — broadcasts a smoke-poof vanish effect at the
+ * caster's position. The INVISIBLE status itself is applied by the
+ * generic ability path in RealmManagerServer.useAbility (effect.isSelf()
+ * + effect.getEffectId() = INVISIBLE), so this script only contributes
+ * the visual.
+ *
+ * Handles the test cloak (159) and the tiered Cloak of Shadows family
+ * (207–213, T0–T6).
  */
 public class Item159Script extends UseableItemScriptBase {
 
@@ -21,7 +25,7 @@ public class Item159Script extends UseableItemScriptBase {
 
     @Override
     public boolean handles(int itemId) {
-        return itemId == getTargetItemId();
+        return itemId == 159 || (itemId >= 207 && itemId <= 213);
     }
 
     @Override
@@ -30,9 +34,13 @@ public class Item159Script extends UseableItemScriptBase {
 
     @Override
     public void invokeItemAbility(final Realm targetRealm, final Player player, final GameItem abilityItem) {
-        
-        player.addEffect(StatusEffectType.INVISIBLE, 3750);
-        // Broadcast heal radius visual effect
+        // Smoke poof at the caster's center — radius=48 is roughly twice
+        // the player sprite, duration 700ms is a quick puff that doesn't
+        // linger after the rogue has run off.
+        final Vector2f center = player.getPos().clone(player.getSize() / 2, player.getSize() / 2);
+        this.mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.aoeEffect(
+                CreateEffectPacket.EFFECT_SMOKE_POOF, center.x, center.y, 48.0f, (short) 700,
+                abilityItem != null ? abilityItem.getTier() : (byte) 0));
     }
 
     @Override

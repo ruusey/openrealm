@@ -169,9 +169,10 @@ public class Realm {
         final float radius;
         final int totalDamage;
         final long poisonDuration;
+        final byte tier;
 
         PoisonThrowState(long delayMs, long sourcePlayerId, float landX, float landY,
-                         float radius, int totalDamage, long poisonDuration) {
+                         float radius, int totalDamage, long poisonDuration, byte tier) {
             this.landTime = java.time.Instant.now().toEpochMilli() + delayMs;
             this.sourcePlayerId = sourcePlayerId;
             this.landX = landX;
@@ -179,6 +180,7 @@ public class Realm {
             this.radius = radius;
             this.totalDamage = totalDamage;
             this.poisonDuration = poisonDuration;
+            this.tier = tier;
         }
 
         boolean hasLanded() {
@@ -195,11 +197,13 @@ public class Realm {
         final short effectId;     // effect to apply (e.g., PARALYZED=2)
         final long effectDuration;
         final int damage;
+        final byte tier;          // ability item tier — drives client tint
         boolean armed = false;    // becomes armed after throw lands
         boolean triggered = false;
 
         TrapState(long throwDelayMs, long sourcePlayerId, float x, float y,
-                  float triggerRadius, short effectId, long effectDuration, int damage, long lifetimeMs) {
+                  float triggerRadius, short effectId, long effectDuration, int damage,
+                  long lifetimeMs, byte tier) {
             this.placeTime = java.time.Instant.now().toEpochMilli() + throwDelayMs;
             this.expireTime = this.placeTime + lifetimeMs;
             this.sourcePlayerId = sourcePlayerId;
@@ -209,6 +213,7 @@ public class Realm {
             this.effectId = effectId;
             this.effectDuration = effectDuration;
             this.damage = damage;
+            this.tier = tier;
         }
 
         boolean hasLanded() { return java.time.Instant.now().toEpochMilli() >= placeTime; }
@@ -1510,14 +1515,25 @@ public class Realm {
      */
     public void registerPoisonThrow(long delayMs, long sourcePlayerId, float landX, float landY,
                                      float radius, int totalDamage, long poisonDuration) {
+        registerPoisonThrow(delayMs, sourcePlayerId, landX, landY, radius, totalDamage, poisonDuration, (byte) 0);
+    }
+
+    public void registerPoisonThrow(long delayMs, long sourcePlayerId, float landX, float landY,
+                                     float radius, int totalDamage, long poisonDuration, byte tier) {
         this.pendingPoisonThrows.add(new PoisonThrowState(delayMs, sourcePlayerId, landX, landY,
-                radius, totalDamage, poisonDuration));
+                radius, totalDamage, poisonDuration, tier));
     }
 
     public void registerTrap(long throwDelayMs, long sourcePlayerId, float x, float y,
                              float triggerRadius, short effectId, long effectDuration, int damage, long lifetimeMs) {
+        registerTrap(throwDelayMs, sourcePlayerId, x, y, triggerRadius, effectId, effectDuration, damage, lifetimeMs, (byte) 0);
+    }
+
+    public void registerTrap(long throwDelayMs, long sourcePlayerId, float x, float y,
+                             float triggerRadius, short effectId, long effectDuration, int damage,
+                             long lifetimeMs, byte tier) {
         this.activeTraps.add(new TrapState(throwDelayMs, sourcePlayerId, x, y,
-                triggerRadius, effectId, effectDuration, damage, lifetimeMs));
+                triggerRadius, effectId, effectDuration, damage, lifetimeMs, tier));
     }
 
     public void processTraps(RealmManagerServer mgr) {
@@ -1538,7 +1554,8 @@ public class Realm {
                 final com.openrealm.net.client.packet.CreateEffectPacket armPkt =
                         com.openrealm.net.client.packet.CreateEffectPacket.aoeEffect(
                             (short) 7, trap.x, trap.y, trap.triggerRadius,
-                            (short) (trap.expireTime - java.time.Instant.now().toEpochMilli()));
+                            (short) (trap.expireTime - java.time.Instant.now().toEpochMilli()),
+                            trap.tier);
                 for (final Player p : this.players.values()) {
                     if (p.isHeadless()) continue;
                     float pdx = p.getPos().x - trap.x;
@@ -1565,7 +1582,7 @@ public class Realm {
                 final float trigSightSq = trigSightR * trigSightR;
                 final com.openrealm.net.client.packet.CreateEffectPacket trigPkt =
                         com.openrealm.net.client.packet.CreateEffectPacket.aoeEffect(
-                            (short) 8, trap.x, trap.y, blastRadius, (short) 500);
+                            (short) 8, trap.x, trap.y, blastRadius, (short) 500, trap.tier);
                 for (final Player p : this.players.values()) {
                     if (p.isHeadless()) continue;
                     float pdx = p.getPos().x - trap.x;
@@ -1624,7 +1641,7 @@ public class Realm {
             mgr.enqueueServerPacketToRealm(this,
                     com.openrealm.net.client.packet.CreateEffectPacket.aoeEffect(
                         com.openrealm.net.client.packet.CreateEffectPacket.EFFECT_POISON_SPLASH,
-                        t.landX, t.landY, t.radius, (short) 1500));
+                        t.landX, t.landY, t.radius, (short) 1500, t.tier));
 
             // Apply poison to enemies in radius
             final float radiusSq = t.radius * t.radius;

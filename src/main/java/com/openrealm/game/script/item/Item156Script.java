@@ -45,10 +45,14 @@ public class Item156Script extends UseableItemScriptBase {
                     com.openrealm.game.contants.TextEffect.PLAYER_INFO, "BERSERK");
             }
         }
-        // Broadcast warrior buff visual
+        // Broadcast warrior buff visual — distinct from priest heal so the
+        // two abilities are visually unmistakable. Tier scales the colour.
+        final int tier = (abilityItem.getItemId() >= 235 && abilityItem.getItemId() <= 241)
+                ? abilityItem.getItemId() - 235 : Math.max(0, abilityItem.getTier());
         final Vector2f center = player.getPos().clone(player.getSize() / 2, player.getSize() / 2);
         this.mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.aoeEffect(
-            CreateEffectPacket.EFFECT_HEAL_RADIUS, center.x, center.y, 160.0f, (short) 1500));
+            CreateEffectPacket.EFFECT_WARRIOR_BUFF, center.x, center.y, 160.0f, (short) 900,
+            (byte) tier));
     }
 
     @Override

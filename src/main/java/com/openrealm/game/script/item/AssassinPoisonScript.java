@@ -66,14 +66,18 @@ public class AssassinPoisonScript extends UseableItemScriptBase {
             poisonDuration = 3000 + tier * 250;
         }
 
-        // Broadcast the throw arc visual (800ms travel time)
+        // Broadcast the throw arc visual (800ms travel time). Tier flows
+        // through both the throw and the splash so the colour family stays
+        // consistent. Soulrot Vial is untiered → tier 0.
+        final byte tier = (abilityItem.getItemId() == SOULROT_VIAL_ID)
+                ? (byte) 0 : (byte) (abilityItem.getItemId() - MIN_ID);
         final Vector2f playerCenter = player.getPos().clone(player.getSize() / 2, player.getSize() / 2);
         this.mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.lineEffect(
                 CreateEffectPacket.EFFECT_POISON_SPLASH,
-                playerCenter.x, playerCenter.y, center.x, center.y, (short) THROW_DURATION_MS));
+                playerCenter.x, playerCenter.y, center.x, center.y, (short) THROW_DURATION_MS, tier));
 
         // Register the pending throw — Realm will process the landing on tick after 800ms
         targetRealm.registerPoisonThrow(THROW_DURATION_MS, player.getId(),
-                center.x, center.y, POISON_RADIUS, totalDamage, poisonDuration);
+                center.x, center.y, POISON_RADIUS, totalDamage, poisonDuration, tier);
     }
 }
