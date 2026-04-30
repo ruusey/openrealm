@@ -41,6 +41,10 @@ public class RealmOverseer {
      *  cleared zone doesn't get carpet-bombed in one tick — the refill
      *  drips in over a few cycles, ~5 enemies/sec sustained. */
     private static final int MAX_REFILL_PER_CHECK = 25;
+    /** Every N ticks (~90s @ 64 TPS) the overseer drops an ambient line
+     *  in chat so players know it's watching. Without this the overseer
+     *  is silent unless a boss/event fires, which can be many minutes. */
+    private static final int AMBIENT_INTERVAL_TICKS = 5760;
     private static final double EVENT_SPAWN_CHANCE = 0.25;
 
     // Realm events
@@ -82,10 +86,26 @@ public class RealmOverseer {
         "More servants of the %s pour forth!"
     };
 
+    // Periodic ambient lines so the overseer feels present even during
+    // long stretches between boss events.
+    private static final String[] AMBIENT_TAUNTS = {
+        "I am always watching, mortal...",
+        "My realms hunger for your blood.",
+        "Tread carefully — every step deepens your debt to me.",
+        "More creatures crawl from the shadows to greet you.",
+        "Your screams will be music to my ears.",
+        "I sense your weakness from afar.",
+        "The ground itself remembers those who fell here.",
+        "Rest if you must — I will not.",
+        "Each kill only fuels my next wave."
+    };
+
     public RealmOverseer(Realm realm, RealmManagerServer mgr) {
         this.realm = realm;
         this.mgr = mgr;
         initQuestEnemies();
+        log.info("[OVERSEER] Created for realm={} mapId={} (initial enemies={})",
+                realm.getRealmId(), realm.getMapId(), realm.getEnemies().size());
     }
 
     private void initQuestEnemies() {
@@ -113,33 +133,57 @@ public class RealmOverseer {
         if (tickCounter % EVENT_CHECK_INTERVAL_TICKS == 0) {
             checkRealmEventSpawn();
         }
+
+        // Ambient flavor — only fires when there's at least one human
+        // player in the realm. Ensures the overseer is visibly active in
+        // chat even between major events.
+        if (tickCounter % AMBIENT_INTERVAL_TICKS == 0 && hasHumanPlayer()) {
+            broadcastTaunt(randomChoice(AMBIENT_TAUNTS));
+        }
+    }
+
+    /** Returns true if at least one non-bot, non-headless player is in
+     *  this realm. Skips ambient broadcasts on a realm full of bots. */
+    private boolean hasHumanPlayer() {
+        for (var p : realm.getPlayers().values()) {
+            if (p != null && !p.isHeadless() && !p.isBot()) return true;
+        }
+        return false;
     }
 
     private void checkPopulation() {
         if (targetPopulation == 0) {
-            targetPopulation = realm.getEnemies().size();
-            if (targetPopulation == 0) targetPopulation = 500;
+            // Snapshot the realm's initial population on the first check.
+            // initialEnemyCount is captured by Realm during spawnRandomEnemies,
+            // so it reflects the post-spawn target rather than whatever the
+            // pop happens to be at the first check (which could already be
+            // depleted by players in the 5s grace window).
+            final int initial = realm.getInitialEnemyCount();
+            if (initial > 0) targetPopulation = initial;
+            else targetPopulation = Math.max(100, realm.getEnemies().size());
+            log.info("[OVERSEER] realm={} target population set to {}",
+                    realm.getRealmId(), targetPopulation);
         }
 
-        // Always-top-up policy: refill any deficit between the target and
-        // the current count, capped at MAX_REFILL_PER_CHECK per cycle.
-        // Old behaviour waited until population dropped below 50% which
-        // made the realm feel persistently empty after even modest
-        // farming. Now there's a steady trickle of new enemies as
-        // players clear them, so each zone keeps its identity over time.
         final int currentPop = realm.getEnemies().size();
         final int deficit = targetPopulation - currentPop;
         if (deficit > 0) {
             final int toSpawn = Math.min(deficit, MAX_REFILL_PER_CHECK);
-            spawnReplacements(toSpawn);
-            log.debug("[OVERSEER] Top-up: pop {}/{}, spawned {} replacements",
-                currentPop, targetPopulation, toSpawn);
+            final int spawned = spawnReplacements(toSpawn);
+            // Promoted from debug to info — the user reported "no respawn
+            // happening" and the debug logs were invisible in journalctl.
+            log.info("[OVERSEER] realm={} top-up: pop {}/{}, spawned {} (requested {})",
+                    realm.getRealmId(), currentPop, targetPopulation, spawned, toSpawn);
         }
     }
 
-    private void spawnReplacements(int count) {
+    private int spawnReplacements(int count) {
         final TerrainGenerationParameters params = getTerrainParams();
-        if (params == null || params.getEnemyGroups() == null) return;
+        if (params == null || params.getEnemyGroups() == null) {
+            log.warn("[OVERSEER] realm={} spawnReplacements aborted: no terrain params or enemy groups",
+                    realm.getRealmId());
+            return 0;
+        }
 
         final boolean hasZones = params.getZones() != null && !params.getZones().isEmpty();
         final Map<Integer, List<EnemyModel>> enemiesByGroup = new HashMap<>();
@@ -154,6 +198,7 @@ public class RealmOverseer {
 
         final List<EnemyModel> defaultList = enemiesByGroup.values().iterator().next();
 
+        int spawned = 0;
         for (int i = 0; i < count; i++) {
             Vector2f spawnPos = realm.getTileManager().getSafePosition();
             if (spawnPos == null) continue;
@@ -179,7 +224,9 @@ public class RealmOverseer {
             enemy.getStats().setHp((short) (enemy.getStats().getHp() * diff));
             enemy.setPos(spawnPos);
             realm.addEnemy(enemy);
+            spawned++;
         }
+        return spawned;
     }
 
     public void onEnemyKilled(Enemy enemy, long killerPlayerId) {
@@ -521,17 +568,31 @@ public class RealmOverseer {
     }
 
     private void broadcastTaunt(String message) {
+        // 750ms throttle (was 3s) — protects against bursts of identical
+        // taunts from rapid-fire boss kills, but no longer eats every
+        // overseer message after a single boss-down event for several
+        // seconds. Player-visible messages were going missing because
+        // multiple events fired within the old 3s window.
         long now = Instant.now().toEpochMilli();
-        if (now - lastAnnouncement < 3000) return;
+        if (now - lastAnnouncement < 750) return;
         lastAnnouncement = now;
 
+        log.info("[OVERSEER] realm={} taunt: {}", realm.getRealmId(), message);
+        int sent = 0;
         for (var player : realm.getPlayers().values()) {
+            if (player == null || player.isHeadless() || player.isBot()) continue;
             try {
                 mgr.enqueueServerPacket(player,
                     TextPacket.create("Overseer", player.getName(), message));
+                sent++;
             } catch (Exception e) {
-                // Skip failed sends
+                log.warn("[OVERSEER] failed to send taunt to player {}: {}",
+                        player.getId(), e.getMessage());
             }
+        }
+        if (sent == 0) {
+            log.info("[OVERSEER] realm={} taunt skipped — no human players in realm",
+                    realm.getRealmId());
         }
     }
 

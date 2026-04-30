@@ -58,6 +58,6 @@ public class Item242Script extends UseableItemScriptBase {
         final Vector2f dest = (targetPos != null) ? targetPos : center;
         this.mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.lineEffect(
                 CreateEffectPacket.EFFECT_KNIGHT_SHOCKWAVE,
-                center.x, center.y, dest.x, dest.y, (short) 900, tier));
+                center.x, center.y, dest.x, dest.y, (short) 600, tier));
     }
 }
