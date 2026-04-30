@@ -3,6 +3,7 @@ package com.openrealm.game.entity.item;
 import java.time.Instant;
 import java.util.UUID;
 
+import com.openrealm.game.contants.GlobalConstants;
 import com.openrealm.game.contants.LootTier;
 import com.openrealm.game.data.GameDataManager;
 import com.openrealm.game.math.Vector2f;
@@ -28,6 +29,11 @@ public class LootContainer {
     private long spawnedTime;
 
     private boolean contentsChanged;
+
+    // Soulbound loot: -1 means public (anyone can see/pickup),
+    // otherwise only the player with this ID can see/interact with this bag
+    @Builder.Default
+    private long soulboundPlayerId = -1;
     public LootContainer(LootTier tier, Vector2f pos) {
         this.tier = tier;
         this.uid = UUID.randomUUID().toString();
@@ -92,14 +98,21 @@ public class LootContainer {
         return false;
     }
 
+    /**
+     * Determines bag tier based on item contents.
+     * CYAN bag: top 4 weapon tiers, top 2 ability tiers, top 4 armor tiers
+     * PURPLE bag: all other tiered equipment
+     * WHITE bag: untiered items (tier == -1)
+     * BROWN bag: consumables only (always public, never soulbound)
+     */
     public LootTier determineTier() {
         if (this.tier.equals(LootTier.CHEST) || this.tier.equals(LootTier.GRAVE)
                 || this.tier.equals(LootTier.BOOSTED))
             return this.tier;
 
         boolean hasUntiered = false;
-        boolean hasHighTier = false;
-        boolean hasLowTier = false;
+        boolean hasCyanTier = false;
+        boolean hasPurpleTier = false;
         boolean hasPotion = false;
         boolean hasAnyItem = false;
 
@@ -107,6 +120,7 @@ public class LootContainer {
             if (item == null) continue;
             hasAnyItem = true;
             byte t = item.getTier();
+            byte slot = item.getTargetSlot();
             final String cat = item.getCategory();
             final boolean isForgeMaterial = "crystal".equals(cat)
                     || "essence".equals(cat)
@@ -114,22 +128,57 @@ public class LootContainer {
             if (item.isConsumable()) {
                 hasPotion = true;
             } else if (isForgeMaterial) {
-                hasLowTier = true;
+                hasPurpleTier = true;
             } else if (t == (byte) -1) {
                 hasUntiered = true;
-            } else if (t >= 8) {
-                hasHighTier = true;
-            } else {
-                hasLowTier = true;
+            } else if (isCyanTierItem(slot, t)) {
+                hasCyanTier = true;
+            } else if (t >= 0) {
+                hasPurpleTier = true;
             }
         }
 
         if (!hasAnyItem) return LootTier.BROWN;
         if (hasUntiered) return LootTier.WHITE;
-        if (hasHighTier) return LootTier.CYAN;
-        if (hasLowTier) return LootTier.PURPLE;
+        if (hasCyanTier) return LootTier.CYAN;
+        if (hasPurpleTier) return LootTier.PURPLE;
         if (hasPotion) return LootTier.BLUE;
         return LootTier.BROWN;
+    }
+
+    /**
+     * Checks if an item qualifies for CYAN bag based on slot and tier.
+     * Weapons (slot 0): top 4 tiers (>= CYAN_BAG_MIN_WEAPON_TIER)
+     * Abilities (slot 1): top 2 tiers (>= CYAN_BAG_MIN_ABILITY_TIER)
+     * Armors (slot 2): top 4 tiers (>= CYAN_BAG_MIN_ARMOR_TIER)
+     * Rings (slot 3) and others: follow the old logic (tier >= 8)
+     */
+    private boolean isCyanTierItem(byte slot, byte tier) {
+        if (tier < 0) return false; // untiered items don't count here
+        switch (slot) {
+            case 0: // Weapon
+                return tier >= GlobalConstants.CYAN_BAG_MIN_WEAPON_TIER;
+            case 1: // Ability
+                return tier >= GlobalConstants.CYAN_BAG_MIN_ABILITY_TIER;
+            case 2: // Armor
+                return tier >= GlobalConstants.CYAN_BAG_MIN_ARMOR_TIER;
+            default: // Rings (slot 3) and other items: tier >= 8
+                return tier >= 8;
+        }
+    }
+
+    /**
+     * Returns true if this bag is public (anyone can see/interact).
+     */
+    public boolean isPublicLoot() {
+        return this.soulboundPlayerId == -1;
+    }
+
+    /**
+     * Returns true if the given player can see and interact with this bag.
+     */
+    public boolean isVisibleToPlayer(long playerId) {
+        return this.soulboundPlayerId == -1 || this.soulboundPlayerId == playerId;
     }
 
     public void setItems(GameItem[] items) {

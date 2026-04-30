@@ -8,6 +8,20 @@ public class GlobalConstants {
     public static final float LOOT_TIER_UPGRADE_PER_DIFFICULTY = 5.0f;
     public static final float LOOT_TIER_UPGRADE_MIN_DIFFICULTY = 1.0f;
 
+    // Soulbound loot system: players must deal at least this percentage of
+    // total damage to an enemy to qualify for soulbound loot drops.
+    // Set to 5% (0.05f) - easily adjustable.
+    public static final float SOULBOUND_DAMAGE_THRESHOLD = 0.05f;
+
+    // Bag tier thresholds for CYAN vs PURPLE:
+    // Items at or above these tiers drop in CYAN bags, lower tiers in PURPLE.
+    // Weapons: top 4 tiers (tiers 9-12) -> CYAN, else PURPLE
+    // Abilities: top 2 tiers (tiers 11-12) -> CYAN, else PURPLE  
+    // Armors: top 4 tiers (tiers 9-12) -> CYAN, else PURPLE
+    public static final byte CYAN_BAG_MIN_WEAPON_TIER = 9;
+    public static final byte CYAN_BAG_MIN_ABILITY_TIER = 11;
+    public static final byte CYAN_BAG_MIN_ARMOR_TIER = 9;
+
     public static final int BASE_SIZE = 32;
     
     public static final int BASE_TILE_SIZE = 32;

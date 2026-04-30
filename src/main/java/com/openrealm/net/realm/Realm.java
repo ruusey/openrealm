@@ -21,7 +21,6 @@ import com.openrealm.game.data.GameDataManager;
 import com.openrealm.game.entity.Bullet;
 import com.openrealm.game.entity.Enemy;
 import com.openrealm.game.entity.GameObject;
-import com.openrealm.game.entity.Monster;
 import com.openrealm.game.entity.Player;
 import com.openrealm.game.entity.Portal;
 import com.openrealm.game.entity.item.Chest;
@@ -742,9 +741,25 @@ public class Realm {
     private static final int MAX_BULLETS_PER_LOAD = 1000;
     private static final int MAX_ENEMIES_PER_LOAD = 500;
 
+    /**
+     * Legacy overload without soulbound filtering. Defaults to showing all loot.
+     */
     public LoadPacket getLoadPacketCircularFast(Vector2f center, float radius) {
+        return getLoadPacketCircularFast(center, radius, -1);
+    }
+
+    /**
+     * Returns a LoadPacket containing all entities within the specified radius,
+     * filtering loot containers based on soulbound visibility.
+     * 
+     * @param center The center position to query from
+     * @param radius The query radius
+     * @param requestingPlayerId The player ID requesting this packet; soulbound loot
+     *        not belonging to this player will be filtered out. Use -1 to show all.
+     */
+    public LoadPacket getLoadPacketCircularFast(Vector2f center, float radius, long requestingPlayerId) {
         if (this.spatialGrid == null) {
-            return getLoadPacketCircular(center, radius);
+            return getLoadPacketCircular(center, radius, requestingPlayerId);
         }
         final float radiusSq = radius * radius;
         // Bullets use a wider radius so projectiles fired by enemies beyond the
@@ -802,7 +817,10 @@ public class Realm {
                 if (lc != null) {
                     float dx = lc.getPos().x - center.x;
                     float dy = lc.getPos().y - center.y;
-                    if (dx * dx + dy * dy <= radiusSq) containersToLoad.add(lc);
+                    // Check soulbound visibility: only include if public or belongs to requesting player
+                    if (dx * dx + dy * dy <= radiusSq && lc.isVisibleToPlayer(requestingPlayerId)) {
+                        containersToLoad.add(lc);
+                    }
                 }
             }
 
@@ -1191,7 +1209,23 @@ public class Realm {
         return load;
     }
 
+    /**
+     * Legacy overload without soulbound filtering. Defaults to showing all loot.
+     */
     public LoadPacket getLoadPacketCircular(Vector2f center, float radius) {
+        return getLoadPacketCircular(center, radius, -1);
+    }
+
+    /**
+     * Returns a LoadPacket containing all entities within the specified radius,
+     * filtering loot containers based on soulbound visibility.
+     * 
+     * @param center The center position to query from
+     * @param radius The query radius
+     * @param requestingPlayerId The player ID requesting this packet; soulbound loot
+     *        not belonging to this player will be filtered out. Use -1 to show all.
+     */
+    public LoadPacket getLoadPacketCircular(Vector2f center, float radius, long requestingPlayerId) {
         final float radiusSq = radius * radius;
         final float bulletRadiusSq = (radius * 2f) * (radius * 2f);
         LoadPacket load = null;
@@ -1206,7 +1240,10 @@ public class Realm {
             for (LootContainer c : this.loot.values()) {
                 float dx = c.getPos().x - center.x;
                 float dy = c.getPos().y - center.y;
-                if (dx * dx + dy * dy <= radiusSq) containersToLoad.add(c);
+                // Check soulbound visibility: only include if public or belongs to requesting player
+                if (dx * dx + dy * dy <= radiusSq && c.isVisibleToPlayer(requestingPlayerId)) {
+                    containersToLoad.add(c);
+                }
             }
             final List<Bullet> bulletsToLoad = new ArrayList<>();
             for (Bullet b : this.bullets.values()) {
@@ -1360,7 +1397,7 @@ public class Realm {
                     spawnCounts.merge(toSpawn.getEnemyId(), 1, Integer::sum);
                 }
 
-                final Enemy enemy = new Monster(Realm.RANDOM.nextLong(), toSpawn.getEnemyId(),
+                final Enemy enemy = new Enemy(Realm.RANDOM.nextLong(), toSpawn.getEnemyId(),
                         spawnPos.clone(), toSpawn.getSize(), toSpawn.getAttackId());
                 enemy.setDifficulty(diff);
                 enemy.setHealth((int) (enemy.getHealth() * diff));
@@ -1454,7 +1491,7 @@ public class Realm {
             final EnemyModel toSpawn = spawnList.get(Realm.RANDOM.nextInt(spawnList.size()));
             if (this.tileManager.collidesAtPosition(spawnPos, toSpawn.getSize())) continue;
 
-            final Enemy enemy = new Monster(Realm.RANDOM.nextLong(), toSpawn.getEnemyId(),
+            final Enemy enemy = new Enemy(Realm.RANDOM.nextLong(), toSpawn.getEnemyId(),
                     spawnPos.clone(), toSpawn.getSize(), toSpawn.getAttackId());
             enemy.setDifficulty(diff);
             enemy.setHealth((int) (enemy.getHealth() * diff));
@@ -1966,7 +2003,7 @@ public class Realm {
         });
         final EnemyModel toSpawn = enemyToSpawn.get(Realm.RANDOM.nextInt(enemyToSpawn.size()));
 
-        final Enemy enemy = new Monster(Realm.RANDOM.nextLong(), toSpawn.getEnemyId(), spawnPos, toSpawn.getSize(),
+        final Enemy enemy = new Enemy(Realm.RANDOM.nextLong(), toSpawn.getEnemyId(), spawnPos, toSpawn.getSize(),
                 toSpawn.getAttackId());
 
         final float diff = this.getZoneDifficulty(spawnPos.x, spawnPos.y);

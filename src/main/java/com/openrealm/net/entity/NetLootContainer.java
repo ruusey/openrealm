@@ -42,6 +42,10 @@ public class NetLootContainer extends SerializableFieldType<NetLootContainer>{
     private long spawnedTime;
 	@SerializableField(order = 7, type = SerializableBoolean.class)
     private boolean contentsChanged;
+	// Soulbound loot: -1 means public (anyone can see/pickup),
+	// otherwise the playerId this loot is bound to (for client display purposes)
+	@SerializableField(order = 8, type = SerializableLong.class)
+    private long soulboundPlayerId;
 	
 	public LootContainer asLootContainer() {
 		LootContainer container = new LootContainer();
@@ -57,6 +61,7 @@ public class NetLootContainer extends SerializableFieldType<NetLootContainer>{
 		container.setPos(this.pos);
 		container.setSpawnedTime(this.spawnedTime);
 		container.setContentsChanged(this.contentsChanged);
+		container.setSoulboundPlayerId(this.soulboundPlayerId);
 		
 		if(this.isChest) {
 			container = new Chest(container);

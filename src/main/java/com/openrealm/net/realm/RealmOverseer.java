@@ -7,7 +7,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import com.openrealm.game.contants.GlobalConstants;
 import com.openrealm.game.data.GameDataManager;
 import com.openrealm.game.entity.Enemy;
-import com.openrealm.game.entity.Monster;
 import com.openrealm.game.math.Vector2f;
 import com.openrealm.game.model.EnemyModel;
 import com.openrealm.game.model.MinionWave;
@@ -217,7 +216,7 @@ public class RealmOverseer {
             if (spawnList.isEmpty()) continue;
             EnemyModel toSpawn = spawnList.get(Realm.RANDOM.nextInt(spawnList.size()));
 
-            Enemy enemy = new Monster(Realm.RANDOM.nextLong(), toSpawn.getEnemyId(),
+            Enemy enemy = new Enemy(Realm.RANDOM.nextLong(), toSpawn.getEnemyId(),
                 spawnPos.clone(), toSpawn.getSize(), toSpawn.getAttackId());
             enemy.setDifficulty(diff);
             enemy.setHealth((int) (enemy.getHealth() * diff));
@@ -264,7 +263,7 @@ public class RealmOverseer {
         if (spawnPos == null) return;
 
         float diff = realm.getZoneDifficulty(spawnPos.x, spawnPos.y) * 2.0f;
-        Enemy boss = new Monster(Realm.RANDOM.nextLong(), eventBoss.getEnemyId(),
+        Enemy boss = new Enemy(Realm.RANDOM.nextLong(), eventBoss.getEnemyId(),
             spawnPos.clone(), eventBoss.getSize(), eventBoss.getAttackId());
         boss.setDifficulty(diff);
         boss.setHealth((int) (boss.getHealth() * diff));
@@ -376,7 +375,7 @@ public class RealmOverseer {
 
         float eventMult = Math.max(1, event.getEventMultiplier());
         float diff = realm.getZoneDifficulty(spawnPos.x, spawnPos.y) * eventMult;
-        Enemy boss = new Monster(Realm.RANDOM.nextLong(), bossModel.getEnemyId(),
+        Enemy boss = new Enemy(Realm.RANDOM.nextLong(), bossModel.getEnemyId(),
             spawnPos.clone(), bossModel.getSize(), bossModel.getAttackId());
         boss.setDifficulty(diff);
         boss.setHealth((int) (boss.getHealth() * diff));
@@ -523,7 +522,7 @@ public class RealmOverseer {
 
             float waveMult = Math.max(1, wave.getEventMultiplier());
             float minionDiff = realm.getZoneDifficulty(minionPos.x, minionPos.y) * waveMult;
-            Enemy minion = new Monster(Realm.RANDOM.nextLong(), minionModel.getEnemyId(),
+            Enemy minion = new Enemy(Realm.RANDOM.nextLong(), minionModel.getEnemyId(),
                 minionPos, minionModel.getSize(), minionModel.getAttackId());
             minion.setDifficulty(minionDiff);
             minion.setHealth((int) (minion.getHealth() * minionDiff));
@@ -622,7 +621,38 @@ public class RealmOverseer {
         int playerDmg = dmgMap.getOrDefault(playerId, 0);
         int totalDmg = dmgMap.values().stream().mapToInt(Integer::intValue).sum();
         if (totalDmg == 0) return true;
-        return (float) playerDmg / totalDmg >= 0.1f;
+        return (float) playerDmg / totalDmg >= GlobalConstants.SOULBOUND_DAMAGE_THRESHOLD;
+    }
+
+    /**
+     * Returns a list of all player IDs who dealt at least the soulbound damage
+     * threshold percentage to this enemy. Used to determine which players
+     * qualify for soulbound loot drops.
+     */
+    public List<Long> getQualifyingPlayers(long enemyId) {
+        List<Long> qualifyingPlayers = new ArrayList<>();
+        Map<Long, Integer> dmgMap = damageTracker.get(enemyId);
+        if (dmgMap == null || dmgMap.isEmpty()) {
+            return qualifyingPlayers;
+        }
+        int totalDmg = dmgMap.values().stream().mapToInt(Integer::intValue).sum();
+        if (totalDmg == 0) {
+            return qualifyingPlayers;
+        }
+        for (Map.Entry<Long, Integer> entry : dmgMap.entrySet()) {
+            float ratio = (float) entry.getValue() / totalDmg;
+            if (ratio >= GlobalConstants.SOULBOUND_DAMAGE_THRESHOLD) {
+                qualifyingPlayers.add(entry.getKey());
+            }
+        }
+        return qualifyingPlayers;
+    }
+
+    /**
+     * Returns the damage map for an enemy, used for loot roll calculations.
+     */
+    public Map<Long, Integer> getDamageMap(long enemyId) {
+        return damageTracker.get(enemyId);
     }
 
     public void clearDamageTracking(long enemyId) {

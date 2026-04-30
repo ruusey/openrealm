@@ -160,7 +160,7 @@ public class ServerItemHelper {
                 if (potionItem == null) return;
                 if (isHp) player.setHpPotions(count - 1);
                 else player.setMpPotions(count - 1);
-                final LootContainer nearLoot = mgr.getClosestLootContainer(realm.getRealmId(), player.getPos(), 32);
+                final LootContainer nearLoot = mgr.getClosestLootContainer(realm.getRealmId(), player.getPos(), 32, player.getId());
                 if (nearLoot != null && nearLoot.getFirstNullIdx() > -1) {
                     nearLoot.setItem(nearLoot.getFirstNullIdx(), potionItem.clone());
                     nearLoot.setContentsChanged(true);
@@ -205,7 +205,7 @@ public class ServerItemHelper {
         if (fromIsInventory) {
             from = player.getInventory()[fromIdx];
         } else if (fromIsGroundLoot) {
-            LootContainer nearLoot = mgr.getClosestLootContainer(realm.getRealmId(), player.getPos(), 32);
+            LootContainer nearLoot = mgr.getClosestLootContainer(realm.getRealmId(), player.getPos(), 32, player.getId());
             if (nearLoot != null) {
                 int lootIdx = fromIdx - 20;
                 if (lootIdx >= 0 && lootIdx < nearLoot.getItems().length) {
@@ -216,7 +216,7 @@ public class ServerItemHelper {
 
         // Drop item from inventory/equipment to ground (ground loot items are already on the ground)
         if ((from != null) && moveItemPacket.isDrop() && fromIsInventory) {
-            final LootContainer nearLoot = mgr.getClosestLootContainer(realm.getRealmId(), player.getPos(), 32);
+            final LootContainer nearLoot = mgr.getClosestLootContainer(realm.getRealmId(), player.getPos(), 32, player.getId());
             if (nearLoot == null) {
                 realm.addLootContainer(new LootContainer(LootTier.BROWN, player.getPos().clone(), from.clone()));
                 player.getInventory()[fromIdx] = null;
@@ -330,7 +330,7 @@ public class ServerItemHelper {
         // Ground loot pickup (fromSlot 20-27)
         } else if (MoveItemPacket.isGroundLoot(fromIdx)) {
             final LootContainer nearLoot = mgr.getClosestLootContainer(realm.getRealmId(), player.getPos(),
-                    (int)(player.getSize() * 0.75));
+                    (int)(player.getSize() * 0.75), player.getId());
             if (nearLoot == null) return;
 
             int lootIdx = fromIdx - 20;

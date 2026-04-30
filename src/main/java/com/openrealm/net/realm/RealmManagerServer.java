@@ -48,7 +48,6 @@ import com.openrealm.game.data.GameDataManager;
 import com.openrealm.game.entity.Bullet;
 import com.openrealm.game.entity.Enemy;
 import com.openrealm.game.entity.GameObject;
-import com.openrealm.game.entity.Monster;
 import com.openrealm.game.entity.Player;
 import com.openrealm.game.entity.Portal;
 import com.openrealm.game.entity.item.Effect;
@@ -708,7 +707,8 @@ public class RealmManagerServer implements Runnable {
 						// FULL_SNAPSHOT_INTERVAL_MS (~3s) for self-heal against drops.
 						// Cuts ~90% of LoadPacket bandwidth in spam-shoot scenarios.
 						if (doLoad) {
-							final LoadPacket loadPacket = realm.getLoadPacketCircularFast(playerCenter, viewportRadius);
+							// Pass player ID for soulbound loot filtering
+							final LoadPacket loadPacket = realm.getLoadPacketCircularFast(playerCenter, viewportRadius, player.getKey());
 							final long nowMs = System.currentTimeMillis();
 							if (this.playerLoadState.get(player.getKey()) == null) {
 								this.playerLoadState.put(player.getKey(), loadPacket);
@@ -1201,11 +1201,33 @@ public class RealmManagerServer implements Runnable {
 		return bestPlayer;
 	}
 
+	/**
+	 * Find the closest loot container to the given position within the limit.
+	 * Legacy overload that ignores soulbound status (shows all loot).
+	 */
 	public LootContainer getClosestLootContainer(final long realmId, final Vector2f pos, final float limit) {
+		return getClosestLootContainer(realmId, pos, limit, -1);
+	}
+
+	/**
+	 * Find the closest loot container to the given position within the limit,
+	 * filtering by soulbound visibility.
+	 * 
+	 * @param realmId The realm to search in
+	 * @param pos The position to search from
+	 * @param limit Maximum distance to search
+	 * @param playerId The player requesting loot; soulbound loot not belonging
+	 *        to this player will be filtered out. Use -1 to show all.
+	 */
+	public LootContainer getClosestLootContainer(final long realmId, final Vector2f pos, final float limit, final long playerId) {
 		float best = Float.MAX_VALUE;
 		LootContainer bestLoot = null;
 		final Realm targetRealm = this.realms.get(realmId);
 		for (final LootContainer lootContainer : targetRealm.getLoot().values()) {
+			// Check soulbound visibility: skip if not visible to this player
+			if (!lootContainer.isVisibleToPlayer(playerId)) {
+				continue;
+			}
 			float dist = lootContainer.getPos().distanceTo(pos);
 			if ((dist < best) && (dist <= limit)) {
 				best = dist;
@@ -2371,7 +2393,11 @@ public class RealmManagerServer implements Runnable {
 				}
 			}
 
-			// Notify the overseer of the kill (handles taunts, event spawning, damage credit)
+			// Notify the overseer of the kill (handles taunts, event spawning)
+			// NOTE: We get qualifying players BEFORE clearing damage tracking for soulbound loot
+			final List<Long> qualifyingPlayerIds = (targetRealm.getOverseer() != null)
+					? targetRealm.getOverseer().getQualifyingPlayers(enemy.getId())
+					: new ArrayList<>();
 			if (targetRealm.getOverseer() != null) {
 				long killerId = targetRealm.getOverseer().getTopDamageDealer(enemy.getId());
 				targetRealm.getOverseer().onEnemyKilled(enemy, killerId);
@@ -2413,74 +2439,27 @@ public class RealmManagerServer implements Runnable {
 				return;
 			}
 
-			// Get a random loot bag drop based on this enemies loot table
-			final List<GameItem> lootToDrop = lootTable.getLootDrop();
-
-			// Guaranteed stat potion drops for dungeon bosses: every dungeon boss
-			// drops exactly 2 stat potions (from the base stat potion pool: DEF,
-			// ATT, DEX, SPD, VIT, WIS — item IDs 0-5). The two potions are rolled
-			// independently so they can be the same type or different types.
-			if (targetRealm.getDungeonBossEnemyId() > 0
-					&& enemy.getEnemyId() == targetRealm.getDungeonBossEnemyId()) {
-				final LootGroupModel statPotionGroup = GameDataManager.LOOT_GROUPS.get(0); // group 0 = base stat potions
-				if (statPotionGroup != null && !statPotionGroup.getPotentialDrops().isEmpty()) {
-					for (int i = 0; i < 2; i++) {
-						final int potionItemId = statPotionGroup.getPotentialDrops()
-								.get(Realm.RANDOM.nextInt(statPotionGroup.getPotentialDrops().size()));
-						final GameItem potion = GameDataManager.GAME_ITEMS.get(potionItemId);
-						if (potion != null) {
-							lootToDrop.add(potion);
-						}
-					}
-					log.info("[SERVER] Dungeon boss {} guaranteed 2 stat potions added to loot", enemy.getEnemyId());
-				}
-			}
-
-			// Difficulty-based loot tier upgrade: higher difficulty zones have a
-			// chance to bump each dropped item up one tier. Items that get upgraded
-			// go into a separate BOOSTED loot bag that drops ALONGSIDE the normal
-			// bag, so players can visually tell they got something extra.
+			// Soulbound loot system: each qualifying player gets their own loot roll.
+			// Brown bags (consumables only) remain public and visible to all.
+			// All other bag tiers (purple, cyan, white, boosted) are soulbound.
 			final float diff = enemy.getDifficulty();
-			final List<GameItem> normalDrops = new ArrayList<>();
-			final List<GameItem> boostedDrops = new ArrayList<>();
 			final boolean upgradeEligible = diff > GlobalConstants.LOOT_TIER_UPGRADE_MIN_DIFFICULTY;
 			final float upgradeChance = upgradeEligible
 					? (GlobalConstants.LOOT_TIER_UPGRADE_BASE_PERCENT
 							+ GlobalConstants.LOOT_TIER_UPGRADE_PER_DIFFICULTY * diff) / 100.0f
 					: 0.0f;
-			for (final GameItem original : lootToDrop) {
-				GameItem toDrop = original;
-				boolean wasUpgraded = false;
-				if (upgradeEligible && Realm.RANDOM.nextFloat() < upgradeChance) {
-					final GameItem upgraded = findUpgradedItem(original);
-					if (upgraded != null) {
-						toDrop = upgraded;
-						wasUpgraded = true;
-					}
-				}
-				if (wasUpgraded) {
-					boostedDrops.add(toDrop);
-				} else {
-					normalDrops.add(toDrop);
-				}
-			}
 
-			if (!normalDrops.isEmpty()) {
-				final LootContainer dropsBag = new LootContainer(LootTier.BLUE,
-						enemy.getPos().withNoise(64, 64),
-						normalDrops.toArray(new GameItem[0]));
-				targetRealm.addLootContainer(dropsBag);
-			}
-			if (!boostedDrops.isEmpty()) {
-				// Spawn the boosted bag at a slightly different random offset so it
-				// doesn't perfectly overlap the normal bag. determineTier() is
-				// bypassed for BOOSTED so the explicit tier survives to the client.
-				final LootContainer boostedBag = new LootContainer(LootTier.BOOSTED,
-						enemy.getPos().withNoise(64, 64),
-						boostedDrops.toArray(new GameItem[0]));
-				targetRealm.addLootContainer(boostedBag);
-				log.info("[SERVER] BOOSTED loot drop: {} upgraded item(s) from enemy {} (difficulty={})",
-						boostedDrops.size(), enemy.getEnemyId(), diff);
+			// If no qualifying players (e.g. solo kill or damage tracking disabled), 
+			// use a single public drop (backwards compatible)
+			if (qualifyingPlayerIds.isEmpty()) {
+				dropLootForPlayer(targetRealm, enemy, lootTable, -1, diff, upgradeEligible, upgradeChance);
+			} else {
+				// Roll separate loot for each qualifying player
+				for (Long playerId : qualifyingPlayerIds) {
+					dropLootForPlayer(targetRealm, enemy, lootTable, playerId, diff, upgradeEligible, upgradeChance);
+				}
+				log.info("[SERVER] Soulbound loot dropped for {} qualifying player(s) from enemy {}",
+						qualifyingPlayerIds.size(), enemy.getEnemyId());
 			}
 
 			// Portal drops: use dungeon graph if this realm has a nodeId.
@@ -3067,6 +3046,100 @@ public class RealmManagerServer implements Runnable {
 
 	public void releaseRealmLock() {
 		this.realmLock.unlock();
+	}
+
+	/**
+	 * Drops loot for a specific player (soulbound) or for everyone (public).
+	 * 
+	 * @param targetRealm The realm where loot will be dropped
+	 * @param enemy The enemy that died
+	 * @param lootTable The loot table to roll from
+	 * @param soulboundPlayerId The player ID this loot is bound to, or -1 for public loot
+	 * @param diff Enemy difficulty for tier upgrade chances
+	 * @param upgradeEligible Whether tier upgrades are possible
+	 * @param upgradeChance The chance for each item to be upgraded
+	 */
+	private void dropLootForPlayer(final Realm targetRealm, final Enemy enemy, 
+			final LootTableModel lootTable, final long soulboundPlayerId,
+			final float diff, final boolean upgradeEligible, final float upgradeChance) {
+		
+		// Roll loot drops from the loot table
+		final List<GameItem> lootToDrop = lootTable.getLootDrop();
+		
+		// Guaranteed stat potion drops for dungeon bosses
+		// Each qualifying player gets their own potion drops
+		if (targetRealm.getDungeonBossEnemyId() > 0
+				&& enemy.getEnemyId() == targetRealm.getDungeonBossEnemyId()) {
+			final LootGroupModel statPotionGroup = GameDataManager.LOOT_GROUPS.get(0);
+			if (statPotionGroup != null && !statPotionGroup.getPotentialDrops().isEmpty()) {
+				for (int i = 0; i < 2; i++) {
+					final int potionItemId = statPotionGroup.getPotentialDrops()
+							.get(Realm.RANDOM.nextInt(statPotionGroup.getPotentialDrops().size()));
+					final GameItem potion = GameDataManager.GAME_ITEMS.get(potionItemId);
+					if (potion != null) {
+						lootToDrop.add(potion);
+					}
+				}
+			}
+		}
+		
+		// Separate items into categories for bag determination
+		final List<GameItem> consumableDrops = new ArrayList<>();  // Always public (brown bag)
+		final List<GameItem> normalDrops = new ArrayList<>();      // Soulbound (various bags)
+		final List<GameItem> boostedDrops = new ArrayList<>();     // Soulbound (boosted bag)
+		
+		for (final GameItem original : lootToDrop) {
+			// Consumables go in public brown bags
+			if (original.isConsumable()) {
+				consumableDrops.add(original);
+				continue;
+			}
+			
+			GameItem toDrop = original;
+			boolean wasUpgraded = false;
+			if (upgradeEligible && Realm.RANDOM.nextFloat() < upgradeChance) {
+				final GameItem upgraded = findUpgradedItem(original);
+				if (upgraded != null) {
+					toDrop = upgraded;
+					wasUpgraded = true;
+				}
+			}
+			if (wasUpgraded) {
+				boostedDrops.add(toDrop);
+			} else {
+				normalDrops.add(toDrop);
+			}
+		}
+		
+		// Drop consumables in a public brown bag (visible to all)
+		if (!consumableDrops.isEmpty()) {
+			final LootContainer publicBag = new LootContainer(LootTier.BROWN,
+					enemy.getPos().withNoise(64, 64),
+					consumableDrops.toArray(new GameItem[0]));
+			// Brown bags are always public - no soulbound
+			targetRealm.addLootContainer(publicBag);
+		}
+		
+		// Drop normal items in a soulbound bag (determineTier chooses PURPLE/CYAN/WHITE)
+		if (!normalDrops.isEmpty()) {
+			final LootContainer soulboundBag = new LootContainer(LootTier.BLUE,
+					enemy.getPos().withNoise(64, 64),
+					normalDrops.toArray(new GameItem[0]));
+			soulboundBag.setSoulboundPlayerId(soulboundPlayerId);
+			targetRealm.addLootContainer(soulboundBag);
+		}
+		
+		// Drop boosted items in a separate soulbound boosted bag
+		if (!boostedDrops.isEmpty()) {
+			final LootContainer boostedBag = new LootContainer(LootTier.BOOSTED,
+					enemy.getPos().withNoise(64, 64),
+					boostedDrops.toArray(new GameItem[0]));
+			boostedBag.setSoulboundPlayerId(soulboundPlayerId);
+			targetRealm.addLootContainer(boostedBag);
+			log.info("[SERVER] BOOSTED loot drop: {} upgraded item(s) from enemy {} (difficulty={}) for player {}",
+					boostedDrops.size(), enemy.getEnemyId(), diff, 
+					soulboundPlayerId == -1 ? "PUBLIC" : soulboundPlayerId);
+		}
 	}
 
 	/**
