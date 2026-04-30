@@ -47,12 +47,17 @@ public class Item242Script extends UseableItemScriptBase {
     @Override
     public void invokeItemAbility(final Realm targetRealm, final Player player, final GameItem abilityItem,
                                    final Vector2f targetPos) {
-        // Shield-slam shockwave from the knight's feet. Wider radius than
-        // the wizard burst because the feel is "ground impact", not a
-        // localized cast.
+        // Forward-thrust shield bash — sent as a LINE effect from the
+        // knight's center toward the cursor so the client can render the
+        // force arcs starting behind the knight and pushing forward
+        // through them, matching the direction of the stun projectile.
+        // Without start+target, the renderer has no notion of "forward"
+        // and the visual collapses to a static AoE.
         final byte tier = abilityItem != null ? (byte) Math.max(0, abilityItem.getItemId() - MIN_ID) : 0;
         final Vector2f center = player.getPos().clone(player.getSize() / 2, player.getSize() / 2);
-        this.mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.aoeEffect(
-                CreateEffectPacket.EFFECT_KNIGHT_SHOCKWAVE, center.x, center.y, 96.0f, (short) 700, tier));
+        final Vector2f dest = (targetPos != null) ? targetPos : center;
+        this.mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.lineEffect(
+                CreateEffectPacket.EFFECT_KNIGHT_SHOCKWAVE,
+                center.x, center.y, dest.x, dest.y, (short) 900, tier));
     }
 }

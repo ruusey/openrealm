@@ -82,36 +82,35 @@ public enum CharacterClass {
     }
 
     public static boolean isValidUser(Player p, byte requiredClass) {
-        CharacterClass req = CharacterClass.valueOf(requiredClass);
-        CharacterClass playerClass = CharacterClass.getPlayerCharacterClass(p);
-        boolean result = false;
+        // Widen byte to int explicitly so the lookup can't be confused
+        // by sign-extension surprises in any future refactor. valueOf
+        // takes int and our map keys are int, so this is correct.
+        final int reqId = (int) requiredClass;
+        final CharacterClass req = CharacterClass.valueOf(reqId);
+        final CharacterClass playerClass = CharacterClass.getPlayerCharacterClass(p);
+        if (req == null) {
+            // Should never happen — every valid targetClass byte maps to
+            // an enum constant. Log + reject so we don't silently drift.
+            System.err.println("[CharacterClass.isValidUser] Unknown targetClass byte=" + requiredClass
+                    + " (int=" + reqId + ") — rejecting equip for player.classId=" + p.getClassId());
+            return false;
+        }
+        if (playerClass == null) {
+            System.err.println("[CharacterClass.isValidUser] Unknown player.classId=" + p.getClassId()
+                    + " — rejecting equip");
+            return false;
+        }
+        boolean result;
         switch (req) {
-        case ROBE:
-            result = CharacterClass.isRobeClass(playerClass);
-            break;
-        case LEATHER:
-            result = CharacterClass.isLeatherClass(playerClass);
-            break;
-        case HEAVY:
-            result = CharacterClass.isHeavyClass(playerClass);
-            break;
-        case ALL:
-            result = true;
-            break;
-        case STAFF_USER:
-            result = CharacterClass.isStaffUser(playerClass);
-            break;
-        case WAND_USER:
-            result = CharacterClass.isWandUser(playerClass);
-            break;
-        case DAGGER_USER:
-            result = CharacterClass.isDaggerUser(playerClass);
-            break;
-        case BOW_USER:
-            result = CharacterClass.isBowUser(playerClass);
-            break;
-        default:
-            result = req.equals(playerClass);
+        case ROBE:        result = CharacterClass.isRobeClass(playerClass); break;
+        case LEATHER:     result = CharacterClass.isLeatherClass(playerClass); break;
+        case HEAVY:       result = CharacterClass.isHeavyClass(playerClass); break;
+        case ALL:         result = true; break;
+        case STAFF_USER:  result = CharacterClass.isStaffUser(playerClass); break;
+        case WAND_USER:   result = CharacterClass.isWandUser(playerClass); break;
+        case DAGGER_USER: result = CharacterClass.isDaggerUser(playerClass); break;
+        case BOW_USER:    result = CharacterClass.isBowUser(playerClass); break;
+        default:          result = req.equals(playerClass); break;
         }
         return result;
     }

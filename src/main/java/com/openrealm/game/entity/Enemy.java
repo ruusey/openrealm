@@ -571,14 +571,24 @@ public class Enemy extends Entity {
             Player player, RealmManagerServer mgr, Realm targetRealm,
             int speedCount, float minSpeedMult, float maxSpeedMult) {
         final int projCount = group.getProjectiles().size();
-        for (int i = 0; i < projCount; i++) {
+        // DAZED on an enemy halves the number of projectiles per attack
+        // instead of reducing fire rate (the player-DAZED behaviour).
+        // Stepping by 2 through the group preserves the spread pattern
+        // (every other projectile drops out) so a 5-cone becomes a sparser
+        // 3-cone, a 4-cone becomes a 2-cone, etc., rather than a
+        // one-sided burst that would happen if we just truncated.
+        final int projStep = (this.hasEffect(StatusEffectType.DAZED) && projCount > 1) ? 2 : 1;
+        for (int i = 0; i < projCount; i += projStep) {
             Projectile p = group.getProjectiles().get(i);
-            float angle;
-            if (p.getPositionMode().equals(ProjectilePositionMode.TARGET_PLAYER)) {
-                angle = baseAngle + Float.parseFloat(p.getAngle());
-            } else {
-                angle = Float.parseFloat(p.getAngle());
-            }
+            // Enemy projectiles always aim toward the player, with the
+            // per-projectile angle treated as a fan/offset relative to
+            // that direction. The positionMode flag is a player-ability
+            // concept (cursor-targeted spells like wizard's meteor) and
+            // does not apply to enemy fire — without this fix, any
+            // projectile group with positionMode=ABSOLUTE/RELATIVE fired
+            // straight south regardless of player position (Stone
+            // Guardian cone attack was the reported case).
+            final float angle = baseAngle + Float.parseFloat(p.getAngle());
 
             Vector2f projSource = source.clone();
             if (p.getSpawnOffsetX() != 0 || p.getSpawnOffsetY() != 0) {

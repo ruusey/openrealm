@@ -40,11 +40,12 @@ public class NinjaDashScript extends UseableItemScriptBase {
     // INVINCIBLE window. Slightly longer than the visual dash duration so
     // the brief gap between teleport and client interpolation is covered.
     private static final long INVINCIBLE_DURATION_MS = 400L;
-    // Visual trail lingers after the dash so the vortex of blades has
-    // time to swirl through ~2-3 full rotations on the client. At 0.020
-    // rad/ms orbit speed (renderer case 13) that's ~850ms for a satisfying
-    // multi-pass sweep before the blades fade.
-    private static final short TRAIL_DURATION_MS = 850;
+    // Visual trail lingers after the dash so the slowed-down vortex of
+    // blades + katana slashes have time to play through. At 0.011 rad/ms
+    // orbit speed (renderer case 13) and 0.5-life slash sweep, ~1100ms
+    // gives the swords room to clearly trace their arcs without the
+    // animation feeling rushed.
+    private static final short TRAIL_DURATION_MS = 1100;
     // Sub-tile step granularity for the collision walk along the dash line.
     private static final int STEPS_PER_TILE = 4;
 

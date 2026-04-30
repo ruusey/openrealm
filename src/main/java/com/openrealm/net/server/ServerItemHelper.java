@@ -30,10 +30,26 @@ public class ServerItemHelper {
      */
     public static boolean canEquipInSlot(Player player, GameItem item, int slotIdx) {
         if (item == null) return false;
-        if (slotIdx < 0 || slotIdx > 3) return false;
-        if (item.isConsumable() || item.isStackable()) return false;
-        if (item.getTargetSlot() >= 0 && item.getTargetSlot() != slotIdx) return false;
-        return com.openrealm.game.contants.CharacterClass.isValidUser(player, item.getTargetClass());
+        if (slotIdx < 0 || slotIdx > 3) {
+            log.warn("[canEquipInSlot] reject {} into slot {} — slot out of range", item.getName(), slotIdx);
+            return false;
+        }
+        if (item.isConsumable() || item.isStackable()) {
+            log.warn("[canEquipInSlot] reject {} into slot {} — consumable={} stackable={}",
+                    item.getName(), slotIdx, item.isConsumable(), item.isStackable());
+            return false;
+        }
+        if (item.getTargetSlot() >= 0 && item.getTargetSlot() != slotIdx) {
+            log.warn("[canEquipInSlot] reject {} into slot {} — targetSlot={} (expected {})",
+                    item.getName(), slotIdx, item.getTargetSlot(), slotIdx);
+            return false;
+        }
+        final boolean classOk = com.openrealm.game.contants.CharacterClass.isValidUser(player, item.getTargetClass());
+        if (!classOk) {
+            log.warn("[canEquipInSlot] reject {} into slot {} — class mismatch: player.classId={} item.targetClass={}",
+                    item.getName(), slotIdx, player.getClassId(), item.getTargetClass());
+        }
+        return classOk;
     }
 
     /**
