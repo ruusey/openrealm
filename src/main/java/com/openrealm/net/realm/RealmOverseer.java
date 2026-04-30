@@ -295,13 +295,25 @@ public class RealmOverseer {
 
     /**
      * Spawn a realm event: place setpiece terrain, spawn boss + initial minions, announce.
+     * Random natural-spawn path: searches for an allowed-zone, non-void tile.
+     * Returns true on success, false if no spawn could be placed.
      */
-    public void spawnRealmEvent(RealmEventModel event) {
+    public boolean spawnRealmEvent(RealmEventModel event) {
+        return spawnRealmEvent(event, null);
+    }
+
+    /**
+     * Spawn a realm event at the given world position (e.g. an admin's
+     * /event command should drop the encounter on top of the player). When
+     * atPos is non-null, all zone/safety checks are bypassed — setpieces
+     * are allowed to terraform the map freely; obstacles get overwritten.
+     * When atPos is null, the legacy random search is used.
+     */
+    public boolean spawnRealmEvent(RealmEventModel event, Vector2f atPos) {
         final TerrainGenerationParameters params = getTerrainParams();
         final boolean hasZones = params != null && params.getZones() != null && !params.getZones().isEmpty();
         final int tileSize = realm.getTileManager().getMapLayers().get(0).getTileSize();
 
-        // Find a valid spawn position in an allowed zone
         Vector2f spawnPos = null;
         int tileX = 0, tileY = 0;
         SetPieceModel setPiece = (event.getSetPieceId() >= 0 && GameDataManager.SETPIECES != null)
@@ -309,30 +321,39 @@ public class RealmOverseer {
         int spWidth = setPiece != null ? setPiece.getWidth() : 1;
         int spHeight = setPiece != null ? setPiece.getHeight() : 1;
 
-        for (int attempt = 0; attempt < 200; attempt++) {
-            Vector2f candidate = realm.getTileManager().getSafePosition();
-            if (candidate == null) continue;
+        if (atPos != null) {
+            // Forced spawn (admin /event): place the setpiece centered on
+            // the requested point. No zone or void checks — setpieces are
+            // allowed to fully terraform whatever's underneath.
+            spawnPos = atPos.clone();
+            tileX = (int) (atPos.x / tileSize) - spWidth / 2;
+            tileY = (int) (atPos.y / tileSize) - spHeight / 2;
+        } else {
+            for (int attempt = 0; attempt < 200; attempt++) {
+                Vector2f candidate = realm.getTileManager().getSafePosition();
+                if (candidate == null) continue;
 
-            // Zone check
-            if (hasZones && event.getAllowedZones() != null) {
-                OverworldZone zone = realm.getTileManager().getZoneForPosition(candidate.x, candidate.y);
-                if (zone == null || !event.getAllowedZones().contains(zone.getZoneId())) {
-                    continue;
+                // Zone check
+                if (hasZones && event.getAllowedZones() != null) {
+                    OverworldZone zone = realm.getTileManager().getZoneForPosition(candidate.x, candidate.y);
+                    if (zone == null || !event.getAllowedZones().contains(zone.getZoneId())) {
+                        continue;
+                    }
                 }
+
+                // Check tile isn't void
+                if (realm.getTileManager().isVoidTile(candidate, 0, 0)) continue;
+
+                spawnPos = candidate;
+                tileX = (int) (candidate.x / tileSize) - spWidth / 2;
+                tileY = (int) (candidate.y / tileSize) - spHeight / 2;
+                break;
             }
 
-            // Check tile isn't void
-            if (realm.getTileManager().isVoidTile(candidate, 0, 0)) continue;
-
-            spawnPos = candidate;
-            tileX = (int) (candidate.x / tileSize) - spWidth / 2;
-            tileY = (int) (candidate.y / tileSize) - spHeight / 2;
-            break;
-        }
-
-        if (spawnPos == null) {
-            log.warn("[REALM_EVENT] Failed to find valid spawn position for event '{}'", event.getName());
-            return;
+            if (spawnPos == null) {
+                log.warn("[REALM_EVENT] Failed to find valid spawn position for event '{}'", event.getName());
+                return false;
+            }
         }
 
         // Save existing terrain and stamp setpiece
@@ -350,7 +371,7 @@ public class RealmOverseer {
         if (bossModel == null) {
             log.error("[REALM_EVENT] Boss enemyId {} not found for event '{}'",
                 event.getBossEnemyId(), event.getName());
-            return;
+            return false;
         }
 
         float eventMult = Math.max(1, event.getEventMultiplier());
@@ -383,6 +404,7 @@ public class RealmOverseer {
         broadcastEventMarker(activeEvent, boss, event);
         log.info("[REALM_EVENT] Spawned '{}' at tile ({}, {}), boss entityId={}, duration={}s",
             event.getName(), tileX, tileY, boss.getId(), event.getDurationSeconds());
+        return true;
     }
 
     // Re-broadcast event markers every 192 ticks (~3s @ 64 TPS) so the

@@ -99,17 +99,32 @@ public class ServerCommandHandler {
             final MethodHandle methodHandle = COMMAND_CALLBACKS.get(message.getCommand().toLowerCase());
 
             if (methodHandle == null) {
-                final CommandPacket errorResponse = CommandPacket.createError(fromPlayer, 501,
-                        "Unknown command " + message.getCommand());
-                mgr.enqueueServerPacket(fromPlayer, errorResponse);
+                sendCommandError(mgr, fromPlayer, 501,
+                        "Unknown command /" + message.getCommand());
             } else {
                 methodHandle.invokeExact(mgr, fromPlayer, message);
             }
         } catch (Throwable e) {
-            log.error("Failed to handle server command. Reason: {}", e.getMessage());
-            final CommandPacket errorResponse = CommandPacket.createError(fromPlayer, 502, e.getMessage());
-            mgr.enqueueServerPacket(fromPlayer, errorResponse);
+            log.error("Failed to handle server command /{}. Reason: {}", message.getCommand(), e.getMessage());
+            final String reason = (e.getMessage() != null) ? e.getMessage() : e.getClass().getSimpleName();
+            sendCommandError(mgr, fromPlayer, 502, reason);
         }
+    }
+
+    // Surface command errors to the player two ways: a CommandPacket
+    // (commandId=4 SERVER_ERROR) for any client that cares, AND a TextPacket
+    // so the failure shows up in chat as "[SYSTEM] Error: ...". Sending both
+    // is cheap and guarantees the user sees feedback even if the CommandPacket
+    // path is filtered or unhandled by a particular client.
+    private static void sendCommandError(RealmManagerServer mgr, Player fromPlayer, int code, String reason) {
+        try {
+            final CommandPacket errorResponse = CommandPacket.createError(fromPlayer, code, reason);
+            mgr.enqueueServerPacket(fromPlayer, errorResponse);
+        } catch (Exception ignored) {}
+        try {
+            final TextPacket text = TextPacket.create("SYSTEM", fromPlayer.getName(), "Error: " + reason);
+            mgr.enqueueServerPacket(fromPlayer, text);
+        } catch (Exception ignored) {}
     }
     
 	@CommandHandler(value = "op", description = "Promote a user to administrator. Or demote them back to a regular user")
@@ -436,10 +451,18 @@ public class ServerCommandHandler {
 
         log.info("Player {} (admin) /event {} ({}) in realm {}",
                 target.getName(), eventId, eventModel.getName(), playerRealm.getRealmId());
-        overseer.spawnRealmEvent(eventModel);
+        // Drop the encounter on top of the admin's current position. The
+        // overseer terraforms freely under the setpiece — no zone or
+        // obstacle checks — so the spawn cannot fail for placement reasons.
+        final com.openrealm.game.math.Vector2f spawnAt = target.getPos().clone();
+        final boolean ok = overseer.spawnRealmEvent(eventModel, spawnAt);
+        if (!ok) {
+            throw new IllegalStateException("Failed to spawn event " + eventId
+                    + " — see server logs for the underlying reason");
+        }
         mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
                 "Spawned event " + eventId + " — " + eventModel.getName()
-                        + " (check minimap for the boss pin)"));
+                        + " at your position (check minimap for the boss pin)"));
     }
 
     @CommandHandler(value="seteffect", description="Add or remove Player stat effects")

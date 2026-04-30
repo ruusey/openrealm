@@ -309,10 +309,8 @@ public class RealmManagerServer implements Runnable {
 
 		realm.spawnRandomEnemies(realm.getMapId());
 
-		// No overseer on static maps (nexus, vault) — no boss events or enemy respawns
-		if (!isStaticMap) {
-			realm.setOverseer(new RealmOverseer(realm, this));
-		}
+		// Overseer attachment is handled centrally in addRealm() based on
+		// mapId, so no need to attach here.
 
 		// Place set piece structures only for terrain-generated maps
 		if (entryMapModel != null && entryMapModel.getTerrainId() >= 0 && GameDataManager.TERRAINS != null) {
@@ -2822,6 +2820,15 @@ public class RealmManagerServer implements Runnable {
 					log.error("[SERVER] Failed to place static portal. Reason: {}", e.getMessage());
 				}
 			}
+		}
+		// Overseer is ONLY attached to overworld map 2 (Beach). Each instance
+		// gets its own overseer so multiple beach realms in the dungeon graph
+		// have independent announcements / event spawning / population top-up.
+		// Dungeon maps and static maps (nexus, vault) get no overseer.
+		if (realm.getMapId() == 2 && realm.getOverseer() == null) {
+			realm.setOverseer(new RealmOverseer(realm, this));
+			log.info("[SERVER] Attached RealmOverseer to realm {} (mapId=2)",
+					realm.getRealmId());
 		}
 		this.realms.put(realm.getRealmId(), realm);
 	}

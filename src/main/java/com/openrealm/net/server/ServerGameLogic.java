@@ -107,10 +107,6 @@ public class ServerGameLogic {
 		}
 		TextPacket text = TextPacket.create("SYSTEM", player.getName(), zoneName);
 		mgr.enqueueServerPacket(player, text);
-		text = TextPacket.create("SYSTEM", player.getName(), "Difficulty: " + realm.getDifficulty());
-		mgr.enqueueServerPacket(player, text);
-		text = TextPacket.create("SYSTEM", player.getName(), "Enemies: " + realm.getEnemies().size());
-		mgr.enqueueServerPacket(player, text);
 
 		// Overseer welcome message
 		if (realm.getOverseer() != null) {
