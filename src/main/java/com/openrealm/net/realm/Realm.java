@@ -1907,42 +1907,35 @@ public class Realm {
 
     /**
      * Stamp a SetPieceModel onto the map at the given tile coordinates.
-     * Writes both base layer and collision layer. Tile ID 0 = transparent (skip).
+     * Writes every layer present in the setpiece's {@code data} map. Layer
+     * keys are numeric strings matching the underlying TileManager layer
+     * indices ("0" = base, "1" = collision, etc.). Tile ID 0 = transparent
+     * (skip — leaves the existing terrain in place).
      * Optionally tracks occupied tiles in the provided set (may be null).
      */
     public void stampSetPiece(com.openrealm.game.model.SetPieceModel model, int px, int py,
                                java.util.Set<Long> occupied) {
+        if (model.getData() == null) return;
         for (int dy = 0; dy < model.getHeight(); dy++) {
             for (int dx = 0; dx < model.getWidth(); dx++) {
                 int tx = px + dx, ty = py + dy;
                 if (occupied != null) {
                     occupied.add(((long) ty << 32) | tx);
                 }
-
-                // Base layer
-                int[][] baseLayout = model.getBaseLayout();
-                if (baseLayout != null && dy < baseLayout.length && dx < baseLayout[dy].length) {
-                    int baseTileId = baseLayout[dy][dx];
-                    if (baseTileId > 0) {
-                        try {
-                            com.openrealm.game.tile.TileData data = GameDataManager.TILES.get(baseTileId) != null
-                                ? GameDataManager.TILES.get(baseTileId).getData() : null;
-                            this.tileManager.getMapLayers().get(0).setTileAt(ty, tx, (short) baseTileId, data);
-                        } catch (Exception e) { /* skip */ }
-                    }
-                }
-
-                // Collision layer
-                int[][] collLayout = model.getCollisionLayout();
-                if (collLayout != null && dy < collLayout.length && dx < collLayout[dy].length) {
-                    int collTileId = collLayout[dy][dx];
-                    if (collTileId > 0) {
-                        try {
-                            com.openrealm.game.tile.TileData data = GameDataManager.TILES.get(collTileId) != null
-                                ? GameDataManager.TILES.get(collTileId).getData() : null;
-                            this.tileManager.getMapLayers().get(1).setTileAt(ty, tx, (short) collTileId, data);
-                        } catch (Exception e) { /* skip */ }
-                    }
+                for (var layerEntry : model.getData().entrySet()) {
+                    final int layerIdx;
+                    try { layerIdx = Integer.parseInt(layerEntry.getKey()); }
+                    catch (NumberFormatException nfe) { continue; }
+                    if (layerIdx < 0 || layerIdx >= this.tileManager.getMapLayers().size()) continue;
+                    int[][] layer = layerEntry.getValue();
+                    if (layer == null || dy >= layer.length || dx >= layer[dy].length) continue;
+                    int tileId = layer[dy][dx];
+                    if (tileId <= 0) continue;
+                    try {
+                        com.openrealm.game.tile.TileData data = GameDataManager.TILES.get(tileId) != null
+                            ? GameDataManager.TILES.get(tileId).getData() : null;
+                        this.tileManager.getMapLayers().get(layerIdx).setTileAt(ty, tx, (short) tileId, data);
+                    } catch (Exception e) { /* skip */ }
                 }
             }
         }
