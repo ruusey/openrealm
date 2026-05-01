@@ -2172,7 +2172,11 @@ public class RealmManagerServer implements Runnable {
 			}
 			final boolean armorPiercing = b.hasFlag(ProjectileFlag.ARMOR_PIERCING);
 			final boolean armorBroken = player.hasEffect(StatusEffectType.ARMOR_BROKEN);
-			final short minDmg = (short) (rawDmg * 0.15f);
+			// Defense can only mitigate 85% of incoming damage. Use Math.ceil
+			// + a hard floor of 1 so low-damage projectiles (e.g. Pirate's 5
+			// dmg) always chip for at least 1 — without ceil the short cast
+			// would truncate 0.75 to 0 and a 7-def player would take nothing.
+			final short minDmg = (short) Math.max(1, Math.ceil(rawDmg * 0.15f));
 			short dmgToInflict;
 			if (armorPiercing || armorBroken) {
 				// Armor piercing/broken: full damage, ignore defense entirely
@@ -2222,7 +2226,10 @@ public class RealmManagerServer implements Runnable {
 		if (circleHit(b, e) && !b.isEnemy()) {
 			final boolean armorPiercing = b.hasFlag(ProjectileFlag.ARMOR_PIERCING);
 			final boolean armorBroken = e.hasEffect(StatusEffectType.ARMOR_BROKEN);
-			final short minDmg = (short) (b.getDamage() * 0.15);
+			// 15% damage floor with Math.ceil + hard min of 1 so weak
+			// shots still chip armored enemies — without ceil the short cast
+			// truncated 0.75 to 0 and any def >= raw dealt nothing.
+			final short minDmg = (short) Math.max(1, Math.ceil(b.getDamage() * 0.15));
 			short dmgToInflict;
 			if (armorPiercing || armorBroken) {
 				// Armor piercing/broken: full damage, ignore defense entirely
