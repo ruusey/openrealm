@@ -381,6 +381,8 @@ public class Realm {
                         .map(GameItem::fromGameItemRef).collect(Collectors.toList());
                 final Chest toSpawn = new Chest(new Vector2f(x, y),
                         itemsInChest.toArray(new GameItem[8]));
+                // Vault chests are soulbound to the owning player
+                toSpawn.setSoulboundPlayerId(player.getId());
                 this.addLootContainer(toSpawn);
             }
         } catch (Exception e) {

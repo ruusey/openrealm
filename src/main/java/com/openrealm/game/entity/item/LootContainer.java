@@ -45,6 +45,7 @@ public class LootContainer {
         }
         this.spawnedTime = System.currentTimeMillis();
         this.tier = this.determineTier();
+        this.soulboundPlayerId = -1; // Public by default
     }
 
     public boolean getContentsChanged() {
@@ -59,6 +60,7 @@ public class LootContainer {
         this.items[0] = loot;
         this.spawnedTime = Instant.now().toEpochMilli();
         this.tier = this.determineTier();
+        this.soulboundPlayerId = -1; // Public by default
     }
 
     public LootContainer(LootTier tier, Vector2f pos, GameItem[] loot) {
@@ -74,6 +76,7 @@ public class LootContainer {
         }
         this.spawnedTime = Instant.now().toEpochMilli();
         this.tier = this.determineTier();
+        this.soulboundPlayerId = -1; // Public by default
     }
 
     public boolean isExpired() {
