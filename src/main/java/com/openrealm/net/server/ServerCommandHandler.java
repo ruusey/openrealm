@@ -451,10 +451,13 @@ public class ServerCommandHandler {
 
         log.info("Player {} (admin) /event {} ({}) in realm {}",
                 target.getName(), eventId, eventModel.getName(), playerRealm.getRealmId());
-        // Drop the encounter on top of the admin's current position. The
-        // overseer terraforms freely under the setpiece — no zone or
-        // obstacle checks — so the spawn cannot fail for placement reasons.
+        // Drop the encounter ~6 tiles NORTH of the admin so the player
+        // doesn't end up standing on the boss / inside the setpiece.
+        // Setpieces terraform freely under whatever's there, so the
+        // spawn cannot fail for placement reasons.
+        final int tileSize = com.openrealm.game.contants.GlobalConstants.BASE_TILE_SIZE;
         final com.openrealm.game.math.Vector2f spawnAt = target.getPos().clone();
+        spawnAt.y -= 6 * tileSize;
         final boolean ok = overseer.spawnRealmEvent(eventModel, spawnAt);
         if (!ok) {
             throw new IllegalStateException("Failed to spawn event " + eventId

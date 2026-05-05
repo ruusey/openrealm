@@ -373,6 +373,14 @@ public class RealmOverseer {
             return false;
         }
 
+        // Setpieces terraform but the boss-spawn point may still land on a
+        // collision tile (e.g. a pillar in the center of the stamped art).
+        // Push to the nearest open tile within a radius covering the whole
+        // setpiece so the boss is never stuck on spawn.
+        final int searchRadius = Math.max(spWidth, spHeight) + 2;
+        final Vector2f bossSafePos = findOpenSpawnNear(spawnPos, searchRadius);
+        if (bossSafePos != null) spawnPos = bossSafePos;
+
         float eventMult = Math.max(1, event.getEventMultiplier());
         float diff = realm.getZoneDifficulty(spawnPos.x, spawnPos.y) * eventMult;
         Enemy boss = new Enemy(Realm.RANDOM.nextLong(), bossModel.getEnemyId(),
@@ -509,6 +517,37 @@ public class RealmOverseer {
     /**
      * Spawn a wave of minions around the boss.
      */
+    /**
+     * Return the nearest tile-center inside {@code radiusTiles} of
+     * {@code target} that is neither a collision tile nor a void tile.
+     * Searches in expanding rings (Chebyshev distance) so the closest
+     * candidate wins. Returns the original target if it's already open,
+     * or null if no open tile exists within the search radius.
+     */
+    private Vector2f findOpenSpawnNear(Vector2f target, int radiusTiles) {
+        if (target == null) return null;
+        final var tm = realm.getTileManager();
+        final int tileSize = tm.getMapLayers().get(0).getTileSize();
+        final int baseTx = (int) (target.x / tileSize);
+        final int baseTy = (int) (target.y / tileSize);
+        for (int r = 0; r <= radiusTiles; r++) {
+            for (int dy = -r; dy <= r; dy++) {
+                for (int dx = -r; dx <= r; dx++) {
+                    // Only the ring at distance r — skip interior cells
+                    // already tested in earlier passes.
+                    if (Math.max(Math.abs(dx), Math.abs(dy)) != r) continue;
+                    final float cx = (baseTx + dx) * tileSize + tileSize * 0.5f;
+                    final float cy = (baseTy + dy) * tileSize + tileSize * 0.5f;
+                    final Vector2f candidate = new Vector2f(cx, cy);
+                    if (tm.isCollisionTile(candidate)) continue;
+                    if (tm.isVoidTile(candidate, 0, 0)) continue;
+                    return candidate;
+                }
+            }
+        }
+        return null;
+    }
+
     private void spawnMinionWave(Realm.ActiveRealmEvent evt, Enemy boss, MinionWave wave, String eventName) {
         EnemyModel minionModel = GameDataManager.ENEMIES.get(wave.getEnemyId());
         if (minionModel == null) return;
@@ -519,6 +558,12 @@ public class RealmOverseer {
             float ox = (float) Math.cos(angle) * wave.getOffset();
             float oy = (float) Math.sin(angle) * wave.getOffset();
             Vector2f minionPos = new Vector2f(boss.getPos().x + ox, boss.getPos().y + oy);
+
+            // Push out of collision tiles so a minion never spawns wedged
+            // inside a wall / pillar / decoration. Search radius is small —
+            // we just need the nearest free neighbor.
+            Vector2f safePos = findOpenSpawnNear(minionPos, 4);
+            if (safePos != null) minionPos = safePos;
 
             float waveMult = Math.max(1, wave.getEventMultiplier());
             float minionDiff = realm.getZoneDifficulty(minionPos.x, minionPos.y) * waveMult;
