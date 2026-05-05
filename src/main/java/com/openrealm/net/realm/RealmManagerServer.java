@@ -217,6 +217,17 @@ public class RealmManagerServer implements Runnable {
 	// enemy a 32 Hz effective AI rate; value 4 → 16 Hz. 32 Hz is plenty
 	// for chase/attack AI and halves the per-tick cost at 10K enemies.
 	private static final int ENEMY_AI_TICK_DIVISOR = 2;
+	// Movement stagger for awake-but-off-screen enemies. If no player has
+	// the enemy in viewport, run tickMove every Nth tick. Visible enemies
+	// still move every tick to avoid stutter. Power of 2 (bitmask).
+	private static final int ENEMY_MOVE_FAR_DIVISOR = 4;
+	// Viewport radius squared (10 tiles). Mirror the constant used by
+	// LoadPacket / movement broadcast in RealmManagerServer.enqueueGameData
+	// so the "is anyone watching this enemy?" check matches the visibility
+	// the client actually sees.
+	private static final float VIEWPORT_RADIUS_SQ =
+		(10f * com.openrealm.game.contants.GlobalConstants.BASE_TILE_SIZE)
+			* (10f * com.openrealm.game.contants.GlobalConstants.BASE_TILE_SIZE);
 
 	// Hard cap on concurrent ENEMY bullets per realm. The 1000-enemy stress
 	// test produced 15K live bullets (1.5 bullets/sec/enemy × ~10s lifetime)
@@ -394,25 +405,52 @@ public class RealmManagerServer implements Runnable {
 		RealmManagerServer.log.info("[SERVER] RealmManagerServer exiting run().");
 	}
 
+	// Tick-budget log: when one whole tick exceeds the 16ms budget (1 tick at
+	// 64 Hz), emit a single line breaking down where the time went. Throttled
+	// to once per second so a sustained slow-tick storm doesn't flood logs.
+	private static final long TICK_BUDGET_NANOS = 16_000_000L; // 16ms
+	private long lastSlowTickLogMs = 0L;
+
 	private void tick() {
+		final long tickStart = System.nanoTime();
+		long tJoins = 0, tTransitions = 0, tPackets = 0, tUpdate = 0, tEnqueue = 0, tSend = 0, tOverseer = 0;
 		try {
+			long t0 = System.nanoTime();
 			this.processPendingJoins();
+			tJoins = System.nanoTime() - t0;
+
+			t0 = System.nanoTime();
 			this.processPendingTransitions();
+			tTransitions = System.nanoTime() - t0;
+
+			t0 = System.nanoTime();
 			this.processServerPackets();
+			tPackets = System.nanoTime() - t0;
+
 			// update() runs BEFORE enqueueGameData so that enemy bullets spawned
 			// during Enemy.update() are in the spatial grid when LoadPacket is built.
 			// Previously, enqueueGameData ran first and missed same-tick enemy bullets,
 			// causing them to appear 1-2 ticks late on the client.
+			t0 = System.nanoTime();
 			this.update(0);
+			tUpdate = System.nanoTime() - t0;
+
+			t0 = System.nanoTime();
 			this.enqueueGameData();
+			tEnqueue = System.nanoTime() - t0;
+
+			t0 = System.nanoTime();
 			this.sendGameData();
+			tSend = System.nanoTime() - t0;
 
 			// Tick all realm overseers (ecosystem management)
+			t0 = System.nanoTime();
 			for (Realm realm : this.realms.values()) {
 				if (realm.getOverseer() != null) {
 					realm.getOverseer().tick();
 				}
 			}
+			tOverseer = System.nanoTime() - t0;
 
 			if (Instant.now().toEpochMilli() - this.tickSampleTime > 1000) {
 				this.tickSampleTime = Instant.now().toEpochMilli();
@@ -423,6 +461,24 @@ public class RealmManagerServer implements Runnable {
 			}
 		} catch (Exception e) {
 			RealmManagerServer.log.error("Failed to process server tick. Reason: {}", e);
+		}
+		final long tickTotal = System.nanoTime() - tickStart;
+		if (tickTotal > TICK_BUDGET_NANOS) {
+			final long nowMs = System.currentTimeMillis();
+			if (nowMs - lastSlowTickLogMs >= 1000) {
+				lastSlowTickLogMs = nowMs;
+				int totalEnemies = 0, totalBullets = 0, totalPlayers = 0;
+				for (Realm r : this.realms.values()) {
+					totalEnemies += r.getEnemies().size();
+					totalBullets += r.getBullets().size();
+					totalPlayers += r.getPlayers().size();
+				}
+				log.warn("[SERVER] slow tick: total={}ms (joins={}, trans={}, pkts={}, update={}, enqueue={}, send={}, overseer={}) — realms={}, players={}, enemies={}, bullets={}",
+					tickTotal / 1_000_000,
+					tJoins / 1_000_000, tTransitions / 1_000_000, tPackets / 1_000_000,
+					tUpdate / 1_000_000, tEnqueue / 1_000_000, tSend / 1_000_000, tOverseer / 1_000_000,
+					this.realms.size(), totalPlayers, totalEnemies, totalBullets);
+			}
 		}
 	}
 
@@ -1494,10 +1550,17 @@ public class RealmManagerServer implements Runnable {
 			// into ~50 heavy + 9950 cheap dist checks. Snapshot the player
 			// list ONCE per tick to avoid recreating an iterator per enemy.
 			final int aiTick = this.tickCounter & (ENEMY_AI_TICK_DIVISOR - 1);
+			final int moveFarTick = (int) (this.tickCounter & (ENEMY_MOVE_FAR_DIVISOR - 1));
 			final Player[] activePlayers = realm.getPlayers().values().toArray(new Player[0]);
 			final int playerCount = activePlayers.length;
 			for (final Enemy enemy : realm.getEnemies().values()) {
+				// Single distance pass classifies the enemy:
+				//   visible — within viewport of ANY player → full 64Hz move
+				//   awake   — within chaseRange of ANY player but not visible →
+				//             AI staggered + movement only every Nth tick
+				//   dormant — outside chaseRange of every player → no work
 				boolean awake = false;
+				boolean visible = false;
 				if (playerCount > 0) {
 					final float ex = enemy.getPos().x;
 					final float ey = enemy.getPos().y;
@@ -1505,9 +1568,15 @@ public class RealmManagerServer implements Runnable {
 					for (int i = 0; i < playerCount; i++) {
 						final float pdx = activePlayers[i].getPos().x - ex;
 						final float pdy = activePlayers[i].getPos().y - ey;
-						if (pdx * pdx + pdy * pdy <= chaseRangeSq) {
+						final float dsq = pdx * pdx + pdy * pdy;
+						if (dsq <= VIEWPORT_RADIUS_SQ) {
 							awake = true;
+							visible = true;
 							break;
+						}
+						if (dsq <= chaseRangeSq) {
+							awake = true;
+							// don't break — keep looking for a viewport-close player
 						}
 					}
 				}
@@ -1522,7 +1591,12 @@ public class RealmManagerServer implements Runnable {
 				if ((enemy.getId() & (ENEMY_AI_TICK_DIVISOR - 1)) == aiTick) {
 					enemy.update(realm.getRealmId(), this, time);
 				}
-				enemy.tickMove(realm);
+				// Visible enemies always move; off-screen awake enemies move
+				// every ENEMY_MOVE_FAR_DIVISOR-th tick. Stutter doesn't matter
+				// for entities no client is rendering.
+				if (visible || (enemy.getId() & (ENEMY_MOVE_FAR_DIVISOR - 1)) == moveFarTick) {
+					enemy.tickMove(realm);
+				}
 				enemy.removeExpiredEffects();
 			}
 			for (final Bullet bullet : realm.getBullets().values()) {
@@ -2433,9 +2507,6 @@ public class RealmManagerServer implements Runnable {
 					log.info("[SERVER] enemyDeath: BOSS EXIT portal spawned in realm {} at ({}, {}) -> source realm {}",
 							targetRealm.getRealmId(), exitPortal.getPos().x, exitPortal.getPos().y,
 							sourceRealm.getRealmId());
-				} else {
-					log.warn("[SERVER] enemyDeath: boss {} died but source realm {} no longer exists",
-							enemy.getEnemyId(), targetRealm.getSourceRealmId());
 				}
 			}
 
@@ -2465,8 +2536,6 @@ public class RealmManagerServer implements Runnable {
 				for (Long playerId : qualifyingPlayerIds) {
 					dropLootForPlayer(targetRealm, enemy, lootTable, playerId, diff, upgradeEligible, upgradeChance);
 				}
-				log.info("[SERVER] Soulbound loot dropped for {} qualifying player(s) from enemy {}",
-						qualifyingPlayerIds.size(), enemy.getEnemyId());
 			}
 
 			// Portal drops: use dungeon graph if this realm has a nodeId.
@@ -2480,15 +2549,10 @@ public class RealmManagerServer implements Runnable {
 					&& !currentNode.getPortalDropNodeMap().isEmpty()
 					&& !targetRealm.isOverworld();
 
-			log.info("[SERVER] enemyDeath: enemy={} nodeId={} currentNode={} portalDrops={} useGraphDrops={}",
-					enemy.getEnemyId(), currentNodeId, currentNode != null ? currentNode.getDisplayName() : "null",
-					lootTable.getPortalDrops(), useGraphDrops);
-
 			if (useGraphDrops) {
 				// Graph-based portal drops: drop portals to child nodes (dungeons only)
 				if (lootTable.getPortalDrops() != null) {
 					final List<Integer> rolledPortals = lootTable.getPortalDrop();
-					log.info("[SERVER] enemyDeath: rolled portals={} from drops={}", rolledPortals, lootTable.getPortalDrops());
 					for (int portalId : rolledPortals) {
 						// Find which child node this portalId leads to from the current node
 						String targetNodeId = null;
@@ -2499,8 +2563,6 @@ public class RealmManagerServer implements Runnable {
 							}
 						}
 						if (targetNodeId == null) {
-							log.info("[SERVER] enemyDeath: portalId {} not in node's portalDropNodeMap {}, skipping",
-									portalId, currentNode.getPortalDropNodeMap());
 							continue;
 						}
 

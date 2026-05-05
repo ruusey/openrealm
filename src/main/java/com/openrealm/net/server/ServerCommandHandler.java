@@ -383,9 +383,26 @@ public class ServerCommandHandler {
                 toKill.add(e);
             }
         }
-        for (final Enemy e : toKill) {
+        final Long[] killedIds = new Long[toKill.size()];
+        for (int i = 0; i < toKill.size(); i++) {
+            final Enemy e = toKill.get(i);
+            killedIds[i] = e.getId();
             realm.getExpiredEnemies().add(e.getId());
             realm.removeEnemy(e);
+        }
+
+        // Explicit UnloadPacket: the per-player LoadPacket diff only knows
+        // about the last 500 enemies it sent (MAX_ENEMIES_PER_LOAD cap), so
+        // entities trimmed out of earlier ticks pile up on the client and
+        // survive /kill. Broadcasting an unload with every killed id ensures
+        // the client drops them regardless of what's in playerLoadState.
+        if (killedIds.length > 0) {
+            final com.openrealm.net.client.packet.UnloadPacket unload =
+                com.openrealm.net.client.packet.UnloadPacket.from(
+                    new Long[0], new Long[0], killedIds, new Long[0], new Long[0]);
+            for (final Player p : realm.getPlayers().values()) {
+                mgr.enqueueServerPacket(p, unload);
+            }
         }
 
         log.info("Player {} /kill: removed {} enemies within {} tiles at {}",

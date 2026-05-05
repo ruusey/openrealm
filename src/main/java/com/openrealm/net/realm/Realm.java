@@ -835,25 +835,50 @@ public class Realm {
             for (int i = 0, n = Math.min(enemyCandidates.size(), MAX_ENEMIES_PER_LOAD); i < n; i++) {
                 enemiesToLoad.add(enemyCandidates.get(i).enemy);
             }
-            if (bulletCandidatesInner.size() > MAX_BULLETS_PER_LOAD) {
-                bulletCandidatesInner.sort((a, b1) -> Float.compare(a.distSq, b1.distSq));
+            // Bullet cap: player-fired bullets are always loaded first so a
+            // player's own ability/projectile is never culled by 1000+ enemy
+            // bullets crowding the cap. Without this, under heavy load the
+            // player sees enemies firing but their own attacks don't render.
+            // Remaining cap slots go to enemy bullets sorted by distance.
+            final List<Bullet> bulletsToLoad = new ArrayList<>(MAX_BULLETS_PER_LOAD);
+            for (int i = 0; i < bulletCandidatesInner.size() && bulletsToLoad.size() < MAX_BULLETS_PER_LOAD; i++) {
+                final Bullet b = bulletCandidatesInner.get(i).bullet;
+                if (!b.isEnemy()) bulletsToLoad.add(b);
             }
-            final List<Bullet> bulletsToLoad = new ArrayList<>(
-                    Math.min(bulletCandidatesInner.size(), MAX_BULLETS_PER_LOAD));
-            for (int i = 0, n = Math.min(bulletCandidatesInner.size(), MAX_BULLETS_PER_LOAD); i < n; i++) {
-                bulletsToLoad.add(bulletCandidatesInner.get(i).bullet);
+            if (bulletsToLoad.size() < MAX_BULLETS_PER_LOAD) {
+                if (bulletCandidatesInner.size() > MAX_BULLETS_PER_LOAD) {
+                    bulletCandidatesInner.sort((a, b1) -> Float.compare(a.distSq, b1.distSq));
+                }
+                for (int i = 0; i < bulletCandidatesInner.size() && bulletsToLoad.size() < MAX_BULLETS_PER_LOAD; i++) {
+                    final Bullet b = bulletCandidatesInner.get(i).bullet;
+                    if (b.isEnemy()) bulletsToLoad.add(b);
+                }
             }
 
             // Second pass: query the wider bullet radius for bullets only.
             // This catches projectiles fired by enemies just beyond the viewport
-            // (e.g. enemies whose attack range exceeds the load radius).
+            // (e.g. enemies whose attack range exceeds the load radius). Same
+            // player-bullet priority as the inner pass — player abilities in
+            // the outer ring (e.g. long-range shots) are kept under cap pressure.
             final List<Long> bulletCandidates = this.spatialGrid.queryRadius(center.x, center.y, bulletRadius);
+            // Pass 2a: player bullets in the outer ring
             for (int i = 0; i < bulletCandidates.size(); i++) {
                 if (bulletsToLoad.size() >= MAX_BULLETS_PER_LOAD) break;
                 final long id = bulletCandidates.get(i);
                 Bullet b = this.bullets.get(id);
-                if (b == null) continue;
-                // Skip bullets already added in the inner-radius pass (avoid dupes)
+                if (b == null || b.isEnemy()) continue;
+                float dx = b.getPos().x - center.x;
+                float dy = b.getPos().y - center.y;
+                float dsq = dx * dx + dy * dy;
+                if (dsq <= radiusSq) continue; // already added above
+                if (dsq <= bulletRadiusSq) bulletsToLoad.add(b);
+            }
+            // Pass 2b: enemy bullets in the outer ring (only if cap has slack)
+            for (int i = 0; i < bulletCandidates.size(); i++) {
+                if (bulletsToLoad.size() >= MAX_BULLETS_PER_LOAD) break;
+                final long id = bulletCandidates.get(i);
+                Bullet b = this.bullets.get(id);
+                if (b == null || !b.isEnemy()) continue;
                 float dx = b.getPos().x - center.x;
                 float dy = b.getPos().y - center.y;
                 float dsq = dx * dx + dy * dy;
