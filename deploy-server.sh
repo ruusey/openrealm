@@ -31,6 +31,7 @@ APP_USER="openrealm"
 DATA_SERVER_URL="http://98.95.5.4"
 GAME_PORT_TCP=2222
 GAME_PORT_WS=2223
+ADMIN_PORT=8088
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -71,8 +72,21 @@ if ! id "${APP_USER}" &>/dev/null; then
   useradd --system --no-create-home --shell /sbin/nologin "${APP_USER}"
 fi
 
+# Preserve any existing OPENREALM_RELOAD_TOKEN across redeploys; the
+# operator pastes it in once after running the data-service deploy. Without
+# this preserve-block, every redeploy would reset it to empty and break
+# the data service's Publish flow until the operator resets it again.
+RELOAD_TOKEN=""
+if [[ -f "${APP_DIR}/env" ]]; then
+  RELOAD_TOKEN=$(grep "^OPENREALM_RELOAD_TOKEN=" "${APP_DIR}/env" 2>/dev/null | cut -d= -f2- || true)
+fi
+
 cat > "${APP_DIR}/env" <<ENVFILE
 DATA_SERVER_URL=${DATA_SERVER_URL}
+OPENREALM_ADMIN_PORT=${ADMIN_PORT}
+# Shared secret with the data service. Copy the value printed by
+# openrealm-data's deploy.sh and paste here, then restart the service.
+OPENREALM_RELOAD_TOKEN=${RELOAD_TOKEN}
 ENVFILE
 
 chmod 600 "${APP_DIR}/env"
@@ -113,6 +127,7 @@ systemctl start "${APP_NAME}"
 if command -v firewall-cmd &>/dev/null; then
   firewall-cmd --permanent --add-port=${GAME_PORT_TCP}/tcp
   firewall-cmd --permanent --add-port=${GAME_PORT_WS}/tcp
+  firewall-cmd --permanent --add-port=${ADMIN_PORT}/tcp
   firewall-cmd --reload
 fi
 
@@ -126,18 +141,29 @@ echo " Logs:       sudo journalctl -u ${APP_NAME} -f"
 echo " Data server: ${DATA_SERVER_URL}"
 echo " TCP port:   ${GAME_PORT_TCP}"
 echo " WS port:    ${GAME_PORT_WS}"
+echo " Admin port: ${ADMIN_PORT} (Publish reload listener)"
 echo ""
 echo " !! REQUIRED STEPS !!"
 echo ""
 echo " 1. Open these ports in this EC2 instance's Security Group:"
 echo "    - TCP ${GAME_PORT_TCP} (native clients)"
 echo "    - TCP ${GAME_PORT_WS}  (web clients)"
+echo "    - TCP ${ADMIN_PORT}     (data-service reload — restrict to data server IP)"
 echo ""
 echo " 2. On the DATA SERVER (98.95.5.4), add this server's PUBLIC IP"
 echo "    to TRUSTED_HOSTS so it can call the data API:"
 echo ""
 echo "    Edit /opt/openrealm-data/env and add:"
 echo "      TRUSTED_HOSTS=<this-server-public-ip>"
+echo "    Then: sudo systemctl restart openrealm-data"
+echo ""
+echo " 3. Copy OPENREALM_RELOAD_TOKEN from the data server's"
+echo "    /opt/openrealm-data/env into /opt/openrealm/env on this box,"
+echo "    then: sudo systemctl restart openrealm"
+echo ""
+echo " 4. On the data server, add this server to OPENREALM_GAME_SERVERS"
+echo "    in /opt/openrealm-data/env so the Publish button targets it:"
+echo "      OPENREALM_GAME_SERVERS=name=http://<this-server-public-ip>:${ADMIN_PORT}/admin/reloadGameData"
 echo "    Then: sudo systemctl restart openrealm-data"
 echo ""
 echo "    For multiple game servers, comma-separate:"

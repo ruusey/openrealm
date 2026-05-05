@@ -43,8 +43,23 @@ public class ServerLauncher {
         ServerLauncher.pingServer();
         GameDataManager.loadGameData(true);
 
+        // Admin HTTP listener — receives Publish-button reload calls from
+        // the data service. Token-protected via OPENREALM_RELOAD_TOKEN env.
+        try {
+            int adminPort = parseIntEnv("OPENREALM_ADMIN_PORT", 8088);
+            new AdminHttpServer(adminPort).start();
+        } catch (Exception e) {
+            ServerLauncher.log.error("Failed to start admin listener: {}", e.getMessage());
+        }
+
         final RealmManagerServer server = new RealmManagerServer();
         server.doRunServer();
+    }
+
+    private static int parseIntEnv(String name, int fallback) {
+        String v = System.getenv(name);
+        if (v == null || v.isBlank()) return fallback;
+        try { return Integer.parseInt(v.trim()); } catch (NumberFormatException e) { return fallback; }
     }
 
     private static void pingServer() {

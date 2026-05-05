@@ -1,7 +1,11 @@
 package com.openrealm.game.data;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -52,6 +56,27 @@ public class GameDataManager {
 	public static Map<Integer, SetPieceModel>                 SETPIECES = null;
 	public static Map<Integer, RealmEventModel>               REALM_EVENTS = null;
 
+	/**
+	 * Locate a game-data file. Order of precedence:
+	 *   1. {@code openrealm.dataDir} system property / {@code OPENREALM_DATA_DIR}
+	 *      env var — the externalized writable dir on the data service.
+	 *      Editor saves land here; reload picks them up on the next call.
+	 *   2. Bundled classpath copy at {@code data/<filename>} — the fallback
+	 *      for game servers (which fetch via remote=true) and for first
+	 *      boot before the externalized dir has been populated.
+	 *
+	 * Used by every {@code load*(remote=false)} branch.
+	 */
+	private static InputStream openLocalData(String filename) throws IOException {
+		String dir = System.getProperty("openrealm.dataDir");
+		if (dir == null || dir.isBlank()) dir = System.getenv("OPENREALM_DATA_DIR");
+		if (dir != null && !dir.isBlank()) {
+			Path p = Paths.get(dir, filename);
+			if (Files.exists(p)) return Files.newInputStream(p);
+		}
+		return GameDataManager.class.getClassLoader().getResourceAsStream("data/" + filename);
+	}
+
 	private static void loadLootGroups(final boolean remote) throws Exception {
 		GameDataManager.log.info("Loading Loot Groups...");
 		GameDataManager.LOOT_GROUPS = new HashMap<>();
@@ -59,8 +84,7 @@ public class GameDataManager {
 		if (remote) {
 			text = ServerGameLogic.DATA_SERVICE.executeGet("game-data/loot-groups.json", null);
 		} else {
-			InputStream inputStream = GameDataManager.class.getClassLoader()
-					.getResourceAsStream("data/loot-groups.json");
+			InputStream inputStream = openLocalData("loot-groups.json");
 			text = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
 		}
 		LootGroupModel[] lootGroups = GameDataManager.JSON_MAPPER.readValue(text, LootGroupModel[].class);
@@ -77,8 +101,7 @@ public class GameDataManager {
 		if (remote) {
 			text = ServerGameLogic.DATA_SERVICE.executeGet("game-data/loot-tables.json", null);
 		} else {
-			InputStream inputStream = GameDataManager.class.getClassLoader()
-					.getResourceAsStream("data/loot-tables.json");
+			InputStream inputStream = openLocalData("loot-tables.json");
 			text = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
 		}
 		LootTableModel[] lootTables = GameDataManager.JSON_MAPPER.readValue(text, LootTableModel[].class);
@@ -95,8 +118,7 @@ public class GameDataManager {
 		if (remote) {
 			text = ServerGameLogic.DATA_SERVICE.executeGet("game-data/character-classes.json", null);
 		} else {
-			InputStream inputStream = GameDataManager.class.getClassLoader()
-					.getResourceAsStream("data/character-classes.json");
+			InputStream inputStream = openLocalData("character-classes.json");
 			text = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
 		}
 		CharacterClassModel[] characterClasses = GameDataManager.JSON_MAPPER.readValue(text,
@@ -113,8 +135,7 @@ public class GameDataManager {
 		if (remote) {
 			text = ServerGameLogic.DATA_SERVICE.executeGet("game-data/exp-levels.json", null);
 		} else {
-			InputStream inputStream = GameDataManager.class.getClassLoader()
-					.getResourceAsStream("data/exp-levels.json");
+			InputStream inputStream = openLocalData("exp-levels.json");
 			text = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
 		}
 		ExperienceModel expModel = GameDataManager.JSON_MAPPER.readValue(text, ExperienceModel.class);
@@ -130,7 +151,7 @@ public class GameDataManager {
 		if (remote) {
 			text = ServerGameLogic.DATA_SERVICE.executeGet("game-data/portals.json", null);
 		} else {
-			InputStream inputStream = GameDataManager.class.getClassLoader().getResourceAsStream("data/portals.json");
+			InputStream inputStream = openLocalData("portals.json");
 			text = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
 		}
 		PortalModel[] maps = GameDataManager.JSON_MAPPER.readValue(text, PortalModel[].class);
@@ -147,7 +168,7 @@ public class GameDataManager {
 		if (remote) {
 			text = ServerGameLogic.DATA_SERVICE.executeGet("game-data/dungeon-graph.json", null);
 		} else {
-			InputStream inputStream = GameDataManager.class.getClassLoader().getResourceAsStream("data/dungeon-graph.json");
+			InputStream inputStream = openLocalData("dungeon-graph.json");
 			text = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
 		}
 		DungeonGraphNode[] nodes = GameDataManager.JSON_MAPPER.readValue(text, DungeonGraphNode[].class);
@@ -164,7 +185,7 @@ public class GameDataManager {
 		if (remote) {
 			text = ServerGameLogic.DATA_SERVICE.executeGet("game-data/terrains.json", null);
 		} else {
-			InputStream inputStream = GameDataManager.class.getClassLoader().getResourceAsStream("data/terrains.json");
+			InputStream inputStream = openLocalData("terrains.json");
 			text = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
 		}
 		TerrainGenerationParameters[] maps = GameDataManager.JSON_MAPPER.readValue(text,
@@ -182,7 +203,7 @@ public class GameDataManager {
 		if (remote) {
 			text = ServerGameLogic.DATA_SERVICE.executeGet("game-data/maps.json", null);
 		} else {
-			InputStream inputStream = GameDataManager.class.getClassLoader().getResourceAsStream("data/maps.json");
+			InputStream inputStream = openLocalData("maps.json");
 			text = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
 		}
 		MapModel[] maps = GameDataManager.JSON_MAPPER.readValue(text, MapModel[].class);
@@ -199,7 +220,7 @@ public class GameDataManager {
 		if (remote) {
 			text = ServerGameLogic.DATA_SERVICE.executeGet("game-data/tiles.json", null);
 		} else {
-			InputStream inputStream = GameDataManager.class.getClassLoader().getResourceAsStream("data/tiles.json");
+			InputStream inputStream = openLocalData("tiles.json");
 			text = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
 		}
 		TileModel[] tiles = GameDataManager.JSON_MAPPER.readValue(text, TileModel[].class);
@@ -216,7 +237,7 @@ public class GameDataManager {
 		if (remote) {
 			text = ServerGameLogic.DATA_SERVICE.executeGet("game-data/enemies.json", null);
 		} else {
-			InputStream inputStream = GameDataManager.class.getClassLoader().getResourceAsStream("data/enemies.json");
+			InputStream inputStream = openLocalData("enemies.json");
 			text = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
 		}
 		EnemyModel[] enemies = GameDataManager.JSON_MAPPER.readValue(text, EnemyModel[].class);
@@ -234,8 +255,7 @@ public class GameDataManager {
 		if (remote) {
 			text = ServerGameLogic.DATA_SERVICE.executeGet("game-data/projectile-groups.json", null);
 		} else {
-			InputStream inputStream = GameDataManager.class.getClassLoader()
-					.getResourceAsStream("data/projectile-groups.json");
+			InputStream inputStream = openLocalData("projectile-groups.json");
 			text = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
 		}
 		ProjectileGroup[] projectileGroups = GameDataManager.JSON_MAPPER.readValue(text, ProjectileGroup[].class);
@@ -264,8 +284,7 @@ public class GameDataManager {
 		if (remote) {
 			text = ServerGameLogic.DATA_SERVICE.executeGet("game-data/animations.json", null);
 		} else {
-			InputStream inputStream = GameDataManager.class.getClassLoader()
-					.getResourceAsStream("data/animations.json");
+			InputStream inputStream = openLocalData("animations.json");
 			text = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
 		}
 		AnimationModel[] animations = GameDataManager.JSON_MAPPER.readValue(text, AnimationModel[].class);
@@ -282,8 +301,7 @@ public class GameDataManager {
 		if (remote) {
 			text = ServerGameLogic.DATA_SERVICE.executeGet("game-data/setpieces.json", null);
 		} else {
-			InputStream inputStream = GameDataManager.class.getClassLoader()
-					.getResourceAsStream("data/setpieces.json");
+			InputStream inputStream = openLocalData("setpieces.json");
 			text = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
 		}
 		SetPieceModel[] pieces = GameDataManager.JSON_MAPPER.readValue(text, SetPieceModel[].class);
@@ -300,8 +318,7 @@ public class GameDataManager {
 		if (remote) {
 			text = ServerGameLogic.DATA_SERVICE.executeGet("game-data/realm-events.json", null);
 		} else {
-			InputStream inputStream = GameDataManager.class.getClassLoader()
-					.getResourceAsStream("data/realm-events.json");
+			InputStream inputStream = openLocalData("realm-events.json");
 			text = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
 		}
 		RealmEventModel[] events = GameDataManager.JSON_MAPPER.readValue(text, RealmEventModel[].class);
@@ -319,8 +336,7 @@ public class GameDataManager {
 		if (remote) {
 			text = ServerGameLogic.DATA_SERVICE.executeGet("game-data/game-items.json", null);
 		} else {
-			InputStream inputStream = GameDataManager.class.getClassLoader()
-					.getResourceAsStream("data/game-items.json");
+			InputStream inputStream = openLocalData("game-items.json");
 			text = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
 		}
 		GameItem[] gameItems = GameDataManager.JSON_MAPPER.readValue(text, GameItem[].class);
