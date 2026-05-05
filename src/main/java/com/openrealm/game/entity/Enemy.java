@@ -57,6 +57,11 @@ public class Enemy extends Entity {
     private static final long PHASE_TRANSITION_DURATION_MS = 1200;
     private String uuid;
 
+    // Marks enemies created by an admin command (/spawn, /event, etc.) so
+    // /clearspawn can wipe them without touching map-static NPCs. Defaults
+    // false; never persisted.
+    private transient boolean adminSpawned = false;
+
     public Enemy() {
         super(0, null, 0);
     }

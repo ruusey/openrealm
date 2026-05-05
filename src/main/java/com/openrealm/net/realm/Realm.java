@@ -704,6 +704,8 @@ public class Realm {
         final float radiusSq = radius * radius;
         final List<Player> objs = new ArrayList<>();
         for (final Player p : this.players.values()) {
+            // /hide: hidden admins aren't enemy targets and don't take AOEs.
+            if (p.isHiddenFromOthers()) continue;
             float dx = p.getPos().x - center.x;
             float dy = p.getPos().y - center.y;
             if (dx * dx + dy * dy <= radiusSq) {
@@ -783,6 +785,9 @@ public class Realm {
                 final long id = candidates.get(i);
                 Player p = this.players.get(id);
                 if (p != null) {
+                    // /hide: hidden admins are filtered out of every other
+                    // viewer's LoadPacket. Self always sees self.
+                    if (p.isHiddenFromOthers() && p.getId() != requestingPlayerId) continue;
                     float dx = p.getPos().x - center.x;
                     float dy = p.getPos().y - center.y;
                     if (dx * dx + dy * dy <= radiusSq) playersToLoadList.add(p);

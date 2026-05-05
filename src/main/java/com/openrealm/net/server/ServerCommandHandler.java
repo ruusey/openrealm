@@ -18,11 +18,14 @@ import com.openrealm.account.dto.AccountDto;
 import com.openrealm.account.dto.AccountProvision;
 import com.openrealm.account.dto.AccountSubscription;
 import com.openrealm.account.dto.CharacterDto;
+import com.openrealm.account.dto.ChestDto;
 import com.openrealm.account.dto.PlayerAccountDto;
 import com.openrealm.net.test.StressTestClient;
-import com.openrealm.game.contants.StatusEffectType;
+import com.openrealm.game.contants.EntityType;
 import com.openrealm.game.contants.GlobalConstants;
 import com.openrealm.game.contants.LootTier;
+import com.openrealm.game.contants.StatusEffectType;
+import com.openrealm.game.contants.TextEffect;
 import com.openrealm.game.data.GameDataManager;
 import com.openrealm.game.entity.Player;
 import com.openrealm.game.entity.item.GameItem;
@@ -40,6 +43,7 @@ import com.openrealm.net.messaging.CommandType;
 import com.openrealm.net.messaging.ServerCommandMessage;
 import com.openrealm.net.realm.Realm;
 import com.openrealm.net.realm.RealmManagerServer;
+import com.openrealm.net.client.packet.UnloadPacket;
 import com.openrealm.net.server.packet.CommandPacket;
 import com.openrealm.net.server.packet.TextPacket;
 import com.openrealm.util.AdminRestrictedCommand;
@@ -77,8 +81,16 @@ public class ServerCommandHandler {
         // Look up this players account to see if they are allowed
         // to run Admin server commands
         try {
-        	final AccountProvision[] requiredProvisions = RESTRICTED_COMMAND_PROVISIONS.get(message.getCommand().toLowerCase());
+        	final String cmdLower = message.getCommand().toLowerCase();
+        	final AccountProvision[] requiredProvisions = RESTRICTED_COMMAND_PROVISIONS.get(cmdLower);
         	if (requiredProvisions != null) {
+        	    // /admin toggle: when disabled, restricted commands are blocked
+        	    // regardless of provisions. /admin itself bypasses so the user
+        	    // can re-enable from a disabled state.
+        	    if (!fromPlayer.isAdminModeEnabled() && !"admin".equals(cmdLower)) {
+        	        throw new IllegalStateException(
+        	            "Admin mode is OFF — type /admin to re-enable");
+        	    }
         	    // Check cached provisions first, then fetch from API if not cached
         	    List<AccountProvision> held = PLAYER_PROVISION_CACHE.get(fromPlayer.getId());
         	    if (held == null) {
@@ -338,7 +350,9 @@ public class ServerCommandHandler {
                 dy = (float) (Math.sin(angle) * r);
             }
             final Vector2f spawnPos = new Vector2f(baseX + dx, baseY + dy);
-            from.addEnemy(GameObjectUtils.getEnemyFromId(enemyId, spawnPos));
+            final Enemy spawned = GameObjectUtils.getEnemyFromId(enemyId, spawnPos);
+            spawned.setAdminSpawned(true);
+            from.addEnemy(spawned);
         }
         if (count > 1) {
             mgr.enqueueServerPacket(target,
@@ -397,9 +411,8 @@ public class ServerCommandHandler {
         // survive /kill. Broadcasting an unload with every killed id ensures
         // the client drops them regardless of what's in playerLoadState.
         if (killedIds.length > 0) {
-            final com.openrealm.net.client.packet.UnloadPacket unload =
-                com.openrealm.net.client.packet.UnloadPacket.from(
-                    new Long[0], new Long[0], killedIds, new Long[0], new Long[0]);
+            final UnloadPacket unload = UnloadPacket.from(
+                new Long[0], new Long[0], killedIds, new Long[0], new Long[0]);
             for (final Player p : realm.getPlayers().values()) {
                 mgr.enqueueServerPacket(p, unload);
             }
@@ -410,6 +423,405 @@ public class ServerCommandHandler {
         mgr.enqueueServerPacket(target,
                 TextPacket.from("SYSTEM", target.getName(),
                         "Killed " + toKill.size() + " enemies within " + radiusTiles + " tiles"));
+    }
+
+    @CommandHandler(value="clearspawn", description="Admin: remove every enemy in your realm that was created via /spawn (map-static NPCs untouched).")
+    @AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_MODERATOR})
+    public static void invokeClearSpawn(RealmManagerServer mgr, Player target,
+            ServerCommandMessage message) throws Exception {
+        final Realm realm = mgr.findPlayerRealm(target.getId());
+        if (realm == null)
+            throw new IllegalArgumentException("No realm for player");
+
+        // Collect-then-remove pattern (matches /kill) so we don't mutate the
+        // map mid-iteration. Filter strictly on the adminSpawned flag set by
+        // /spawn — naturally-spawning realm event mobs and map NPCs survive.
+        final List<Enemy> toClear = new ArrayList<>();
+        for (final Enemy e : realm.getEnemies().values()) {
+            if (e == null || e.getDeath()) continue;
+            if (!e.isAdminSpawned()) continue;
+            toClear.add(e);
+        }
+        final Long[] clearedIds = new Long[toClear.size()];
+        for (int i = 0; i < toClear.size(); i++) {
+            final Enemy e = toClear.get(i);
+            clearedIds[i] = e.getId();
+            realm.getExpiredEnemies().add(e.getId());
+            realm.removeEnemy(e);
+        }
+        // Same explicit broadcast unload as /kill — see that comment for why
+        // the LoadPacket diff alone isn't enough at the per-packet entity cap.
+        if (clearedIds.length > 0) {
+            final UnloadPacket unload = UnloadPacket.from(
+                new Long[0], new Long[0], clearedIds, new Long[0], new Long[0]);
+            for (final Player p : realm.getPlayers().values()) {
+                mgr.enqueueServerPacket(p, unload);
+            }
+        }
+
+        log.info("Player {} /clearspawn: removed {} admin-spawned enemies",
+                target.getName(), toClear.size());
+        mgr.enqueueServerPacket(target,
+                TextPacket.from("SYSTEM", target.getName(),
+                        "Cleared " + toClear.size() + " admin-spawned enemies"));
+    }
+
+    @CommandHandler(value="damage", description="Admin: deal damage to enemies in a radius. Usage: /damage {AMOUNT} {RADIUS_TILES} [ENEMY_ID]")
+    @AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_MODERATOR})
+    public static void invokeDamageEnemies(RealmManagerServer mgr, Player target,
+            ServerCommandMessage message) throws Exception {
+        if (message.getArgs() == null || message.getArgs().size() < 2 || message.getArgs().size() > 3)
+            throw new IllegalArgumentException("Usage: /damage {AMOUNT} {RADIUS_TILES} [ENEMY_ID]");
+
+        final int amount = Integer.parseInt(message.getArgs().get(0));
+        final float radiusTiles = Float.parseFloat(message.getArgs().get(1));
+        final Integer filterEnemyId = message.getArgs().size() == 3
+                ? Integer.parseInt(message.getArgs().get(2)) : null;
+        if (amount <= 0)
+            throw new IllegalArgumentException("AMOUNT must be > 0");
+        if (radiusTiles <= 0f)
+            throw new IllegalArgumentException("RADIUS_TILES must be > 0");
+
+        final Realm realm = mgr.findPlayerRealm(target.getId());
+        if (realm == null)
+            throw new IllegalArgumentException("No realm for player");
+
+        final float radius = radiusTiles * GlobalConstants.BASE_TILE_SIZE;
+        final float radiusSq = radius * radius;
+        final Vector2f center = target.getPos();
+
+        // Snapshot so we can safely call enemyDeath on the natural code path
+        // without mutating the enemies map mid-iteration. Unlike /kill we
+        // intentionally use the full enemyDeath() flow so loot, XP, level-ups,
+        // and overseer notifications fire — that's the whole point of /damage
+        // versus /kill (combat testing vs stress-test wipe).
+        final List<Enemy> targets = new ArrayList<>();
+        for (final Enemy e : realm.getEnemies().values()) {
+            if (e == null || e.getDeath()) continue;
+            if (e.hasEffect(StatusEffectType.INVINCIBLE)) continue;
+            if (filterEnemyId != null && e.getEnemyId() != filterEnemyId) continue;
+            final float dx = e.getPos().x - center.x;
+            final float dy = e.getPos().y - center.y;
+            if (dx * dx + dy * dy <= radiusSq) targets.add(e);
+        }
+        int hit = 0, killed = 0;
+        for (final Enemy e : targets) {
+            final int newHp = Math.max(0, e.getHealth() - amount);
+            e.setHealth(newHp);
+            hit++;
+            if (newHp == 0) {
+                realm.getExpiredEnemies().add(e.getId());
+                mgr.enemyDeath(realm, e);
+                killed++;
+            }
+        }
+
+        log.info("Player {} /damage {}×{} (filter={}): hit={} killed={}",
+                target.getName(), amount, radiusTiles, filterEnemyId, hit, killed);
+        final String filterMsg = filterEnemyId != null ? " (enemy " + filterEnemyId + ")" : "";
+        mgr.enqueueServerPacket(target,
+                TextPacket.from("SYSTEM", target.getName(),
+                        "Dealt " + amount + " damage to " + hit + " enemies" + filterMsg
+                                + " (" + killed + " killed)"));
+    }
+
+    @CommandHandler(value="admin", description="Toggle your admin mode on/off. When OFF: admin commands are blocked, godmode clears, and your name color resets to default.")
+    @AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_MODERATOR})
+    public static void invokeAdminToggle(RealmManagerServer mgr, Player target,
+            ServerCommandMessage message) throws Exception {
+        // Toggle direction. The dispatcher already lets /admin through even
+        // when admin mode is OFF (so the user can re-enable from disabled).
+        if (target.isAdminModeEnabled()) {
+            // Going OFF: stash chatRole and mask it, drop godmode.
+            target.setStoredChatRole(target.getChatRole());
+            target.setChatRole("");
+            if (target.hasEffect(StatusEffectType.INVINCIBLE)) {
+                target.resetEffects();
+            }
+            target.setAdminModeEnabled(false);
+            log.info("Player {} /admin: admin mode OFF", target.getName());
+            mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
+                    "Admin mode OFF — restricted commands blocked, name color reset, godmode cleared"));
+        } else {
+            // Going ON: restore chatRole if we cached one.
+            if (target.getStoredChatRole() != null && !target.getStoredChatRole().isEmpty()) {
+                target.setChatRole(target.getStoredChatRole());
+            }
+            target.setAdminModeEnabled(true);
+            log.info("Player {} /admin: admin mode ON", target.getName());
+            mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
+                    "Admin mode ON — restricted commands available again"));
+        }
+        // Force the realm's load-state cache to invalidate so the chatRole
+        // change reaches every viewer's next LoadPacket on the next tick.
+        final Realm realm = mgr.findPlayerRealm(target.getId());
+        if (realm != null) {
+            mgr.invalidateRealmLoadState(realm);
+        }
+    }
+
+    @CommandHandler(value="hide", description="Toggle invisibility from other players. While hidden you also bypass enemy targeting and AOE damage; godmode auto-enables.")
+    @AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_MODERATOR})
+    public static void invokeHide(RealmManagerServer mgr, Player target,
+            ServerCommandMessage message) throws Exception {
+        if (target.isHiddenFromOthers()) {
+            target.setHiddenFromOthers(false);
+            // Drop godmode only if we set it (we can't easily tell — best
+            // effort: clear it, the user can /godmode if they wanted it).
+            if (target.hasEffect(StatusEffectType.INVINCIBLE)) {
+                target.resetEffects();
+            }
+            log.info("Player {} /hide: visible", target.getName());
+            mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
+                    "Hide OFF — you're visible again. Godmode cleared."));
+        } else {
+            target.setHiddenFromOthers(true);
+            target.addEffect(StatusEffectType.INVINCIBLE, 1000 * 60 * 60 * 24);
+            log.info("Player {} /hide: hidden", target.getName());
+            mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
+                    "Hide ON — invisible to other players, untargetable, godmode enabled."));
+        }
+        // Force every viewer to rebuild their LoadPacket so the player
+        // disappears (or reappears) on the next tick rather than after the
+        // 3s periodic full snapshot. Existing viewers' next diff drops the
+        // hidden player via the standard difference() logic.
+        final Realm realm = mgr.findPlayerRealm(target.getId());
+        if (realm != null) {
+            mgr.invalidateRealmLoadState(realm);
+        }
+    }
+
+    @CommandHandler(value="gmc", description="Send a message to every online GM (admin/sysadmin/mod). Usage: /gmc {message}")
+    @AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_MODERATOR})
+    public static void invokeGmChat(RealmManagerServer mgr, Player target,
+            ServerCommandMessage message) throws Exception {
+        if (message.getArgs() == null || message.getArgs().isEmpty()) {
+            throw new IllegalArgumentException("Usage: /gmc {message}");
+        }
+        // Reassemble the message from args. The command parser splits on
+        // whitespace, so "hello there" arrives as ["hello", "there"].
+        final String body = String.join(" ", message.getArgs());
+        // Recipient set: any online player whose chatRole is a GM tier.
+        // SYSTEM-prefixed TextPacket (with the [GM] body marker) keeps the
+        // wire format identical to existing chat — no client codec change.
+        final String labeled = "[GM] " + target.getName() + ": " + body;
+        int delivered = 0;
+        for (final Player p : mgr.getPlayers()) {
+            final String role = p.getChatRole();
+            if (role == null) continue;
+            if (!role.equals("sysadmin") && !role.equals("admin") && !role.equals("mod")) continue;
+            mgr.enqueueServerPacket(p, TextPacket.from("SYSTEM", p.getName(), labeled));
+            delivered++;
+        }
+        log.info("Player {} /gmc -> {} GM(s): {}", target.getName(), delivered, body);
+    }
+
+    @CommandHandler(value="visit", description="Teleport into a player's realm. Usage: /visit {PLAYER_NAME}")
+    @AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_MODERATOR})
+    public static void invokeVisit(RealmManagerServer mgr, Player target,
+            ServerCommandMessage message) throws Exception {
+        if (message.getArgs() == null || message.getArgs().size() != 1) {
+            throw new IllegalArgumentException("Usage: /visit {PLAYER_NAME}");
+        }
+        final String name = message.getArgs().get(0);
+        final Player victim = mgr.findPlayerByName(name);
+        if (victim == null) {
+            throw new IllegalArgumentException("Player " + name + " not found online");
+        }
+        if (victim.getId() == target.getId()) {
+            throw new IllegalArgumentException("You can't /visit yourself");
+        }
+        final Realm victimRealm = mgr.findPlayerRealm(victim.getId());
+        if (victimRealm == null) {
+            throw new IllegalArgumentException("Target's realm could not be located");
+        }
+        final Realm currentRealm = mgr.findPlayerRealm(target.getId());
+        if (currentRealm != null && currentRealm.getRealmId() == victimRealm.getRealmId()) {
+            // Same realm — just snap to their position.
+            target.setPos(victim.getPos().clone());
+            mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
+                    "Already in " + name + "'s realm — snapped to their position."));
+            log.info("Player {} /visit {} (same realm)", target.getName(), name);
+            return;
+        }
+        transferAdminToRealm(mgr, target, currentRealm, victimRealm, victim.getPos());
+        mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
+                "Visited " + name + " in realm " + victimRealm.getRealmId()));
+        log.info("Player {} /visit {} (realm {} -> {})", target.getName(), name,
+                currentRealm != null ? currentRealm.getRealmId() : null, victimRealm.getRealmId());
+    }
+
+    @CommandHandler(value="summon", description="Pull another player to your location. Usage: /summon {PLAYER_NAME}")
+    @AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_ADMIN})
+    public static void invokeSummon(RealmManagerServer mgr, Player target,
+            ServerCommandMessage message) throws Exception {
+        if (message.getArgs() == null || message.getArgs().size() != 1) {
+            throw new IllegalArgumentException("Usage: /summon {PLAYER_NAME}");
+        }
+        final String name = message.getArgs().get(0);
+        final Player victim = mgr.findPlayerByName(name);
+        if (victim == null) {
+            throw new IllegalArgumentException("Player " + name + " not found online");
+        }
+        if (victim.getId() == target.getId()) {
+            throw new IllegalArgumentException("You can't /summon yourself");
+        }
+        final Realm adminRealm = mgr.findPlayerRealm(target.getId());
+        final Realm victimRealm = mgr.findPlayerRealm(victim.getId());
+        if (adminRealm == null || victimRealm == null) {
+            throw new IllegalArgumentException("One of the realms could not be located");
+        }
+        if (adminRealm.getRealmId() == victimRealm.getRealmId()) {
+            // Same realm — just snap them to admin position.
+            victim.setPos(target.getPos().clone());
+            mgr.enqueueServerPacket(victim, TextPacket.from("SYSTEM", victim.getName(),
+                    "You were summoned by " + target.getName()));
+            mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
+                    "Summoned " + name + " to your position."));
+            log.info("Player {} /summon {} (same realm)", target.getName(), name);
+            return;
+        }
+        // Cross-realm summon. Use the same transfer helper but applied to
+        // the victim, not the admin.
+        transferAdminToRealm(mgr, victim, victimRealm, adminRealm, target.getPos());
+        mgr.enqueueServerPacket(victim, TextPacket.from("SYSTEM", victim.getName(),
+                "You were summoned by " + target.getName()));
+        mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
+                "Summoned " + name + " from realm " + victimRealm.getRealmId()));
+        log.info("Player {} /summon {} (realm {} -> {})", target.getName(), name,
+                victimRealm.getRealmId(), adminRealm.getRealmId());
+    }
+
+    @CommandHandler(value="world", description="Teleport to a world without using a portal. Usage: /world {MAP_NAME_OR_ID} [new]")
+    @AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_ADMIN})
+    public static void invokeWorld(RealmManagerServer mgr, Player target,
+            ServerCommandMessage message) throws Exception {
+        if (message.getArgs() == null || message.getArgs().isEmpty()) {
+            throw new IllegalArgumentException("Usage: /world {MAP_NAME_OR_ID} [new]");
+        }
+        final String arg = message.getArgs().get(0);
+        final boolean forceNew = message.getArgs().size() >= 2
+                && "new".equalsIgnoreCase(message.getArgs().get(1));
+
+        // Resolve the arg three ways: numeric mapId → mapName lookup → nodeId.
+        MapModel mapModel = null;
+        String resolvedNodeId = null;
+        try {
+            final int mapId = Integer.parseInt(arg);
+            mapModel = GameDataManager.MAPS.get(mapId);
+        } catch (NumberFormatException ignored) { /* not numeric */ }
+
+        if (mapModel == null && GameDataManager.MAPS != null) {
+            for (final MapModel m : GameDataManager.MAPS.values()) {
+                if (m.getMapName() != null && m.getMapName().equalsIgnoreCase(arg)) {
+                    mapModel = m;
+                    break;
+                }
+            }
+        }
+        if (mapModel == null && GameDataManager.DUNGEON_GRAPH != null
+                && GameDataManager.DUNGEON_GRAPH.containsKey(arg)) {
+            resolvedNodeId = arg;
+            final DungeonGraphNode node = GameDataManager.DUNGEON_GRAPH.get(arg);
+            if (node != null) {
+                mapModel = GameDataManager.MAPS.get(node.getMapId());
+            }
+        }
+        if (mapModel == null) {
+            throw new IllegalArgumentException("No map found for '" + arg
+                    + "'. Try a numeric mapId, mapName, or dungeon-graph nodeId.");
+        }
+
+        // Shared-ness comes from the dungeon-graph node, not the map. If the
+        // resolved node is shared (overworld/nexus/town), join the existing
+        // instance; otherwise treat it as a private dungeon and spin up a
+        // fresh one (or reuse only when forceNew == false and a match exists).
+        boolean isShared = false;
+        if (resolvedNodeId != null) {
+            final DungeonGraphNode node = GameDataManager.DUNGEON_GRAPH.get(resolvedNodeId);
+            isShared = node != null && (node.isShared() || node.isEntryPoint());
+        }
+
+        final Realm currentRealm = mgr.findPlayerRealm(target.getId());
+
+        Realm targetRealm = null;
+        if (!forceNew) {
+            if (resolvedNodeId != null) {
+                targetRealm = mgr.findRealmForNode(resolvedNodeId).orElse(null);
+            } else {
+                for (final Realm r : mgr.getRealms().values()) {
+                    if (r.getMapId() == mapModel.getMapId() && r.isOverworld()) {
+                        targetRealm = r;
+                        break;
+                    }
+                }
+            }
+        }
+        if (targetRealm == null) {
+            targetRealm = new Realm(isShared, mapModel.getMapId());
+            if (resolvedNodeId != null) targetRealm.setNodeId(resolvedNodeId);
+            mgr.addRealm(targetRealm);
+            log.info("Player {} /world: created fresh realm {} (map={}, node={}, shared={})",
+                    target.getName(), targetRealm.getRealmId(),
+                    mapModel.getMapName(), resolvedNodeId, isShared);
+        }
+
+        final Vector2f spawnPos = (mapModel.getRandomSpawnPoint() != null)
+                ? mapModel.getRandomSpawnPoint()
+                : targetRealm.getTileManager().getSafePosition();
+        transferAdminToRealm(mgr, target, currentRealm, targetRealm, spawnPos);
+        mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
+                "Transferred to " + mapModel.getMapName() + " (realm " + targetRealm.getRealmId() + ")"));
+        log.info("Player {} /world {} -> realm {} (forceNew={})",
+                target.getName(), arg, targetRealm.getRealmId(), forceNew);
+    }
+
+    /**
+     * Move {@code who} from {@code from} (may be null on first transfer) into
+     * {@code to} at {@code spawnPos}. Mirrors the existing portal-use flow
+     * in ServerGameLogic: vault save, dungeon cleanup, invincibility grace,
+     * load-state invalidation, immediate map send, onPlayerJoin welcome.
+     */
+    private static void transferAdminToRealm(RealmManagerServer mgr, Player who,
+            Realm from, Realm to, Vector2f spawnPos) {
+        if (from != null) {
+            from.getPlayers().remove(who.getId());
+            from.removePlayer(who);
+
+            // Vault save (mirrors portal flow): persist chests on the way out.
+            if (from.getMapId() == 1) {
+                try {
+                    final List<ChestDto> chests = from.serializeChests();
+                    ServerGameLogic.DATA_SERVICE.executePost(
+                            "/data/account/" + who.getAccountUuid() + "/chest",
+                            chests, PlayerAccountDto.class);
+                } catch (Exception e) {
+                    log.error("Failed to save vault chests for {} on transfer: {}",
+                            who.getName(), e.getMessage());
+                }
+                from.setShutdown(true);
+                mgr.getRealms().remove(from.getRealmId());
+            }
+
+            // Empty-dungeon cleanup (only when last player leaves a non-shared node).
+            if (from.getPlayers().isEmpty() && from.getNodeId() != null
+                    && !"nexus".equals(from.getNodeId())) {
+                final DungeonGraphNode node = GameDataManager.DUNGEON_GRAPH.get(from.getNodeId());
+                if (node != null && !node.isShared() && !node.isEntryPoint()) {
+                    from.setShutdown(true);
+                    mgr.getRealms().remove(from.getRealmId());
+                }
+            }
+        }
+
+        who.setPos(spawnPos != null ? spawnPos.clone() : to.getTileManager().getSafePosition());
+        who.addEffect(StatusEffectType.INVINCIBLE, 4000);
+        mgr.broadcastTextEffect(EntityType.PLAYER, who, TextEffect.PLAYER_INFO, "Invincible");
+        to.addPlayer(who);
+        mgr.clearPlayerState(who.getId());
+        mgr.invalidateRealmLoadState(to);
+        ServerGameLogic.sendImmediateLoadMap(mgr, to, who);
+        ServerGameLogic.onPlayerJoin(mgr, to, who);
     }
 
     @CommandHandler(value="event", description="Admin: spawn a realm event by id (no id = list). Usage: /event {EVENT_ID}")

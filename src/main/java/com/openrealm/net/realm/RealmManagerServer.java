@@ -1250,6 +1250,8 @@ public class RealmManagerServer implements Runnable {
 		// scan. Player counts are bounded (~40 max), so a flat iteration is
 		// strictly cheaper here.
 		for (final Player player : targetRealm.getPlayers().values()) {
+			// /hide: enemies don't target hidden admins.
+			if (player.isHiddenFromOthers()) continue;
 			final float dx = player.getPos().x - pos.x;
 			final float dy = player.getPos().y - pos.y;
 			final float distSq = dx * dx + dy * dy;

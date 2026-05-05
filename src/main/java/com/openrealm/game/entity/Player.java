@@ -43,6 +43,19 @@ public class Player extends Entity {
 	private boolean bot = false;
 	@Builder.Default
 	private String chatRole = "";
+	// /admin toggle. Defaults true on login for any account. When false, the
+	// command-dispatch gate rejects @AdminRestrictedCommand calls regardless
+	// of provisions, godmode is cleared, and chatRole is masked. Not persisted.
+	// No @Builder.Default — the explicit all-args constructor below would
+	// need updating (and none of its callers care about this transient flag).
+	private transient boolean adminModeEnabled = true;
+	// Stash original chatRole when /admin toggles off so we can restore it
+	// without re-fetching the account from the data service.
+	private transient String storedChatRole = null;
+	// /hide flag — when true the LoadPacket builder filters this player out
+	// of every OTHER viewer's packet, leaving the admin invisible to
+	// regular players. Self always sees self. Not persisted.
+	private transient boolean hiddenFromOthers = false;
 	@Builder.Default
 	private int lastInputSeq = 0;
 	@Builder.Default
@@ -74,7 +87,8 @@ public class Player extends Entity {
 
 	public Player(GameItem[] inventory, long lastStatsTime, LootContainer currentLootContainer, int classId,
 			String accountUuid, String characterUuid, long experience, Stats stats, boolean headless, boolean bot,
-			String chatRole, int lastInputSeq, int lastProcessedInputSeq, float currentVx, float currentVy,
+			String chatRole, boolean adminModeEnabled, String storedChatRole, boolean hiddenFromOthers,
+			int lastInputSeq, int lastProcessedInputSeq, float currentVx, float currentVy,
 			java.util.Queue<float[]> inputQueue, int hpPotions, int mpPotions, int dyeId, long cachedAccountFame) {
 		super(0, null, 0);
 		this.inventory = inventory;
@@ -88,6 +102,9 @@ public class Player extends Entity {
 		this.headless = headless;
 		this.bot = bot;
 		this.chatRole = chatRole;
+		this.adminModeEnabled = adminModeEnabled;
+		this.storedChatRole = storedChatRole;
+		this.hiddenFromOthers = hiddenFromOthers;
 		this.lastInputSeq = lastInputSeq;
 		this.lastProcessedInputSeq = lastProcessedInputSeq;
 		this.currentVx = currentVx;
