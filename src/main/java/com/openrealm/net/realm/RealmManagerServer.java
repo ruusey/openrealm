@@ -410,6 +410,12 @@ public class RealmManagerServer implements Runnable {
 	// to once per second so a sustained slow-tick storm doesn't flood logs.
 	private static final long TICK_BUDGET_NANOS = 16_000_000L; // 16ms
 	private long lastSlowTickLogMs = 0L;
+	// Sub-phase counters inside update() — populated per tick so the slow-tick
+	// log can break "update=Xms" into player vs enemy vs bullet vs tail cost.
+	private long updPlayersNanos = 0L;
+	private long updEnemiesNanos = 0L;
+	private long updBulletsNanos = 0L;
+	private long updTailNanos = 0L;
 
 	private void tick() {
 		final long tickStart = System.nanoTime();
@@ -473,10 +479,13 @@ public class RealmManagerServer implements Runnable {
 					totalBullets += r.getBullets().size();
 					totalPlayers += r.getPlayers().size();
 				}
-				log.warn("[SERVER] slow tick: total={}ms (joins={}, trans={}, pkts={}, update={}, enqueue={}, send={}, overseer={}) — realms={}, players={}, enemies={}, bullets={}",
+				log.warn("[SERVER] slow tick: total={}ms (joins={}, trans={}, pkts={}, update={}[plyrs={},enems={},blts={},tail={}], enqueue={}, send={}, overseer={}) — realms={}, players={}, enemies={}, bullets={}",
 					tickTotal / 1_000_000,
 					tJoins / 1_000_000, tTransitions / 1_000_000, tPackets / 1_000_000,
-					tUpdate / 1_000_000, tEnqueue / 1_000_000, tSend / 1_000_000, tOverseer / 1_000_000,
+					tUpdate / 1_000_000,
+					this.updPlayersNanos / 1_000_000, this.updEnemiesNanos / 1_000_000,
+					this.updBulletsNanos / 1_000_000, this.updTailNanos / 1_000_000,
+					tEnqueue / 1_000_000, tSend / 1_000_000, tOverseer / 1_000_000,
 					this.realms.size(), totalPlayers, totalEnemies, totalBullets);
 			}
 		}
@@ -1007,21 +1016,35 @@ public class RealmManagerServer implements Runnable {
 					}
 				}
 			} else {
-				// Player Disconnect routine
+				// Player Disconnect routine. Was previously `return` which
+				// aborted the entire packet-pump loop the moment we hit a
+				// stale unmapped session — so a half-open WS that
+				// disconnected mid-handshake (no remoteAddresses mapping
+				// yet) would block every other client's packets indefinitely
+				// until the dead session aged out, including a fresh login
+				// from the same user trying to re-enter the game.
 				final Long dcPlayerId = this.getRemoteAddresses().get(entry.getKey());
 				if (dcPlayerId == null) {
-					entry.getValue().setShutdownProcessing(true);
-					return;
+					log.info("[SERVER] Cleaning up unmapped stale session {} during packet pump", entry.getKey());
+					entry.getValue().close();
+					this.server.getClients().remove(entry.getKey());
+					continue;
 				}
 				final Realm playerLocation = this.findPlayerRealm(dcPlayerId);
 				if (playerLocation != null) {
 					final Player dcPlayer = playerLocation.getPlayer(dcPlayerId);
-					this.persistPlayerAsync(dcPlayer);
-					playerLocation.getExpiredPlayers().add(dcPlayerId);
-					playerLocation.getPlayers().remove(dcPlayerId);
+					if (dcPlayer != null) {
+						log.info("[SERVER] Cleaning up disconnected player {} (id={}) during packet pump",
+							dcPlayer.getName(), dcPlayerId);
+						this.persistPlayerAsync(dcPlayer);
+						playerLocation.getExpiredPlayers().add(dcPlayerId);
+						playerLocation.getPlayers().remove(dcPlayerId);
+					}
 				}
 				entry.getValue().close();
 				this.server.getClients().remove(entry.getKey());
+				this.remoteAddresses.remove(entry.getKey());
+				this.clearPlayerState(dcPlayerId);
 			}
 		}
 
@@ -1218,33 +1241,21 @@ public class RealmManagerServer implements Runnable {
 		final float limitSq = limit * limit;
 		float bestSq = limitSq;
 		Player bestPlayer = null;
-		// Use the spatial grid to scope the player iteration when available.
-		// For 10K enemies × 40 players naive iteration would be 400K dist
-		// calcs/tick; the grid limits each enemy to the few players actually
-		// within chaseRange. Falls back to full-realm scan if grid disabled.
-		if (targetRealm.getSpatialGrid() != null) {
-			final List<Long> candidates =
-				targetRealm.getSpatialGrid().queryRadius(pos.x, pos.y, limit);
-			for (int i = 0; i < candidates.size(); i++) {
-				final Player player = targetRealm.getPlayers().get(candidates.get(i));
-				if (player == null) continue;
-				final float dx = player.getPos().x - pos.x;
-				final float dy = player.getPos().y - pos.y;
-				final float distSq = dx * dx + dy * dy;
-				if (distSq < bestSq) {
-					bestSq = distSq;
-					bestPlayer = player;
-				}
-			}
-		} else {
-			for (final Player player : targetRealm.getPlayers().values()) {
-				final float dx = player.getPos().x - pos.x;
-				final float dy = player.getPos().y - pos.y;
-				final float distSq = dx * dx + dy * dy;
-				if (distSq < bestSq) {
-					bestSq = distSq;
-					bestPlayer = player;
-				}
+		// Iterate the players map directly. The previous version queried the
+		// unified spatial grid with the chaseRange limit and filtered for
+		// players, but the grid holds players + enemies + bullets together —
+		// at 5K enemies in a small cluster, queryRadius returned thousands
+		// of candidates per call (2500 AI calls/tick × ~5K candidates each
+		// = ~12M iterations/tick), dwarfing any savings versus the linear
+		// scan. Player counts are bounded (~40 max), so a flat iteration is
+		// strictly cheaper here.
+		for (final Player player : targetRealm.getPlayers().values()) {
+			final float dx = player.getPos().x - pos.x;
+			final float dy = player.getPos().y - pos.y;
+			final float distSq = dx * dx + dy * dy;
+			if (distSq < bestSq) {
+				bestSq = distSq;
+				bestPlayer = player;
 			}
 		}
 		// Decoys still use linear distance (existing API takes float). Pass
@@ -1509,10 +1520,15 @@ public class RealmManagerServer implements Runnable {
 
 	// Updates all game objects on the server
 	public void update(double time) {
+		this.updPlayersNanos = 0L;
+		this.updEnemiesNanos = 0L;
+		this.updBulletsNanos = 0L;
+		this.updTailNanos = 0L;
 		// For each world on the server
 		for (final Map.Entry<Long, Realm> realmEntry : this.realms.entrySet()) {
 			final Realm realm = realmEntry.getValue();
 			// Update player specific game objects — run inline, these are fast per-player ops
+			final long pStart = System.nanoTime();
 			for (final Map.Entry<Long, Player> player : realm.getPlayers().entrySet()) {
 				final Player p = realm.getPlayer(player.getValue().getId());
 				if (p == null) {
@@ -1523,6 +1539,7 @@ public class RealmManagerServer implements Runnable {
 				p.removeExpiredEffects();
 				this.movePlayer(realm.getRealmId(), p);
 			}
+			this.updPlayersNanos += System.nanoTime() - pStart;
 			// Once per tick: update enemies, then bullets. Iterating the maps
 			// directly avoids 200+ instanceof+cast dispatches per tick that
 			// the old getAllGameObjects() path incurred. bulletScale is also
@@ -1549,6 +1566,7 @@ public class RealmManagerServer implements Runnable {
 			// with one player nearby, this turns 10K heavy AI calls/tick
 			// into ~50 heavy + 9950 cheap dist checks. Snapshot the player
 			// list ONCE per tick to avoid recreating an iterator per enemy.
+			final long eStart = System.nanoTime();
 			final int aiTick = this.tickCounter & (ENEMY_AI_TICK_DIVISOR - 1);
 			final int moveFarTick = (int) (this.tickCounter & (ENEMY_MOVE_FAR_DIVISOR - 1));
 			final Player[] activePlayers = realm.getPlayers().values().toArray(new Player[0]);
@@ -1599,11 +1617,15 @@ public class RealmManagerServer implements Runnable {
 				}
 				enemy.removeExpiredEffects();
 			}
+			this.updEnemiesNanos += System.nanoTime() - eStart;
+			final long bStart = System.nanoTime();
 			for (final Bullet bullet : realm.getBullets().values()) {
 				bullet.update(bulletScale);
 			}
+			this.updBulletsNanos += System.nanoTime() - bStart;
 		}
 
+		final long tailStart = System.nanoTime();
 		this.removeExpiredBullets();
 		this.removeExpiredLootContainers();
 		this.removeExpiredPortals();
@@ -1696,6 +1718,7 @@ public class RealmManagerServer implements Runnable {
 				}
 			}
 		}
+		this.updTailNanos += System.nanoTime() - tailStart;
 	}
 
 	private void movePlayer(final long realmId, final Player p) {

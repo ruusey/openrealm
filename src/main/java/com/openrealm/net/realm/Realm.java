@@ -694,24 +694,20 @@ public class Realm {
     }
 
     /**
-     * Returns players near a point using the spatial hash grid.
-     * Falls back to brute-force if grid is unavailable.
+     * Returns players near a point. Iterates the players map directly —
+     * the spatial grid holds enemies + bullets too, so at high enemy
+     * density a grid query returns thousands of irrelevant candidates per
+     * call. Player counts are bounded (~40), so the flat scan is strictly
+     * cheaper than any grid filter here.
      */
     public Player[] getPlayersInRadiusFast(Vector2f center, float radius) {
-        if (this.spatialGrid == null) {
-            return getPlayersInRadius(center, radius);
-        }
         final float radiusSq = radius * radius;
-        final List<Long> candidates = this.spatialGrid.queryRadius(center.x, center.y, radius);
         final List<Player> objs = new ArrayList<>();
-        for (int i = 0; i < candidates.size(); i++) {
-            final Player p = this.players.get(candidates.get(i));
-            if (p != null) {
-                float dx = p.getPos().x - center.x;
-                float dy = p.getPos().y - center.y;
-                if (dx * dx + dy * dy <= radiusSq) {
-                    objs.add(p);
-                }
+        for (final Player p : this.players.values()) {
+            float dx = p.getPos().x - center.x;
+            float dy = p.getPos().y - center.y;
+            if (dx * dx + dy * dy <= radiusSq) {
+                objs.add(p);
             }
         }
         return objs.toArray(new Player[0]);

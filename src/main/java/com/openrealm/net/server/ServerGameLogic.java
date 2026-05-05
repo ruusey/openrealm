@@ -699,7 +699,9 @@ public class ServerGameLogic {
 					boolean disconnectedExisting = false;
 					for (Player existing : mgr.getPlayers()) {
 						if (existing.getAccountUuid() != null && existing.getAccountUuid().equals(accountUuid)) {
-							log.info("[SERVER] Force-disconnecting previous session for account {} (re-login)", accountUuid);
+							log.info("[SERVER] Force-disconnecting previous session for account {} (re-login). "
+									+ "Existing player id={} name={}, new login srcIp={}",
+								accountUuid, existing.getId(), existing.getName(), command.getSrcIp());
 							mgr.disconnectPlayer(existing, "force-disconnected: same account re-logged in");
 							disconnectedExisting = true;
 							break;
@@ -761,10 +763,17 @@ public class ServerGameLogic {
 				try {
 					AccountDto authAccount = ServerGameLogic.DATA_SERVICE.executeGet(
 						"/admin/account/" + loginToken.getAccountGuid(), null, AccountDto.class);
+					// Order matters: highest-tier provision wins so an account
+					// holding both ADMIN and EDITOR shows the admin badge.
 					if (authAccount != null && authAccount.isSysAdmin()) player.setChatRole("sysadmin");
 					else if (authAccount != null && authAccount.isAdmin()) player.setChatRole("admin");
 					else if (authAccount != null && authAccount.isModerator()) player.setChatRole("mod");
+					else if (authAccount != null && authAccount.isEditor()) player.setChatRole("editor");
 					else if (authAccount != null && authAccount.isDemo()) player.setChatRole("demo");
+					log.info("[SERVER] chatRole resolved for {}: role={}, provisions={}",
+						accountName,
+						player.getChatRole(),
+						authAccount != null ? authAccount.getAccountProvisions() : "null");
 				} catch (Exception roleEx) {
 					log.warn("[SERVER] Could not fetch auth role for {}: {}", accountName, roleEx.getMessage());
 				}
@@ -818,8 +827,13 @@ public class ServerGameLogic {
 			return false;
 		}
 		if (actualPlayer.getId() != declaredPlayerId) {
-			log.info("Player ids do not match for Packet {}. Actual PlayerId: {}. Declared PlayerId: {}", packet,
-					actualPlayerId, declaredPlayerId);
+			// Logged with full identity so a re-login that immediately
+			// disconnects with "player ID mismatch" is debuggable from a
+			// single log line — previously we only had the raw ids.
+			log.warn("[SERVER] validateCallingPlayer mismatch — packet={} from srcIp={}, "
+					+ "actualPlayer={} (id={}), declaredId={}, accountUuid={}",
+				packet.getClass().getSimpleName(), packet.getSrcIp(),
+				actualPlayer.getName(), actualPlayerId, declaredPlayerId, actualPlayer.getAccountUuid());
 			mgr.disconnectPlayer(actualPlayer, "player ID mismatch (actual=" + actualPlayerId + " declared=" + declaredPlayerId + ")");
 			return false;
 		}
