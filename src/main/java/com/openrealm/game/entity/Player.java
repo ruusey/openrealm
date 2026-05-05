@@ -274,26 +274,44 @@ public class Player extends Entity {
 			return new Stats();
 		Stats stats = this.stats.clone();
 		GameItem[] equipment = this.getSlots(0, 4);
+		// Two-pass to keep STAT_SCALE multipliers honest: first sum all
+		// additive contributions (item stats, attribute modifiers, STAT_DELTA
+		// enchantments), then apply scale percentages on the post-additive
+		// totals so a "+10% wisdom" gem stacks predictably with raw +WIS.
+		int[] scalePctByStat = new int[8];
 		for (GameItem item : equipment) {
-			if (item != null) {
-				stats = stats.concat(item.getStats());
-				if (item.getEnchantments() != null && !item.getEnchantments().isEmpty()) {
-					for (com.openrealm.game.entity.item.Enchantment e : item.getEnchantments()) {
-						final short delta = e.getDeltaValue();
-						switch (e.getStatId()) {
-						case 0: stats.setVit((short) (stats.getVit() + delta)); break;
-						case 1: stats.setWis((short) (stats.getWis() + delta)); break;
-						case 2: stats.setHp(stats.getHp() + delta); break;
-						case 3: stats.setMp((short) (stats.getMp() + delta)); break;
-						case 4: stats.setAtt((short) (stats.getAtt() + delta)); break;
-						case 5: stats.setDef((short) (stats.getDef() + delta)); break;
-						case 6: stats.setSpd((short) (stats.getSpd() + delta)); break;
-						case 7: stats.setDex((short) (stats.getDex() + delta)); break;
-						}
+			if (item == null) continue;
+			stats = stats.concat(item.getStats());
+			if (item.getAttributeModifiers() != null) {
+				for (com.openrealm.game.entity.item.AttributeModifier m : item.getAttributeModifiers()) {
+					applyStatDelta(stats, m.getStatId(), m.getDeltaValue());
+				}
+			}
+			if (item.getEnchantments() != null) {
+				for (com.openrealm.game.entity.item.Enchantment e : item.getEnchantments()) {
+					final byte effectType = e.getEffectType();
+					if (effectType == 0 /* STAT_DELTA */) {
+						// param1=statId, magnitude=delta (legacy uses statId/deltaValue)
+						final byte sid = (byte) (e.getParam1() != 0 || e.getMagnitude() != 0 ? e.getParam1() : e.getStatId());
+						final short delta = e.getMagnitude() != 0 ? e.getMagnitude() : (short) e.getDeltaValue();
+						applyStatDelta(stats, sid, delta);
+					} else if (effectType == 1 /* STAT_SCALE */) {
+						final int sid = e.getParam1();
+						if (sid >= 0 && sid < 8) scalePctByStat[sid] += e.getMagnitude();
 					}
+					// Other effectTypes (PROJECTILE_*, ON_HIT_*, LIFESTEAL, CRIT)
+					// are combat-time and applied at projectile-spawn / damage-roll.
 				}
 			}
 		}
+		if (scalePctByStat[0] != 0) stats.setVit((short) (stats.getVit() + (stats.getVit() * scalePctByStat[0]) / 100));
+		if (scalePctByStat[1] != 0) stats.setWis((short) (stats.getWis() + (stats.getWis() * scalePctByStat[1]) / 100));
+		if (scalePctByStat[2] != 0) stats.setHp(stats.getHp() + (stats.getHp() * scalePctByStat[2]) / 100);
+		if (scalePctByStat[3] != 0) stats.setMp((short) (stats.getMp() + (stats.getMp() * scalePctByStat[3]) / 100));
+		if (scalePctByStat[4] != 0) stats.setAtt((short) (stats.getAtt() + (stats.getAtt() * scalePctByStat[4]) / 100));
+		if (scalePctByStat[5] != 0) stats.setDef((short) (stats.getDef() + (stats.getDef() * scalePctByStat[5]) / 100));
+		if (scalePctByStat[6] != 0) stats.setSpd((short) (stats.getSpd() + (stats.getSpd() * scalePctByStat[6]) / 100));
+		if (scalePctByStat[7] != 0) stats.setDex((short) (stats.getDex() + (stats.getDex() * scalePctByStat[7]) / 100));
 		if (this.hasEffect(StatusEffectType.ARMOR_BROKEN)) {
 			stats.setDef((short) 0);
 		}
@@ -301,6 +319,19 @@ public class Player extends Entity {
 			stats.setDef((short) (stats.getDef() * 2));
 		}
 		return stats;
+	}
+
+	private static void applyStatDelta(Stats stats, int statId, int delta) {
+		switch (statId) {
+		case 0: stats.setVit((short) (stats.getVit() + delta)); break;
+		case 1: stats.setWis((short) (stats.getWis() + delta)); break;
+		case 2: stats.setHp(stats.getHp() + delta); break;
+		case 3: stats.setMp((short) (stats.getMp() + delta)); break;
+		case 4: stats.setAtt((short) (stats.getAtt() + delta)); break;
+		case 5: stats.setDef((short) (stats.getDef() + delta)); break;
+		case 6: stats.setSpd((short) (stats.getSpd() + delta)); break;
+		case 7: stats.setDex((short) (stats.getDex() + delta)); break;
+		}
 	}
 
 	public void drinkHp() {

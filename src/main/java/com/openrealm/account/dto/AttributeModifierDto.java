@@ -17,19 +17,9 @@ import lombok.NoArgsConstructor;
 @Builder
 @JsonInclude(Include.NON_NULL)
 @JsonIgnoreProperties(ignoreUnknown = true)
-public class EnchantmentDto implements Serializable {
+public class AttributeModifierDto implements Serializable {
     private static final long serialVersionUID = 1L;
 
     private Byte statId;
     private Byte deltaValue;
-    private Byte pixelX;
-    private Byte pixelY;
-    private Integer pixelColor;
-    // Generalized typed-effect fields (P4). Null on legacy persisted records;
-    // GameItem.fromGameItemRef defaults effectType=0 (STAT_DELTA) when null,
-    // mapping legacy stat-only enchantments into the new pipeline cleanly.
-    private Byte effectType;
-    private Byte param1;
-    private Short magnitude;
-    private Integer durationMs;
 }

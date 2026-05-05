@@ -31,6 +31,12 @@ public class LootTableModel {
 
     public List<GameItem> getLootDrop() {
         final List<GameItem> itemsToDrop = new ArrayList<>();
+        // Look up enemy tier + rarity weights (may be null if no enemy model on file).
+        final EnemyModel enemyModel = (this.enemyId != null) ? GameDataManager.ENEMIES.get(this.enemyId) : null;
+        final int enemyTier = (enemyModel != null) ? Math.max(0, (int) enemyModel.getXp() / 100) : 0;
+        // EnemyModel doesn't carry an explicit power tier — derive a coarse band
+        // from its XP (≈ scales with difficulty); falls back to 0 for unknown.
+        final java.util.List<Float> enemyWeights = enemyModel != null ? enemyModel.getRarityWeights() : null;
 
         for (final Map.Entry<String, Float> entry : this.drops.entrySet()) {
             if (Realm.RANDOM.nextFloat() >= entry.getValue()) continue;
@@ -43,7 +49,7 @@ public class LootTableModel {
                 if (lootGroup == null) continue;
                 final int itemFromGroup = lootGroup.getPotentialDrops()
                         .get(Realm.RANDOM.nextInt(lootGroup.getPotentialDrops().size()));
-                itemsToDrop.add(GameDataManager.GAME_ITEMS.get(itemFromGroup));
+                itemsToDrop.add(decorateEquipment(GameDataManager.GAME_ITEMS.get(itemFromGroup), enemyTier, enemyWeights));
             } else if ("shard".equals(prefix) || "shardany".equals(prefix)) {
                 final int statId = "shardany".equals(prefix)
                         ? Realm.RANDOM.nextInt(8)
@@ -65,10 +71,24 @@ public class LootTableModel {
             } else {
                 // Treat any other prefix as a direct itemId reference (existing "item:N" style)
                 final GameItem item = GameDataManager.GAME_ITEMS.get(this.getLootGroupId(key));
-                if (item != null) itemsToDrop.add(item);
+                if (item != null) itemsToDrop.add(decorateEquipment(item, enemyTier, enemyWeights));
             }
         }
         return itemsToDrop;
+    }
+
+    /**
+     * Take a template item and (if it's equipment) clone + roll rarity and
+     * attribute modifiers onto the fresh instance. Stackables and non-equipment
+     * pass through unchanged so essence/shard piles don't get stamped with a rarity.
+     */
+    private static GameItem decorateEquipment(GameItem template, int enemyTier, java.util.List<Float> enemyWeights) {
+        if (template == null) return null;
+        if (template.isStackable()) return template;
+        if (template.getTargetSlot() < 0 || template.getTargetSlot() > 3) return template;
+        final GameItem inst = template.clone();
+        inst.setUid(java.util.UUID.randomUUID().toString());
+        return LootRarityRoller.decorateEquipment(inst, enemyTier, enemyWeights);
     }
 
     private static int safeParseInt(String[] parts, int idx, int fallback) {

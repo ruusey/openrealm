@@ -34,4 +34,11 @@ public class EnemyModel extends SpriteModel {
      * Nexus bosses which need {@code INVINCIBLE (6)} for their entire lifetime.
      */
     private List<Short> permanentEffects;
+    /**
+     * Weights for COMMON, UNCOMMON, RARE, EPIC, LEGENDARY, MYTHICAL drops on this
+     * enemy. Optional — when null/missing, {@link com.openrealm.game.model.LootRarityRoller}
+     * derives a default table from the enemy's tier (high-tier enemies skew toward
+     * higher-rarity drops). Sum is normalized at roll time so any positive weights work.
+     */
+    private List<Float> rarityWeights;
 }

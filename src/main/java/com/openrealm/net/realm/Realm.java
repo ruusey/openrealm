@@ -1690,6 +1690,9 @@ public class Realm {
                             enemy.setHealth(enemy.getHealth() - trap.damage);
                             mgr.broadcastTextEffect(this, com.openrealm.game.contants.EntityType.ENEMY, enemy,
                                     com.openrealm.game.contants.TextEffect.DAMAGE, "-" + trap.damage);
+                            if (enemy.getDeath()) {
+                                mgr.enemyDeath(this, enemy);
+                            }
                         }
                     }
                 }

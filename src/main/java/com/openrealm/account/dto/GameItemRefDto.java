@@ -28,6 +28,10 @@ public class GameItemRefDto extends TemporalDto {
     private String itemUuid;
     private Integer stackCount;
     private List<EnchantmentDto> enchantments;
+    // 0..5; null on legacy records (defaults to COMMON, with rarity migration
+    // bumping items that already carry multiple enchantments).
+    private Byte rarity;
+    private List<AttributeModifierDto> attributeModifiers;
 
 
     public NetGameItemRef asNetGameItemRef() {

@@ -28,8 +28,11 @@ import com.openrealm.game.contants.StatusEffectType;
 import com.openrealm.game.contants.TextEffect;
 import com.openrealm.game.data.GameDataManager;
 import com.openrealm.game.entity.Player;
+import com.openrealm.game.entity.item.AttributeModifier;
+import com.openrealm.game.entity.item.Enchantment;
 import com.openrealm.game.entity.item.GameItem;
 import com.openrealm.game.entity.item.LootContainer;
+import com.openrealm.game.entity.item.Rarity;
 import com.openrealm.game.entity.Enemy;
 import com.openrealm.game.math.Vector2f;
 import java.util.Random;
@@ -1466,6 +1469,94 @@ public class ServerCommandHandler {
         } else {
             throw new IllegalArgumentException("Usage: /realm {up | down}");
         }
+    }
+
+    @CommandHandler(value="rarity", description="Set the rarity of an equipped item. Usage: /rarity {SLOT 0-3} {0-5 or NAME}")
+    @AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_MODERATOR})
+    public static void invokeSetRarity(RealmManagerServer mgr, Player target, ServerCommandMessage message)
+            throws Exception {
+        if (message.getArgs() == null || message.getArgs().size() < 2)
+            throw new IllegalArgumentException("Usage: /rarity {SLOT 0-3} {0-5 | COMMON..MYTHICAL}");
+        final int slot = Integer.parseInt(message.getArgs().get(0));
+        if (slot < 0 || slot > 3) throw new IllegalArgumentException("Slot must be 0-3 (equipment).");
+        final GameItem item = target.getInventory()[slot];
+        if (item == null) throw new IllegalArgumentException("Slot " + slot + " is empty.");
+        final String raw = message.getArgs().get(1).toUpperCase();
+        Rarity r;
+        try {
+            r = Rarity.valueOf(raw);
+        } catch (IllegalArgumentException e) {
+            r = Rarity.fromOrdinal(Integer.parseInt(raw));
+        }
+        item.setRarity((byte) r.ordinal());
+        log.info("[Admin] {} set rarity of {} to {}", target.getName(), item.getName(), r.displayName);
+        mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
+                item.getName() + " is now " + r.displayName + " (" + r.gemSlots + " gem slots)"));
+        final com.openrealm.net.client.packet.UpdatePacket update =
+                mgr.findPlayerRealm(target.getId()).getPlayerAsPacket(target.getId());
+        if (update != null) mgr.enqueueServerPacket(target, update);
+        mgr.persistPlayerAsync(target);
+    }
+
+    @CommandHandler(value="modifier", description="Add an attribute-modifier affix to an equipped item. Usage: /modifier {SLOT 0-3} {STAT 0-7} {DELTA -127..127}")
+    @AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_MODERATOR})
+    public static void invokeAddModifier(RealmManagerServer mgr, Player target, ServerCommandMessage message)
+            throws Exception {
+        if (message.getArgs() == null || message.getArgs().size() < 3)
+            throw new IllegalArgumentException("Usage: /modifier {SLOT 0-3} {STAT 0-7} {DELTA}");
+        final int slot = Integer.parseInt(message.getArgs().get(0));
+        final int statId = Integer.parseInt(message.getArgs().get(1));
+        final int delta = Integer.parseInt(message.getArgs().get(2));
+        if (slot < 0 || slot > 3) throw new IllegalArgumentException("Slot must be 0-3.");
+        if (statId < 0 || statId > 7) throw new IllegalArgumentException("Stat must be 0-7.");
+        if (delta < Byte.MIN_VALUE || delta > Byte.MAX_VALUE)
+            throw new IllegalArgumentException("Delta out of byte range.");
+        final GameItem item = target.getInventory()[slot];
+        if (item == null) throw new IllegalArgumentException("Slot " + slot + " is empty.");
+        if (item.getAttributeModifiers() == null) item.setAttributeModifiers(new java.util.ArrayList<>());
+        item.getAttributeModifiers().add(new AttributeModifier((byte) statId, (byte) delta));
+        log.info("[Admin] {} added modifier stat={} delta={} to {}", target.getName(), statId, delta, item.getName());
+        mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
+                "Added affix to " + item.getName()));
+        final com.openrealm.net.client.packet.UpdatePacket update =
+                mgr.findPlayerRealm(target.getId()).getPlayerAsPacket(target.getId());
+        if (update != null) mgr.enqueueServerPacket(target, update);
+        mgr.persistPlayerAsync(target);
+    }
+
+    @CommandHandler(value="setench", description="Add a typed enchantment to an equipped item. Usage: /setench {SLOT} {EFFECT 0-6} {PARAM} {MAGNITUDE} [DURATION_MS]")
+    @AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_MODERATOR})
+    public static void invokeSetEnchantment(RealmManagerServer mgr, Player target, ServerCommandMessage message)
+            throws Exception {
+        if (message.getArgs() == null || message.getArgs().size() < 4)
+            throw new IllegalArgumentException(
+                "Usage: /setench {SLOT} {EFFECT 0=STAT_DELTA 1=STAT_SCALE 2=PROJ_COUNT 3=PROJ_DAMAGE 4=ON_HIT 5=LIFESTEAL 6=CRIT} {PARAM1} {MAGNITUDE} [DURATION_MS]");
+        final int slot = Integer.parseInt(message.getArgs().get(0));
+        final int effect = Integer.parseInt(message.getArgs().get(1));
+        final int param1 = Integer.parseInt(message.getArgs().get(2));
+        final int magnitude = Integer.parseInt(message.getArgs().get(3));
+        final int duration = message.getArgs().size() >= 5 ? Integer.parseInt(message.getArgs().get(4)) : 0;
+        if (slot < 0 || slot > 3) throw new IllegalArgumentException("Slot must be 0-3.");
+        if (effect < 0 || effect > 6) throw new IllegalArgumentException("Effect 0-6.");
+        final GameItem item = target.getInventory()[slot];
+        if (item == null) throw new IllegalArgumentException("Slot " + slot + " is empty.");
+        if (item.getEnchantments() == null) item.setEnchantments(new java.util.ArrayList<>());
+        if (item.getEnchantments().size() >= item.getMaxEnchantments())
+            throw new IllegalArgumentException("Item at rarity gem-slot cap (" + item.getMaxEnchantments() + ").");
+        final Enchantment e = new Enchantment(
+                (byte) (effect == 0 ? param1 : 0),
+                (byte) (effect == 0 ? Math.max(Byte.MIN_VALUE, Math.min(Byte.MAX_VALUE, magnitude)) : 0),
+                (byte) 0, (byte) 0, 0xFFFFFFFF,
+                (byte) effect, (byte) param1, (short) magnitude, duration);
+        item.getEnchantments().add(e);
+        log.info("[Admin] {} added enchantment effect={} param={} mag={} to {}",
+                target.getName(), effect, param1, magnitude, item.getName());
+        mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
+                "Forged " + item.getName() + " (slots " + item.getEnchantments().size() + "/" + item.getMaxEnchantments() + ")"));
+        final com.openrealm.net.client.packet.UpdatePacket update =
+                mgr.findPlayerRealm(target.getId()).getPlayerAsPacket(target.getId());
+        if (update != null) mgr.enqueueServerPacket(target, update);
+        mgr.persistPlayerAsync(target);
     }
 
 }

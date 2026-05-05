@@ -1876,6 +1876,9 @@ public class RealmManagerServer implements Runnable {
 				? GameDataManager.PROJECTILE_GROUPS.get(abilityItem.getDamage().getProjectileGroupId())
 				: null;
 
+		final com.openrealm.game.entity.item.CombatModifiers abilityCm =
+				com.openrealm.game.entity.item.CombatModifiers.fromItem(player.getInventory()[1]);
+
 		if (((abilityItem.getDamage() != null) && (abilityItem.getEffect() != null) && (group != null))) {
 
 			final Vector2f dest = new Vector2f(pos.x, pos.y);
@@ -1887,14 +1890,20 @@ public class RealmManagerServer implements Runnable {
 				final short offset = (short) (p.getSize() / (short) 2);
 				short rolledDamage = player.getInventory()[1].getDamage().getInRange();
 				rolledDamage += player.getComputedStats().getAtt();
+				rolledDamage = applyCombatDamageMods(rolledDamage, abilityCm);
 				if (p.getPositionMode() != ProjectilePositionMode.TARGET_PLAYER) {
 					source = dest;
 				}
-				Bullet ab1 = this.addProjectile(realmId, 0l, player.getId(), abilityItem.getDamage().getProjectileGroupId(),
-						p.getProjectileId(), source.clone(-offset, -offset), angle + Float.parseFloat(p.getAngle()),
-						p.getSize(), p.getMagnitude(), p.getRange(), rolledDamage, false, p.getFlags(),
-						p.getAmplitude(), p.getFrequency(), player.getId());
-				if (ab1 != null && p.getEffects() != null) ab1.setEffects(p.getEffects());
+				spawnAbilityBullet(realmId, player, abilityItem.getDamage().getProjectileGroupId(), p,
+						source.clone(-offset, -offset), angle + Float.parseFloat(p.getAngle()), rolledDamage, abilityCm);
+				for (int extra = 1; extra <= abilityCm.getExtraProjectiles(); extra++) {
+					final float side = (extra % 2 == 0) ? 1f : -1f;
+					final float deltaA = side * 0.10f * ((extra + 1) / 2);
+					final short bonusDmg = applyCombatDamageMods(rolledDamage, abilityCm);
+					spawnAbilityBullet(realmId, player, abilityItem.getDamage().getProjectileGroupId(), p,
+							source.clone(-offset, -offset), angle + Float.parseFloat(p.getAngle()) + deltaA,
+							bonusDmg, abilityCm);
+				}
 			}
 			// Apply self-effect if present (e.g., warrior helmet SPEEDY buff)
 			if (effect.isSelf()) {
@@ -1908,11 +1917,16 @@ public class RealmManagerServer implements Runnable {
 				final short offset = (short) (p.getSize() / (short) 2);
 				short rolledDamage = player.getInventory()[1].getDamage().getInRange();
 				rolledDamage += player.getComputedStats().getAtt();
-				Bullet ab2 = this.addProjectile(realmId, 0l, player.getId(), abilityItem.getDamage().getProjectileGroupId(),
-						p.getProjectileId(), dest.clone(-offset, -offset), Float.parseFloat(p.getAngle()), p.getSize(),
-						p.getMagnitude(), p.getRange(), rolledDamage, false, p.getFlags(), p.getAmplitude(),
-						p.getFrequency(), player.getId());
-				if (ab2 != null && p.getEffects() != null) ab2.setEffects(p.getEffects());
+				rolledDamage = applyCombatDamageMods(rolledDamage, abilityCm);
+				spawnAbilityBullet(realmId, player, abilityItem.getDamage().getProjectileGroupId(), p,
+						dest.clone(-offset, -offset), Float.parseFloat(p.getAngle()), rolledDamage, abilityCm);
+				for (int extra = 1; extra <= abilityCm.getExtraProjectiles(); extra++) {
+					final float side = (extra % 2 == 0) ? 1f : -1f;
+					final float deltaA = side * 0.10f * ((extra + 1) / 2);
+					final short bonusDmg = applyCombatDamageMods(rolledDamage, abilityCm);
+					spawnAbilityBullet(realmId, player, abilityItem.getDamage().getProjectileGroupId(), p,
+							dest.clone(-offset, -offset), Float.parseFloat(p.getAngle()) + deltaA, bonusDmg, abilityCm);
+				}
 			}
 
 			// If the ability is non damaging or script-only (rogue cloak, priest tome, sorcerer scepter)
@@ -1935,6 +1949,37 @@ public class RealmManagerServer implements Runnable {
 		if (script != null) {
 			script.invokeItemAbility(targetRealm, player, abilityItem, pos);
 		}
+	}
+
+	private static short applyCombatDamageMods(short base, com.openrealm.game.entity.item.CombatModifiers cm) {
+		int dmg = base;
+		if (cm.getDamagePct() != 0) dmg = dmg + (dmg * cm.getDamagePct()) / 100;
+		if (cm.getCritChancePct() > 0) {
+			final int roll = (int) (Math.random() * 100);
+			if (roll < cm.getCritChancePct()) dmg = dmg * 2;
+		}
+		if (dmg < 0) dmg = 0;
+		if (dmg > Short.MAX_VALUE) dmg = Short.MAX_VALUE;
+		return (short) dmg;
+	}
+
+	private void spawnAbilityBullet(long realmId, Player player, int projectileGroupId, Projectile p,
+			Vector2f src, float angle, short damage, com.openrealm.game.entity.item.CombatModifiers cm) {
+		final Bullet b = this.addProjectile(realmId, 0L, player.getId(), projectileGroupId,
+				p.getProjectileId(), src, angle, p.getSize(), p.getMagnitude(), p.getRange(),
+				damage, false, p.getFlags(), p.getAmplitude(), p.getFrequency(), player.getId());
+		if (b == null) return;
+		final java.util.List<com.openrealm.game.model.ProjectileEffect> merged = new java.util.ArrayList<>();
+		if (p.getEffects() != null) merged.addAll(p.getEffects());
+		if (cm != null) {
+			for (com.openrealm.game.entity.item.CombatModifiers.OnHitEffect oh : cm.getOnHitEffects()) {
+				final com.openrealm.game.model.ProjectileEffect pe = new com.openrealm.game.model.ProjectileEffect();
+				pe.setEffectId((short) oh.getEffectId());
+				pe.setDuration(oh.getDurationMs());
+				merged.add(pe);
+			}
+		}
+		if (!merged.isEmpty()) b.setEffects(merged);
 	}
 
 	public void removeExpiredBullets() {
@@ -2360,6 +2405,30 @@ public class RealmManagerServer implements Runnable {
 			e.setHealth(e.getHealth() - dmgToInflict);
 			int maxHealth = (int) (model.getHealth() * e.getDifficulty());
 			e.setHealthpercent((float) e.getHealth() / (float) maxHealth);
+			// Lifesteal: heal the source player by % of dealt damage from any
+			// gem-equipped item (weapon or ability slot). Capped at the player's
+			// max HP via getComputedStats().
+			if (b.getSrcEntityId() != 0L) {
+				final Player healSrc = this.getPlayerById(b.getSrcEntityId());
+				if (healSrc != null && dmgToInflict > 0) {
+					int totalLifestealPct = 0;
+					if (healSrc.getInventory()[0] != null) {
+						totalLifestealPct += com.openrealm.game.entity.item.CombatModifiers
+								.fromItem(healSrc.getInventory()[0]).getLifestealPct();
+					}
+					if (healSrc.getInventory()[1] != null) {
+						totalLifestealPct += com.openrealm.game.entity.item.CombatModifiers
+								.fromItem(healSrc.getInventory()[1]).getLifestealPct();
+					}
+					if (totalLifestealPct > 0) {
+						final int heal = (dmgToInflict * totalLifestealPct) / 100;
+						if (heal > 0) {
+							final int maxHp = healSrc.getComputedStats().getHp();
+							healSrc.setHealth(Math.min(maxHp, healSrc.getHealth() + heal));
+						}
+					}
+				}
+			}
 			// Pierce: bows, quivers and stun shields pass through any number of
 			// enemies, hitting each one once (hasHitEnemy de-dups). Without the
 			// flag, the existing rule still applies — first enemy hit keeps the

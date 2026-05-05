@@ -5,6 +5,7 @@ import java.util.List;
 
 import com.openrealm.game.entity.Enemy;
 import com.openrealm.game.entity.Player;
+import com.openrealm.game.entity.item.AttributeModifier;
 import com.openrealm.game.entity.item.Enchantment;
 import com.openrealm.game.entity.item.GameItem;
 import com.openrealm.net.Packet;
@@ -16,6 +17,7 @@ import com.openrealm.net.core.nettypes.SerializableByte;
 import com.openrealm.net.core.nettypes.SerializableInt;
 import com.openrealm.net.core.nettypes.SerializableLong;
 import com.openrealm.net.core.nettypes.SerializableString;
+import com.openrealm.net.entity.NetAttributeModifier;
 import com.openrealm.net.entity.NetEnchantment;
 import com.openrealm.net.entity.NetGameItem;
 import com.openrealm.net.entity.NetStats;
@@ -177,16 +179,32 @@ public class UpdatePacket extends Packet {
 		net.setCategory(item.getCategory());
 		net.setForgeStatId(item.getForgeStatId());
 		net.setForgeSlotId(item.getForgeSlotId());
+		net.setRarity(item.getRarity());
+		net.setGemEffectType(item.getGemEffectType());
+		net.setGemParam1(item.getGemParam1());
+		net.setGemMagnitude(item.getGemMagnitude());
+		net.setGemDurationMs(item.getGemDurationMs());
 		final List<NetEnchantment> ench;
 		if (item.getEnchantments() != null && !item.getEnchantments().isEmpty()) {
 			ench = new ArrayList<>(item.getEnchantments().size());
 			for (Enchantment e : item.getEnchantments()) {
-				ench.add(new NetEnchantment(e.getStatId(), e.getDeltaValue(), e.getPixelX(), e.getPixelY(), e.getPixelColor()));
+				ench.add(new NetEnchantment(e.getStatId(), e.getDeltaValue(), e.getPixelX(), e.getPixelY(),
+						e.getPixelColor(), e.getEffectType(), e.getParam1(), e.getMagnitude(), e.getDurationMs()));
 			}
 		} else {
 			ench = new ArrayList<>();
 		}
 		net.setEnchantments(ench);
+		final List<NetAttributeModifier> mods;
+		if (item.getAttributeModifiers() != null && !item.getAttributeModifiers().isEmpty()) {
+			mods = new ArrayList<>(item.getAttributeModifiers().size());
+			for (AttributeModifier m : item.getAttributeModifiers()) {
+				mods.add(new NetAttributeModifier(m.getStatId(), m.getDeltaValue()));
+			}
+		} else {
+			mods = new ArrayList<>();
+		}
+		net.setAttributeModifiers(mods);
 		return net;
 	}
 

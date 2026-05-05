@@ -489,19 +489,66 @@ public class ServerGameLogic {
 					.map(String::valueOf).reduce((a,b)->a+","+b).orElse("none"));
 				return;
 			}
+			final com.openrealm.game.entity.item.CombatModifiers cm =
+					com.openrealm.game.entity.item.CombatModifiers.fromItem(player.getInventory()[0]);
 			float angle = Bullet.getAngle(source, dest);
 			for (Projectile proj : group.getProjectiles()) {
 				short offset = (short) (player.getSize() / (short) 2);
 				short rolledDamage = player.getInventory()[0].getDamage().getInRange();
 				float shootAngle = angle + Float.parseFloat(proj.getAngle());
 				rolledDamage += player.getComputedStats().getAtt();
-				Bullet b = mgr.addProjectile(realm.getRealmId(), Realm.RANDOM.nextLong(), player.getId(), player.getWeaponId(),
-						proj.getProjectileId(), source.clone(-offset, -offset), shootAngle, proj.getSize(),
-						proj.getMagnitude(), proj.getRange(), rolledDamage, false, proj.getFlags(), proj.getAmplitude(),
-						proj.getFrequency(), player.getId());
-				if (b != null && proj.getEffects() != null) b.setEffects(proj.getEffects());
+				rolledDamage = applyCombatDamageMods(rolledDamage, cm);
+				spawnPlayerBullet(mgr, realm.getRealmId(), player, weaponPgId, proj,
+						source.clone(-offset, -offset), shootAngle, rolledDamage, cm);
+				// Extra-projectile gems: fire N additional copies fanned around the base angle.
+				for (int extra = 1; extra <= cm.getExtraProjectiles(); extra++) {
+					final float side = (extra % 2 == 0) ? 1f : -1f;
+					final float deltaA = side * 0.12f * ((extra + 1) / 2);
+					final short bonusDmg = applyCombatDamageMods(rolledDamage, cm);
+					spawnPlayerBullet(mgr, realm.getRealmId(), player, weaponPgId, proj,
+							source.clone(-offset, -offset), shootAngle + deltaA, bonusDmg, cm);
+				}
 			}
 		}
+	}
+
+	private static short applyCombatDamageMods(short base, com.openrealm.game.entity.item.CombatModifiers cm) {
+		int dmg = base;
+		if (cm.getDamagePct() != 0) dmg = dmg + (dmg * cm.getDamagePct()) / 100;
+		if (cm.getCritChancePct() > 0) {
+			final int roll = (int) (Math.random() * 100);
+			if (roll < cm.getCritChancePct()) dmg = dmg * 2;
+		}
+		if (dmg < 0) dmg = 0;
+		if (dmg > Short.MAX_VALUE) dmg = Short.MAX_VALUE;
+		return (short) dmg;
+	}
+
+	private static void spawnPlayerBullet(RealmManagerServer mgr, long realmId, Player player, int weaponPgId,
+			Projectile proj, Vector2f src, float angle, short damage,
+			com.openrealm.game.entity.item.CombatModifiers cm) {
+		final Bullet b = mgr.addProjectile(realmId, Realm.RANDOM.nextLong(), player.getId(), weaponPgId,
+				proj.getProjectileId(), src, angle, proj.getSize(),
+				proj.getMagnitude(), proj.getRange(), damage, false, proj.getFlags(), proj.getAmplitude(),
+				proj.getFrequency(), player.getId());
+		if (b == null) return;
+		mergeProjectileEffects(b, proj, cm);
+	}
+
+	private static void mergeProjectileEffects(Bullet b, Projectile proj,
+			com.openrealm.game.entity.item.CombatModifiers cm) {
+		// Merge base projectile effects with any gem on-hit effects on the firing item.
+		final java.util.List<com.openrealm.game.model.ProjectileEffect> merged = new java.util.ArrayList<>();
+		if (proj != null && proj.getEffects() != null) merged.addAll(proj.getEffects());
+		if (cm != null) {
+			for (com.openrealm.game.entity.item.CombatModifiers.OnHitEffect oh : cm.getOnHitEffects()) {
+				final com.openrealm.game.model.ProjectileEffect pe = new com.openrealm.game.model.ProjectileEffect();
+				pe.setEffectId((short) oh.getEffectId());
+				pe.setDuration(oh.getDurationMs());
+				merged.add(pe);
+			}
+		}
+		if (!merged.isEmpty()) b.setEffects(merged);
 	}
 
 	public static void handleTextServer(RealmManagerServer mgr, Packet packet) {
