@@ -132,19 +132,14 @@ public class ServerCommandHandler {
         }
     }
 
-    // Surface command errors to the player two ways: a CommandPacket
-    // (commandId=4 SERVER_ERROR) for any client that cares, AND a TextPacket
-    // so the failure shows up in chat as "[SYSTEM] Error: ...". Sending both
-    // is cheap and guarantees the user sees feedback even if the CommandPacket
-    // path is filtered or unhandled by a particular client.
+    // Native client (ClientGameLogic.handleServerError) and webclient
+    // (main.js commandId===4) both render this CommandPacket into chat as
+    // "Error: ...". A previous belt-and-suspenders TextPacket here caused
+    // the message to appear twice — removed.
     private static void sendCommandError(RealmManagerServer mgr, Player fromPlayer, int code, String reason) {
         try {
             final CommandPacket errorResponse = CommandPacket.createError(fromPlayer, code, reason);
             mgr.enqueueServerPacket(fromPlayer, errorResponse);
-        } catch (Exception ignored) {}
-        try {
-            final TextPacket text = TextPacket.create("SYSTEM", fromPlayer.getName(), "Error: " + reason);
-            mgr.enqueueServerPacket(fromPlayer, text);
         } catch (Exception ignored) {}
     }
     
