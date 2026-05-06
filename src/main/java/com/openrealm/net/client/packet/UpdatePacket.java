@@ -117,11 +117,34 @@ public class UpdatePacket extends Packet {
 		light.setHealth(player.getHealth());
 		light.setMana(player.getMana());
 		light.setExperience(player.getExperience());
-		light.setInventory(EMPTY_INVENTORY);
+		// Include the 4 EQUIPMENT slots (0-3) so other clients can render
+		// the player's gear in the hover tooltip / inspect panel. Backpack
+		// (slots 4-19) is still stripped — that's what the bandwidth
+		// optimization actually targeted, and there's no UI surface that
+		// shows another player's backpack contents anyway. Sending only 4
+		// slots costs ~4 NetGameItem entries per broadcast vs the previous
+		// 20-slot full inventory.
+		light.setInventory(toEquipmentOnly(player.getInventory()));
 		light.setHpPotions((byte) player.getHpPotions());
 		light.setMpPotions((byte) player.getMpPotions());
 		light.setDyeId(player.getDyeId());
 		return light;
+	}
+
+	/**
+	 * Returns a 4-slot NetGameItem[] populated from the player's
+	 * inventory[0..3] (the equipment slots). Empty/null source slots map
+	 * to null entries; out-of-bounds source returns an all-null 4-slot
+	 * array. Sized to exactly 4 so receiving clients can rely on indexes
+	 * 0..3 lining up with the standard equipment layout.
+	 */
+	private static NetGameItem[] toEquipmentOnly(GameItem[] inventory) {
+		final NetGameItem[] out = new NetGameItem[4];
+		if (inventory == null) return out;
+		for (int i = 0; i < 4 && i < inventory.length; i++) {
+			out[i] = toNetGameItem(inventory[i]);
+		}
+		return out;
 	}
 
 	public static UpdatePacket from(Enemy enemy) throws Exception {
