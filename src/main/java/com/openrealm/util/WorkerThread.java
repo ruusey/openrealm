@@ -3,17 +3,84 @@ package com.openrealm.util;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 public class WorkerThread {
-    // Fixed pool: cores * 2 for mixed IO/CPU workload, capped to avoid thread explosion
-    private static final int THREAD_POOL_COUNT = Math.min(Runtime.getRuntime().availableProcessors() * 8, 50);
+    // Three-pool strategy so a burst of synchronous HTTP saves (mass logout
+    // / realm shutdown / vault-exit storm) can't park every worker and
+    // starve the 64Hz tick fan-out at the same time.
+    //
+    // MAIN: general-purpose, sized for IO-bound workloads. Most submissions
+    //       (packet handlers, ad-hoc background work) land here. Large cap
+    //       because each thread mostly sits in HttpClient.send() waiting
+    //       on the data service.
+    //
+    // IO_BLOCKING: dedicated pool for blocking HTTP calls into
+    //       openrealm-data (chest saves, character persistence, fame
+    //       updates, account fetches). Sized to handle a burst of every
+    //       active player simultaneously hitting the data service. Keeping
+    //       this separate from MAIN means a chest-save storm can't drain
+    //       the threads tick fan-out is using.
+    //
+    // CPU_TICK: sized to physical cores so realm-tick parallel sections
+    //       (per-realm enemy AI, projectile sims) don't oversubscribe
+    //       and start trampling each other's CPU caches.
+    private static final int MAIN_POOL_COUNT = Math.min(Runtime.getRuntime().availableProcessors() * 16, 200);
+    private static final int IO_POOL_COUNT   = 128;
+    private static final int CPU_POOL_COUNT  = Math.max(2, Runtime.getRuntime().availableProcessors() * 2);
+
     private static final ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors
-            .newFixedThreadPool(THREAD_POOL_COUNT, Executors.privilegedThreadFactory());
+            .newFixedThreadPool(MAIN_POOL_COUNT, Executors.privilegedThreadFactory());
+    private static final ThreadPoolExecutor ioExecutor = (ThreadPoolExecutor) Executors
+            .newFixedThreadPool(IO_POOL_COUNT, namedFactory("openrealm-io"));
+    private static final ThreadPoolExecutor cpuExecutor = (ThreadPoolExecutor) Executors
+            .newFixedThreadPool(CPU_POOL_COUNT, namedFactory("openrealm-tick"));
+
+    static {
+        log.info("[WorkerThread] pools: main={} io={} cpu={} (cores={})",
+                MAIN_POOL_COUNT, IO_POOL_COUNT, CPU_POOL_COUNT,
+                Runtime.getRuntime().availableProcessors());
+    }
+
+    private static ThreadFactory namedFactory(String prefix) {
+        final AtomicInteger n = new AtomicInteger(0);
+        final ThreadFactory base = Executors.privilegedThreadFactory();
+        return r -> {
+            Thread t = base.newThread(r);
+            t.setName(prefix + "-" + n.incrementAndGet());
+            t.setDaemon(true);
+            return t;
+        };
+    }
+
+    /** Synchronous-but-IO-heavy work — the data-service REST calls. Use this
+     *  instead of {@link #submit(Runnable)} for anything that calls
+     *  HttpClient.send() inside, so a burst of those can't drain the main
+     *  pool while the tick is trying to fan out. */
+    public static CompletableFuture<Void> submitIo(Runnable r) {
+        if (r == null) return CompletableFuture.completedFuture(null);
+        return CompletableFuture.runAsync(r, ioExecutor);
+    }
+
+    /** CPU-bound parallel section (e.g. realm-tick fan-out). */
+    public static CompletableFuture<Void> submitCpu(Runnable r) {
+        if (r == null) return CompletableFuture.completedFuture(null);
+        return CompletableFuture.runAsync(r, cpuExecutor);
+    }
+
+    /** Returns the IO-pool executor for use with HttpClient.sendAsync(...).
+     *  Calling sendAsync(handler, IO_EXECUTOR) keeps response-decode work
+     *  off the JDK's shared HttpClient default pool. */
+    public static Executor ioExecutor() {
+        return ioExecutor;
+    }
 
     public static CompletableFuture<?> submit(Runnable runnable) {
         if (runnable == null)

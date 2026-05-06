@@ -185,18 +185,24 @@ public class ServerGameLogic {
 			if (user == null) { return; }
 			currentRealm.removePlayer(user);
 
-			// Save vault chests if leaving vault. Use serializeChestsForSave
-			// so a setupChests-not-yet-complete race can't push an empty
-			// list and wipe the persisted vault.
+			// Save vault chests if leaving vault. Async fire-and-log so the
+			// portal-handler tick doesn't park a worker thread on the HTTP
+			// round-trip — server can stay responsive under a vault-exit
+			// storm. serializeChestsForSave returns null if setupChests
+			// hasn't completed, in which case we skip the save entirely
+			// (would otherwise wipe the persisted vault with []).
 			if (currentRealm.getMapId() == 1) {
-				try {
-					List<ChestDto> chestsToSave = currentRealm.serializeChestsForSave();
-					if (chestsToSave != null) {
-						ServerGameLogic.DATA_SERVICE.executePost(
-								"/data/account/" + user.getAccountUuid() + "/chest", chestsToSave, PlayerAccountDto.class);
-					}
-				} catch (Exception e) {
-					log.error("[SERVER] Failed to save vault chests: {}", e.getMessage());
+				final List<ChestDto> chestsToSave = currentRealm.serializeChestsForSave();
+				if (chestsToSave != null) {
+					final String acctUuid = user.getAccountUuid();
+					ServerGameLogic.DATA_SERVICE
+							.executePostAsync("/data/account/" + acctUuid + "/chest",
+									chestsToSave, PlayerAccountDto.class)
+							.exceptionally(ex -> {
+								log.error("[SERVER] Failed to save vault chests for {}: {}",
+										acctUuid, ex.getMessage());
+								return null;
+							});
 				}
 				currentRealm.setShutdown(true);
 				mgr.getRealms().remove(currentRealm.getRealmId());
@@ -235,19 +241,24 @@ public class ServerGameLogic {
 		currentRealm.removePlayer(user);
 
 		// Save + remove vault realm if leaving a vault (regardless of target).
-		// serializeChestsForSave returns null if setupChests hasn't completed
-		// — skip the POST so we don't bulk-replace the persisted vault with []
-		// and wipe the player's chests.
+		// Async fire-and-log so the portal handler doesn't park a worker
+		// thread on the HTTP round-trip. serializeChestsForSave returns
+		// null if setupChests hasn't completed — skip the POST so we don't
+		// wipe the persisted vault with [].
 		if (currentRealm.getMapId() == 1) {
-			try {
-				List<ChestDto> chestsToSave = currentRealm.serializeChestsForSave();
-				if (chestsToSave != null) {
-					ServerGameLogic.DATA_SERVICE.executePost(
-							"/data/account/" + user.getAccountUuid() + "/chest", chestsToSave, PlayerAccountDto.class);
-					log.info("[SERVER] Saved vault chests for {} on portal exit", user.getName());
-				}
-			} catch (Exception e) {
-				log.error("[SERVER] Failed to save vault chests on portal exit: {}", e.getMessage());
+			final List<ChestDto> chestsToSave = currentRealm.serializeChestsForSave();
+			if (chestsToSave != null) {
+				final String acctUuid = user.getAccountUuid();
+				final String userName = user.getName();
+				ServerGameLogic.DATA_SERVICE
+						.executePostAsync("/data/account/" + acctUuid + "/chest",
+								chestsToSave, PlayerAccountDto.class)
+						.thenAccept(resp -> log.info("[SERVER] Saved vault chests for {} on portal exit", userName))
+						.exceptionally(ex -> {
+							log.error("[SERVER] Failed to save vault chests on portal exit for {}: {}",
+									userName, ex.getMessage());
+							return null;
+						});
 			}
 			currentRealm.setShutdown(true);
 			mgr.getRealms().remove(currentRealm.getRealmId());

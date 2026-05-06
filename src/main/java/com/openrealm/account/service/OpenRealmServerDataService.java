@@ -7,6 +7,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpRequest.BodyPublisher;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openrealm.account.dto.LoginRequestDto;
@@ -120,6 +122,69 @@ public class OpenRealmServerDataService implements OpenRealmDataService{
             throw new IOException(response.body());
 
         return OpenRealmServerDataService.REQUEST_MAPPER.readValue(response.body(), responseClass);
+    }
+
+    /**
+     * Async POST. Returns a CompletableFuture so the caller can fire-and-log
+     * (chest saves, fame updates, character persistence) without parking a
+     * thread for the HTTP round-trip. The response body is parsed on the
+     * JDK HttpClient's selector; the returned future completes (or excepts)
+     * on whatever executor consumes it.
+     *
+     * <p>Use over {@link #executePost(String, Object, Class)} on hot
+     * persistence paths (player disconnect, realm shutdown, vault exit) —
+     * those used to park a {@code WorkerThread} pool slot for the full
+     * round-trip and could starve the tick fan-out under burst.
+     */
+    public <T> CompletableFuture<T> executePostAsync(String path, Object object, Class<T> responseClass) {
+        final long t0 = System.nanoTime();
+        try {
+            final URI targetURI = new URI(this.baseUrl + path);
+            final BodyPublisher body = HttpRequest.BodyPublishers
+                    .ofString(OpenRealmServerDataService.REQUEST_MAPPER.writeValueAsString(object));
+            final HttpRequest httpRequest = HttpRequest.newBuilder()
+                    .header("Content-Type", "application/json")
+                    .uri(targetURI).POST(body).build();
+            return this.httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofString())
+                    .thenApply(response -> {
+                        logTiming("POST", path, response.statusCode(), t0);
+                        if (response.statusCode() != 200) {
+                            throw new CompletionException(new IOException(response.body()));
+                        }
+                        try {
+                            return OpenRealmServerDataService.REQUEST_MAPPER.readValue(response.body(), responseClass);
+                        } catch (Exception e) {
+                            throw new CompletionException(e);
+                        }
+                    });
+        } catch (Exception e) {
+            return CompletableFuture.failedFuture(e);
+        }
+    }
+
+    /** Async GET — same rationale as executePostAsync but for fetches. */
+    public <T> CompletableFuture<T> executeGetAsync(String path, Class<T> responseClass) {
+        final long t0 = System.nanoTime();
+        try {
+            final URI targetURI = new URI(this.baseUrl + path);
+            final HttpRequest httpRequest = HttpRequest.newBuilder()
+                    .header("Content-Type", "application/json")
+                    .uri(targetURI).GET().build();
+            return this.httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofString())
+                    .thenApply(response -> {
+                        logTiming("GET", path, response.statusCode(), t0);
+                        if (response.statusCode() != 200) {
+                            throw new CompletionException(new IOException(response.body()));
+                        }
+                        try {
+                            return OpenRealmServerDataService.REQUEST_MAPPER.readValue(response.body(), responseClass);
+                        } catch (Exception e) {
+                            throw new CompletionException(e);
+                        }
+                    });
+        } catch (Exception e) {
+            return CompletableFuture.failedFuture(e);
+        }
     }
 
     public <T> T executeGetWithToken(String path, String token, Class<T> responseClass) throws Exception {

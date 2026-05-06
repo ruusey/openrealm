@@ -529,12 +529,19 @@ public class RealmManagerServer implements Runnable {
 							// Save vault chests if player is in vault
 							if (playerRealm.getMapId() == 1) {
 								try {
-									List<ChestDto> chestsToSave = playerRealm.serializeChestsForSave();
+									final List<ChestDto> chestsToSave = playerRealm.serializeChestsForSave();
 									if (chestsToSave != null) {
-										ServerGameLogic.DATA_SERVICE.executePost(
-												"/data/account/" + dcPlayer.getAccountUuid() + "/chest",
-												chestsToSave, PlayerAccountDto.class);
-										log.info("[SERVER] Saved vault chests for DC'd player {}", dcPlayer.getName());
+										final String acctUuid = dcPlayer.getAccountUuid();
+										final String dcName = dcPlayer.getName();
+										ServerGameLogic.DATA_SERVICE
+												.executePostAsync("/data/account/" + acctUuid + "/chest",
+														chestsToSave, PlayerAccountDto.class)
+												.thenAccept(resp -> log.info("[SERVER] Saved vault chests for DC'd player {}", dcName))
+												.exceptionally(ex -> {
+													log.error("[SERVER] Failed to save vault on DC for {}. Reason: {}",
+															dcName, ex.getMessage());
+													return null;
+												});
 									}
 								} catch (Exception e) {
 									log.error("[SERVER] Failed to save vault on DC for {}. Reason: {}",
@@ -1159,12 +1166,21 @@ public class RealmManagerServer implements Runnable {
 						// serializeChestsForSave returns null if setupChests
 						// hasn't completed; skip the POST so a fast disconnect
 						// during vault setup can't bulk-replace and wipe.
-						List<ChestDto> chestsToSave = playerRealm.serializeChestsForSave();
+						// Async so disconnectPlayer doesn't block the calling
+						// thread on the HTTP round-trip.
+						final List<ChestDto> chestsToSave = playerRealm.serializeChestsForSave();
 						if (chestsToSave != null) {
-							ServerGameLogic.DATA_SERVICE.executePost(
-									"/data/account/" + player.getAccountUuid() + "/chest",
-									chestsToSave, PlayerAccountDto.class);
-							log.info("[SERVER] Saved vault chests for disconnecting player {}", player.getName());
+							final String acctUuid = player.getAccountUuid();
+							final String userName = player.getName();
+							ServerGameLogic.DATA_SERVICE
+									.executePostAsync("/data/account/" + acctUuid + "/chest",
+											chestsToSave, PlayerAccountDto.class)
+									.thenAccept(resp -> log.info("[SERVER] Saved vault chests for disconnecting player {}", userName))
+									.exceptionally(ex -> {
+										log.error("[SERVER] Failed to save vault chests on disconnect for {}. Reason: {}",
+												userName, ex.getMessage());
+										return null;
+									});
 						}
 					} catch (Exception e) {
 						log.error("[SERVER] Failed to save vault chests on disconnect for {}. Reason: {}",
