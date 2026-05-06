@@ -362,13 +362,25 @@ public class Realm {
     	return this.players.values().stream().filter(p->p.getId()!=playerId).collect(Collectors.toSet());
     }
 
+    /** Set true at end of setupChests once vault chests have been spawned
+     *  into the loot map. serializeChests() refuses to return a chest list
+     *  before this flips, so a save-and-clear race (disconnect / portal-out
+     *  fired during vault-realm setup) can't write an empty list and wipe
+     *  the player's persisted chests. */
+    private volatile boolean chestsLoaded = false;
+
     public void setupChests(final Player player) {
         try {
             final PlayerAccountDto account = ServerGameLogic.DATA_SERVICE
                     .executeGet("/data/account/" + player.getAccountUuid(), null, PlayerAccountDto.class);
             final List<ChestDto> vaultChests = account.getPlayerVault();
             final int count = vaultChests.size();
-            if (count == 0) return;
+            if (count == 0) {
+                // Empty vault is a valid state — mark loaded so a subsequent
+                // save (e.g., player adds chests in this session) can persist.
+                this.chestsLoaded = true;
+                return;
+            }
 
             // Layout: 2-column grid centered in the vault room
             // Vault map is 32x32 tiles (32px each). Inner room roughly tiles 10-22 x 8-24.
@@ -397,8 +409,11 @@ public class Realm {
                 toSpawn.setSoulboundPlayerId(player.getId());
                 this.addLootContainer(toSpawn);
             }
+            this.chestsLoaded = true;
         } catch (Exception e) {
             Realm.log.error("Failed to get player account for chests. Reason: {}", e);
+            // Do NOT set chestsLoaded=true on failure — a subsequent save
+            // would otherwise write an empty list and wipe the vault.
         }
     }
 
@@ -421,7 +436,31 @@ public class Realm {
                 result.add(chest);
             }
         }
+        // After the for-loop runs, mark loaded if it produced anything.
+        // Callers should null-check before persisting (see chestsLoaded
+        // doc and the four save sites in ServerGameLogic /
+        // RealmManagerServer).
+        if (!result.isEmpty()) {
+            this.chestsLoaded = true;
+        }
         return result;
+    }
+
+    /**
+     * Safe variant of serializeChests: returns null when the realm has not
+     * yet finished spawning chests via setupChests, OR when the realm is a
+     * non-vault realm where serializing makes no sense. Use this in any
+     * code path that POSTs to /account/{uuid}/chest, since that endpoint
+     * BULK-REPLACES the vault — a serialize-too-early race would write an
+     * empty list and wipe the player's persisted chests.
+     */
+    public List<ChestDto> serializeChestsForSave() {
+        if (!this.chestsLoaded) {
+            Realm.log.warn("[REALM] Refusing to serialize chests before setupChests has completed (realmId={}, mapId={}). Skipping save to avoid wipe.",
+                    this.realmId, this.mapId);
+            return null;
+        }
+        return this.serializeChests();
     }
 
     public void loadMap(int mapId) {

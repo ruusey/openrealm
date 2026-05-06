@@ -529,11 +529,13 @@ public class RealmManagerServer implements Runnable {
 							// Save vault chests if player is in vault
 							if (playerRealm.getMapId() == 1) {
 								try {
-									List<ChestDto> chestsToSave = playerRealm.serializeChests();
-									ServerGameLogic.DATA_SERVICE.executePost(
-											"/data/account/" + dcPlayer.getAccountUuid() + "/chest",
-											chestsToSave, PlayerAccountDto.class);
-									log.info("[SERVER] Saved vault chests for DC'd player {}", dcPlayer.getName());
+									List<ChestDto> chestsToSave = playerRealm.serializeChestsForSave();
+									if (chestsToSave != null) {
+										ServerGameLogic.DATA_SERVICE.executePost(
+												"/data/account/" + dcPlayer.getAccountUuid() + "/chest",
+												chestsToSave, PlayerAccountDto.class);
+										log.info("[SERVER] Saved vault chests for DC'd player {}", dcPlayer.getName());
+									}
 								} catch (Exception e) {
 									log.error("[SERVER] Failed to save vault on DC for {}. Reason: {}",
 											dcPlayer.getName(), e.getMessage());
@@ -1154,11 +1156,16 @@ public class RealmManagerServer implements Runnable {
 			if (playerRealm != null) {
 				if (playerRealm.getMapId() == 1) {
 					try {
-						List<ChestDto> chestsToSave = playerRealm.serializeChests();
-						ServerGameLogic.DATA_SERVICE.executePost(
-								"/data/account/" + player.getAccountUuid() + "/chest",
-								chestsToSave, PlayerAccountDto.class);
-						log.info("[SERVER] Saved vault chests for disconnecting player {}", player.getName());
+						// serializeChestsForSave returns null if setupChests
+						// hasn't completed; skip the POST so a fast disconnect
+						// during vault setup can't bulk-replace and wipe.
+						List<ChestDto> chestsToSave = playerRealm.serializeChestsForSave();
+						if (chestsToSave != null) {
+							ServerGameLogic.DATA_SERVICE.executePost(
+									"/data/account/" + player.getAccountUuid() + "/chest",
+									chestsToSave, PlayerAccountDto.class);
+							log.info("[SERVER] Saved vault chests for disconnecting player {}", player.getName());
+						}
 					} catch (Exception e) {
 						log.error("[SERVER] Failed to save vault chests on disconnect for {}. Reason: {}",
 								player.getName(), e.getMessage());

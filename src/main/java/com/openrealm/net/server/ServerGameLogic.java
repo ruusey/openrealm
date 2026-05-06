@@ -185,12 +185,16 @@ public class ServerGameLogic {
 			if (user == null) { return; }
 			currentRealm.removePlayer(user);
 
-			// Save vault chests if leaving vault
+			// Save vault chests if leaving vault. Use serializeChestsForSave
+			// so a setupChests-not-yet-complete race can't push an empty
+			// list and wipe the persisted vault.
 			if (currentRealm.getMapId() == 1) {
 				try {
-					List<ChestDto> chestsToSave = currentRealm.serializeChests();
-					ServerGameLogic.DATA_SERVICE.executePost(
-							"/data/account/" + user.getAccountUuid() + "/chest", chestsToSave, PlayerAccountDto.class);
+					List<ChestDto> chestsToSave = currentRealm.serializeChestsForSave();
+					if (chestsToSave != null) {
+						ServerGameLogic.DATA_SERVICE.executePost(
+								"/data/account/" + user.getAccountUuid() + "/chest", chestsToSave, PlayerAccountDto.class);
+					}
 				} catch (Exception e) {
 					log.error("[SERVER] Failed to save vault chests: {}", e.getMessage());
 				}
@@ -230,13 +234,18 @@ public class ServerGameLogic {
 		final PortalModel portalUsed = GameDataManager.PORTALS.get((int) used.getPortalId());
 		currentRealm.removePlayer(user);
 
-		// Save + remove vault realm if leaving a vault (regardless of target)
+		// Save + remove vault realm if leaving a vault (regardless of target).
+		// serializeChestsForSave returns null if setupChests hasn't completed
+		// — skip the POST so we don't bulk-replace the persisted vault with []
+		// and wipe the player's chests.
 		if (currentRealm.getMapId() == 1) {
 			try {
-				List<ChestDto> chestsToSave = currentRealm.serializeChests();
-				ServerGameLogic.DATA_SERVICE.executePost(
-						"/data/account/" + user.getAccountUuid() + "/chest", chestsToSave, PlayerAccountDto.class);
-				log.info("[SERVER] Saved vault chests for {} on portal exit", user.getName());
+				List<ChestDto> chestsToSave = currentRealm.serializeChestsForSave();
+				if (chestsToSave != null) {
+					ServerGameLogic.DATA_SERVICE.executePost(
+							"/data/account/" + user.getAccountUuid() + "/chest", chestsToSave, PlayerAccountDto.class);
+					log.info("[SERVER] Saved vault chests for {} on portal exit", user.getName());
+				}
 			} catch (Exception e) {
 				log.error("[SERVER] Failed to save vault chests on portal exit: {}", e.getMessage());
 			}
