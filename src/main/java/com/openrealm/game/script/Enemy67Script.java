@@ -9,10 +9,13 @@ import com.openrealm.net.client.packet.CreateEffectPacket;
 import com.openrealm.net.realm.Realm;
 import com.openrealm.net.realm.RealmManagerServer;
 
+import lombok.extern.slf4j.Slf4j;
+
 /**
  * Healer NPC (Enemy 67) — friendly entity that heals nearby players' HP and MP.
  * Spawns in the vault via static spawns. Does not attack or spawn projectiles.
  */
+@Slf4j
 public class Enemy67Script extends EnemyScriptBase {
 
     private static final int HEAL_AMOUNT = 80;
@@ -30,6 +33,16 @@ public class Enemy67Script extends EnemyScriptBase {
     @Override
     public void attack(final Realm targetRealm, final Enemy enemy, final Player targetPlayer) throws Exception {
         final Vector2f center = enemy.getPos().clone(enemy.getSize() / 2, enemy.getSize() / 2);
+
+        // Diagnostic: lets us tell whether (a) the hook is firing at all
+        // and (b) the heal CreateEffect packet is being broadcast. If the
+        // user reports "healer stopped healing" and no log line appears,
+        // the script binding or attackRange check is the problem.
+        // If the log fires but nothing shows visually, the client-side
+        // EFFECT_HEAL_RADIUS renderer is the problem.
+        log.debug("[HEALER] enemyId=67 firing heal at ({}, {}) for player={} dist={}",
+                center.x, center.y, targetPlayer.getName(),
+                enemy.getPos().distanceTo(targetPlayer.getPos()));
 
         // Broadcast heal radius visual
         this.getMgr().enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.aoeEffect(

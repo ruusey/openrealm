@@ -715,7 +715,10 @@ public class Enemy extends Entity {
 
     public void update(long realmId, RealmManagerServer mgr, double time) {
         final Realm targetRealm = mgr.getRealms().get(realmId);
-        final Player player = mgr.getClosestPlayer(targetRealm.getRealmId(), this.getPos(), this.chaseRange);
+        // Scripted NPCs (e.g. Enemy67 vault healer) need to see hidden admins so
+        // friendly scripts still trigger; everything else honours the /hide filter.
+        final boolean includeHidden = mgr.getEnemyScript(this.enemyId) != null;
+        final Player player = mgr.getClosestPlayer(targetRealm.getRealmId(), this.getPos(), this.chaseRange, includeHidden);
         super.update(time);
         if (player == null) {
             this.dx = 0;

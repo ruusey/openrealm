@@ -1238,6 +1238,14 @@ public class RealmManagerServer implements Runnable {
 	}
 
 	public Player getClosestPlayer(final long realmId, final Vector2f pos, final float limit) {
+		return getClosestPlayer(realmId, pos, limit, false);
+	}
+
+	// includeHidden=true bypasses the /hide filter so friendly scripted NPCs
+	// (e.g. Enemy67 vault healer) still see admins who toggled /hide on.
+	// Hostile enemies should keep the default false so /hide retains its
+	// "untargetable by enemies" guarantee.
+	public Player getClosestPlayer(final long realmId, final Vector2f pos, final float limit, final boolean includeHidden) {
 		final Realm targetRealm = this.realms.get(realmId);
 		if (targetRealm == null) return null;
 		// Squared distance comparison — avoids 10K+ Math.sqrt() calls per tick
@@ -1255,7 +1263,7 @@ public class RealmManagerServer implements Runnable {
 		// strictly cheaper here.
 		for (final Player player : targetRealm.getPlayers().values()) {
 			// /hide: enemies don't target hidden admins.
-			if (player.isHiddenFromOthers()) continue;
+			if (!includeHidden && player.isHiddenFromOthers()) continue;
 			final float dx = player.getPos().x - pos.x;
 			final float dy = player.getPos().y - pos.y;
 			final float distSq = dx * dx + dy * dy;
