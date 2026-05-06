@@ -301,8 +301,6 @@ public class LoadPacket extends Packet {
     public LoadPacket combineDelta(final LoadPacket other) throws Exception {
         if (other == null) return this;
 
-        final Set<Long> playerIdsThis = Stream.of(this.players).map(NetPlayer::getId)
-                .collect(Collectors.toSet());
         final Set<Long> enemyIdsThis = Stream.of(this.enemies).map(NetEnemy::getId)
                 .collect(Collectors.toSet());
         final Set<Long> portalIdsThis = Stream.of(this.portals).map(NetPortal::getId)
@@ -312,10 +310,11 @@ public class LoadPacket extends Packet {
         final Set<Long> lootIdsThis = Stream.of(this.containers).map(NetLootContainer::getLootContainerId)
                 .collect(Collectors.toSet());
 
-        final List<NetPlayer> playersDiff = new ArrayList<>();
-        for (final NetPlayer p : other.getPlayers()) {
-            if (!playerIdsThis.contains(p.getId())) playersDiff.add(p);
-        }
+        // Players are sent in FULL (not delta). NetPlayer carries inventory +
+        // equipment + stats — actions like loot pickup mutate those without
+        // changing the player ID set, so a true delta would silently miss them
+        // and force the user to wait for the periodic 3s self-heal snapshot.
+        // Bandwidth impact is small: typical viewport has only a few players.
         final List<NetEnemy> enemiesDiff = new ArrayList<>();
         for (final NetEnemy e : other.getEnemies()) {
             if (!enemyIdsThis.contains(e.getId())) enemiesDiff.add(e);
@@ -334,7 +333,7 @@ public class LoadPacket extends Packet {
         }
 
         return new LoadPacket(
-                playersDiff.toArray(new NetPlayer[0]),
+                other.getPlayers(),
                 enemiesDiff.toArray(new NetEnemy[0]),
                 bulletsDiff.toArray(new NetBullet[0]),
                 lootDiff.toArray(new NetLootContainer[0]),
