@@ -1,5 +1,6 @@
 package com.openrealm.game.tile;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -105,7 +106,7 @@ public class DungeonGenerator {
 		log.info("[DungeonGen] Generating new procedural dungeon realm with room count {}. Params: {}", numRooms, this);
 
 		// Track placed room bounds for overlap rejection
-		final java.util.List<int[]> placedRooms = new java.util.ArrayList<>();
+		final List<int[]> placedRooms = new ArrayList<>();
 
 		// Place rooms in a chain, each offset from the previous with guaranteed spacing
 		for (int i = 0; i < numRooms; i++) {
@@ -852,7 +853,7 @@ public class DungeonGenerator {
 		float carveChance = 0.12f;
 
 		// Collect candidate positions first to avoid modifying while iterating
-		java.util.List<int[]> carves = new java.util.ArrayList<>();
+		List<int[]> carves = new ArrayList<>();
 		for (int r = 2; r < this.height - 2; r++) {
 			for (int c = 2; c < this.width - 2; c++) {
 				if (coll[r][c] == null || coll[r][c].isVoid()) continue;

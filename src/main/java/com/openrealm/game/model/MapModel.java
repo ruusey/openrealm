@@ -2,6 +2,7 @@ package com.openrealm.game.model;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 
 import com.openrealm.game.math.Vector2f;
 
@@ -41,7 +42,7 @@ public class MapModel {
      */
     public Vector2f getRandomSpawnPoint() {
         if (this.spawnPoints != null && !this.spawnPoints.isEmpty()) {
-            float[] sp = this.spawnPoints.get(new java.util.Random().nextInt(this.spawnPoints.size()));
+            float[] sp = this.spawnPoints.get(new Random().nextInt(this.spawnPoints.size()));
             return new Vector2f(sp[0], sp[1]);
         }
         return getCenter();

@@ -44,7 +44,7 @@ public class ServerItemHelper {
                     item.getName(), slotIdx, item.getTargetSlot(), slotIdx);
             return false;
         }
-        final boolean classOk = com.openrealm.game.contants.CharacterClass.isValidUser(player, item.getTargetClass());
+        final boolean classOk = CharacterClass.isValidUser(player, item.getTargetClass());
         if (!classOk) {
             log.warn("[canEquipInSlot] reject {} into slot {} — class mismatch: player.classId={} item.targetClass={}",
                     item.getName(), slotIdx, player.getClassId(), item.getTargetClass());

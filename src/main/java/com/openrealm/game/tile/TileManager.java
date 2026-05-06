@@ -3,6 +3,8 @@ package com.openrealm.game.tile;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -35,7 +37,7 @@ import lombok.extern.slf4j.Slf4j;
 public class TileManager {
     private static final Integer VIEWPORT_TILE_MIN = 10;
     private static final Integer VIEWPORT_TILE_MAX = 20;
-    private final java.util.concurrent.locks.ReentrantLock mapLock = new java.util.concurrent.locks.ReentrantLock();
+    private final ReentrantLock mapLock = new ReentrantLock();
     private List<TileMap> mapLayers;
     private Vector2f bossSpawnPos;
     private Vector2f playerSpawnPos;
@@ -133,8 +135,8 @@ public class TileManager {
             final float maxDist = (float) Math.sqrt(centerX * centerX + centerY * centerY);
 
             // Pre-resolve tile models per group: base terrain (layer 0) and decorations (layer 1)
-            final Map<Integer, List<TileModel>> baseByGroup = new java.util.HashMap<>();
-            final Map<Integer, List<TileModel>> decorationByGroup = new java.util.HashMap<>();
+            final Map<Integer, List<TileModel>> baseByGroup = new HashMap<>();
+            final Map<Integer, List<TileModel>> decorationByGroup = new HashMap<>();
             for (TileGroup group : params.getTileGroups()) {
                 List<TileModel> baseTiles = group.getTileIds().stream()
                         .map(id -> GameDataManager.TILES.get(id))
@@ -146,7 +148,7 @@ public class TileManager {
                 List<TileModel> decoTiles = (decoIds != null) ? decoIds.stream()
                         .map(id -> GameDataManager.TILES.get(id))
                         .filter(tm -> tm != null)
-                        .collect(Collectors.toList()) : new java.util.ArrayList<>();
+                        .collect(Collectors.toList()) : new ArrayList<>();
                 decorationByGroup.put(group.getOrdinal(), decoTiles);
             }
 
@@ -190,7 +192,7 @@ public class TileManager {
 
                     // Decoration/collision layer tile (placed on layer 1 over the base)
                     List<TileModel> decoTiles = decorationByGroup.getOrDefault(groupOrd,
-                            java.util.Collections.emptyList());
+                            Collections.emptyList());
                     if (!decoTiles.isEmpty()) {
                         TileModel tile = decoTiles.get(random.nextInt(decoTiles.size()));
                         float rarity = group.getRarities().getOrDefault(tile.getTileId() + "", 0.0f);
@@ -212,7 +214,7 @@ public class TileManager {
                 List<TileModel> decoTiles = (decoIds != null) ? decoIds.stream()
                         .map(id -> GameDataManager.TILES.get(id))
                         .filter(tm -> tm != null)
-                        .collect(Collectors.toList()) : new java.util.ArrayList<>();
+                        .collect(Collectors.toList()) : new ArrayList<>();
 
                 // Fill base layer with terrain tiles
                 for (int i = 0; i < height; i++) {

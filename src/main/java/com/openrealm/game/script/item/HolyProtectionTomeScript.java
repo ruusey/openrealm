@@ -73,7 +73,7 @@ public class HolyProtectionTomeScript extends UseableItemScriptBase {
         // Apply ARMORED to self
         long armoredDuration = ARMORED_BASE_DURATION;
         player.addEffect(StatusEffectType.ARMORED, armoredDuration);
-        this.mgr.broadcastTextEffect(com.openrealm.game.contants.EntityType.PLAYER, player,
-                com.openrealm.game.contants.TextEffect.PLAYER_INFO, "ARMORED");
+        this.mgr.broadcastTextEffect(EntityType.PLAYER, player,
+                TextEffect.PLAYER_INFO, "ARMORED");
     }
 }

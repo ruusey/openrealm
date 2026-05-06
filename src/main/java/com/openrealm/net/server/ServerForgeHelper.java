@@ -2,12 +2,14 @@ package com.openrealm.net.server;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 import com.openrealm.game.contants.GlobalConstants;
 import com.openrealm.game.data.GameDataManager;
 import com.openrealm.game.entity.Player;
 import com.openrealm.game.entity.item.Enchantment;
 import com.openrealm.game.entity.item.GameItem;
+import com.openrealm.game.entity.item.Rarity;
 import com.openrealm.game.model.TileModel;
 import com.openrealm.game.tile.Tile;
 import com.openrealm.game.tile.TileMap;
@@ -104,7 +106,7 @@ public class ServerForgeHelper {
         // otherwise leave the partial shard stack and place the crystal in the first free slot.
         if (stack.getStackCount() == SHARDS_PER_CRYSTAL) {
             final GameItem crystal = crystalTemplate.clone();
-            crystal.setUid(java.util.UUID.randomUUID().toString());
+            crystal.setUid(UUID.randomUUID().toString());
             crystal.setStackCount(1);
             player.getInventory()[slot] = crystal;
         } else {
@@ -117,7 +119,7 @@ public class ServerForgeHelper {
                 return;
             }
             final GameItem crystal = crystalTemplate.clone();
-            crystal.setUid(java.util.UUID.randomUUID().toString());
+            crystal.setUid(UUID.randomUUID().toString());
             crystal.setStackCount(1);
             player.getInventory()[empty] = crystal;
         }
@@ -224,7 +226,7 @@ public class ServerForgeHelper {
         final int rarityCap = target.getMaxEnchantments();
         if (existing.size() >= rarityCap) {
             log.warn("[Forge] Item {} at rarity cap ({} slots for {})", target.getName(),
-                    rarityCap, com.openrealm.game.entity.item.Rarity.fromOrdinal(target.getRarity()).displayName);
+                    rarityCap, Rarity.fromOrdinal(target.getRarity()).displayName);
             return;
         }
         // Pixel must not already be enchanted

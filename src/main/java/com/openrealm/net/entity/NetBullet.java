@@ -1,6 +1,7 @@
 package com.openrealm.net.entity;
 
 import java.util.Arrays;
+import java.util.List;
 
 import com.openrealm.game.entity.Bullet;
 import com.openrealm.game.math.Vector2f;
@@ -86,7 +87,7 @@ public class NetBullet extends SerializableFieldType<NetBullet> {
 		n.magnitude = b.getMagnitude();
 		n.range = b.getRange();
 		n.damage = b.getDamage();
-		final java.util.List<Short> bf = b.getFlags();
+		final List<Short> bf = b.getFlags();
 		if (bf != null && !bf.isEmpty()) {
 			n.flags = bf.toArray(new Short[0]);
 		} else {

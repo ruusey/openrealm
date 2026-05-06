@@ -6,18 +6,23 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 import com.openrealm.account.dto.CharacterStatsDto;
 import com.openrealm.account.dto.GameItemRefDto;
 import com.openrealm.game.contants.CharacterClass;
 import com.openrealm.game.contants.StatusEffectType;
 import com.openrealm.game.data.GameDataManager;
+import com.openrealm.game.entity.item.AttributeModifier;
+import com.openrealm.game.entity.item.Enchantment;
 import com.openrealm.game.entity.item.GameItem;
 import com.openrealm.game.entity.item.LootContainer;
 import com.openrealm.game.entity.item.Stats;
 import com.openrealm.game.math.Vector2f;
 import com.openrealm.game.model.CharacterClassModel;
+import com.openrealm.net.client.packet.PlayerStatePacket;
 import com.openrealm.net.entity.NetGameItemRef;
 import com.openrealm.util.Tuple;
 
@@ -65,7 +70,7 @@ public class Player extends Entity {
 	@Builder.Default
 	private float currentVy = 0f;
 	@Builder.Default
-	private transient java.util.Queue<float[]> inputQueue = new java.util.concurrent.ConcurrentLinkedQueue<>();
+	private transient Queue<float[]> inputQueue = new ConcurrentLinkedQueue<>();
 
 	public static final int MAX_CONSUMABLE_POTIONS = 6;
 	public static final int HP_POTION_ITEM_ID = 296;
@@ -89,7 +94,7 @@ public class Player extends Entity {
 			String accountUuid, String characterUuid, long experience, Stats stats, boolean headless, boolean bot,
 			String chatRole, boolean adminModeEnabled, String storedChatRole, boolean hiddenFromOthers,
 			int lastInputSeq, int lastProcessedInputSeq, float currentVx, float currentVy,
-			java.util.Queue<float[]> inputQueue, int hpPotions, int mpPotions, int dyeId, long cachedAccountFame) {
+			Queue<float[]> inputQueue, int hpPotions, int mpPotions, int dyeId, long cachedAccountFame) {
 		super(0, null, 0);
 		this.inventory = inventory;
 		this.lastStatsTime = lastStatsTime;
@@ -109,7 +114,7 @@ public class Player extends Entity {
 		this.lastProcessedInputSeq = lastProcessedInputSeq;
 		this.currentVx = currentVx;
 		this.currentVy = currentVy;
-		this.inputQueue = inputQueue != null ? inputQueue : new java.util.concurrent.ConcurrentLinkedQueue<>();
+		this.inputQueue = inputQueue != null ? inputQueue : new ConcurrentLinkedQueue<>();
 		this.hpPotions = hpPotions;
 		this.mpPotions = mpPotions;
 		this.dyeId = dyeId;
@@ -283,12 +288,12 @@ public class Player extends Entity {
 			if (item == null) continue;
 			stats = stats.concat(item.getStats());
 			if (item.getAttributeModifiers() != null) {
-				for (com.openrealm.game.entity.item.AttributeModifier m : item.getAttributeModifiers()) {
+				for (AttributeModifier m : item.getAttributeModifiers()) {
 					applyStatDelta(stats, m.getStatId(), m.getDeltaValue());
 				}
 			}
 			if (item.getEnchantments() != null) {
-				for (com.openrealm.game.entity.item.Enchantment e : item.getEnchantments()) {
+				for (Enchantment e : item.getEnchantments()) {
 					final byte effectType = e.getEffectType();
 					if (effectType == 0 /* STAT_DELTA */) {
 						// param1=statId, magnitude=delta (legacy uses statId/deltaValue)
@@ -383,7 +388,7 @@ public class Player extends Entity {
 		return this.mana;
 	}
 
-	public void applyState(com.openrealm.net.client.packet.PlayerStatePacket packet) {
+	public void applyState(PlayerStatePacket packet) {
 		this.health = packet.getHealth();
 		this.mana = packet.getMana();
 		this.setEffectIds(packet.getEffectIds());
@@ -470,7 +475,7 @@ public class Player extends Entity {
 	}
 
 	public void queueInput(int seq, float vx, float vy) {
-		if (this.inputQueue == null) this.inputQueue = new java.util.concurrent.ConcurrentLinkedQueue<>();
+		if (this.inputQueue == null) this.inputQueue = new ConcurrentLinkedQueue<>();
 		if (seq > this.lastProcessedInputSeq) {
 			this.inputQueue.add(new float[]{(float) seq, vx, vy});
 		}

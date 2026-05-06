@@ -1,9 +1,12 @@
 package com.openrealm.net.realm;
 
 import java.security.SecureRandom;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -15,8 +18,11 @@ import com.openrealm.account.dto.ChestDto;
 import com.openrealm.account.dto.GameItemRefDto;
 import com.openrealm.account.dto.PlayerAccountDto;
 import com.openrealm.game.contants.CharacterClass;
+import com.openrealm.game.contants.EntityType;
 import com.openrealm.game.contants.GlobalConstants;
 import com.openrealm.game.contants.LootTier;
+import com.openrealm.game.contants.StatusEffectType;
+import com.openrealm.game.contants.TextEffect;
 import com.openrealm.game.data.GameDataManager;
 import com.openrealm.game.entity.Bullet;
 import com.openrealm.game.entity.Enemy;
@@ -34,8 +40,14 @@ import com.openrealm.game.model.EnemyModel;
 import com.openrealm.game.model.MapModel;
 import com.openrealm.game.model.OverworldZone;
 import com.openrealm.game.model.ProjectileGroup;
+import com.openrealm.game.model.SetPiece;
+import com.openrealm.game.model.SetPieceModel;
+import com.openrealm.game.model.StaticSpawn;
 import com.openrealm.game.model.TerrainGenerationParameters;
+import com.openrealm.game.tile.Tile;
+import com.openrealm.game.tile.TileData;
 import com.openrealm.game.tile.TileManager;
+import com.openrealm.net.client.packet.CreateEffectPacket;
 import com.openrealm.net.client.packet.LoadPacket;
 import com.openrealm.net.client.packet.ObjectMovePacket;
 import com.openrealm.net.client.packet.UpdatePacket;
@@ -80,7 +92,7 @@ public class Realm {
     private TileManager tileManager;
     // Compact short ID allocator for bandwidth-efficient movement packets
     private ShortIdAllocator shortIdAllocator = new ShortIdAllocator();
-    private final java.util.concurrent.locks.ReentrantLock playerLock = new java.util.concurrent.locks.ReentrantLock();
+    private final ReentrantLock playerLock = new ReentrantLock();
 
     // Spatial hash grid for O(1) neighbor lookups (cell size = viewport radius)
     private transient SpatialHashGrid spatialGrid;
@@ -110,20 +122,20 @@ public class Realm {
     private transient RealmOverseer overseer;
 
     // Poison damage-over-time tracking. Each entry ticks independently (poisons stack).
-    private final List<PoisonDotState> activePoisonDots = new java.util.ArrayList<>();
+    private final List<PoisonDotState> activePoisonDots = new ArrayList<>();
     private static final long POISON_TICK_INTERVAL_MS = 200;
 
     // Pending poison throws — tracked per tick instead of blocking a thread pool thread.
-    private final List<PoisonThrowState> pendingPoisonThrows = new java.util.ArrayList<>();
+    private final List<PoisonThrowState> pendingPoisonThrows = new ArrayList<>();
 
     // Active traps — Huntress trap zones that trigger when enemies walk into them.
-    private final List<TrapState> activeTraps = new java.util.ArrayList<>();
+    private final List<TrapState> activeTraps = new ArrayList<>();
 
     // Active decoys — lightweight tick-driven entities for Trickster prism ability.
-    private final List<DecoyState> activeDecoys = new java.util.ArrayList<>();
+    private final List<DecoyState> activeDecoys = new ArrayList<>();
 
     // Active realm events — globally announced boss encounters with terrain + minion waves.
-    private final List<ActiveRealmEvent> activeRealmEvents = new java.util.ArrayList<>();
+    private final List<ActiveRealmEvent> activeRealmEvents = new ArrayList<>();
 
     static class ActiveRealmEvent {
         final int eventId;
@@ -133,7 +145,7 @@ public class Realm {
         final int tileX, tileY;
         final int[][] savedBase;
         final int[][] savedCollision;
-        final java.util.Set<Long> minionIds = new java.util.HashSet<>();
+        final Set<Long> minionIds = new HashSet<>();
         final boolean[] wavesTriggered;
         boolean completed;
 
@@ -141,7 +153,7 @@ public class Realm {
                          int[][] savedBase, int[][] savedCollision, int waveCount, long durationMs) {
             this.eventId = eventId;
             this.bossEnemyId = bossEnemyId;
-            this.spawnTime = java.time.Instant.now().toEpochMilli();
+            this.spawnTime = Instant.now().toEpochMilli();
             this.durationMs = durationMs;
             this.tileX = tileX;
             this.tileY = tileY;
@@ -152,7 +164,7 @@ public class Realm {
         }
 
         boolean isExpired() {
-            return java.time.Instant.now().toEpochMilli() - spawnTime >= durationMs;
+            return Instant.now().toEpochMilli() - spawnTime >= durationMs;
         }
     }
 
@@ -172,7 +184,7 @@ public class Realm {
 
         PoisonThrowState(long delayMs, long sourcePlayerId, float landX, float landY,
                          float radius, int totalDamage, long poisonDuration, byte tier) {
-            this.landTime = java.time.Instant.now().toEpochMilli() + delayMs;
+            this.landTime = Instant.now().toEpochMilli() + delayMs;
             this.sourcePlayerId = sourcePlayerId;
             this.landX = landX;
             this.landY = landY;
@@ -183,7 +195,7 @@ public class Realm {
         }
 
         boolean hasLanded() {
-            return java.time.Instant.now().toEpochMilli() >= landTime;
+            return Instant.now().toEpochMilli() >= landTime;
         }
     }
 
@@ -212,7 +224,7 @@ public class Realm {
         TrapState(long throwDelayMs, long sourcePlayerId, float x, float y,
                   float triggerRadius, short effectId, long effectDuration, int damage,
                   long lifetimeMs, byte tier) {
-            this.placeTime = java.time.Instant.now().toEpochMilli() + throwDelayMs;
+            this.placeTime = Instant.now().toEpochMilli() + throwDelayMs;
             this.armReadyTime = this.placeTime + ARM_TIME_MS;
             this.expireTime = this.placeTime + lifetimeMs;
             this.sourcePlayerId = sourcePlayerId;
@@ -225,9 +237,9 @@ public class Realm {
             this.tier = tier;
         }
 
-        boolean hasLanded() { return java.time.Instant.now().toEpochMilli() >= placeTime; }
-        boolean isArmed()   { return java.time.Instant.now().toEpochMilli() >= armReadyTime; }
-        boolean isExpired() { return java.time.Instant.now().toEpochMilli() >= expireTime; }
+        boolean hasLanded() { return Instant.now().toEpochMilli() >= placeTime; }
+        boolean isArmed()   { return Instant.now().toEpochMilli() >= armReadyTime; }
+        boolean isExpired() { return Instant.now().toEpochMilli() >= expireTime; }
     }
 
     static class PoisonDotState {
@@ -243,14 +255,14 @@ public class Realm {
             this.enemyId = enemyId;
             this.totalDamage = totalDamage;
             this.duration = duration;
-            this.startTime = java.time.Instant.now().toEpochMilli();
+            this.startTime = Instant.now().toEpochMilli();
             this.sourcePlayerId = sourcePlayerId;
             this.damageApplied = 0;
             this.lastTickTime = this.startTime;
         }
 
         boolean isExpired() {
-            return java.time.Instant.now().toEpochMilli() - startTime >= duration;
+            return Instant.now().toEpochMilli() - startTime >= duration;
         }
     }
 
@@ -270,7 +282,7 @@ public class Realm {
                    float dx, float dy, float maxTravelDist, long durationMs) {
             this.enemyId = enemyId;
             this.sourcePlayerId = sourcePlayerId;
-            this.spawnTime = java.time.Instant.now().toEpochMilli();
+            this.spawnTime = Instant.now().toEpochMilli();
             this.durationMs = durationMs;
             this.dx = dx;
             this.dy = dy;
@@ -281,7 +293,7 @@ public class Realm {
         }
 
         boolean isExpired() {
-            return java.time.Instant.now().toEpochMilli() - spawnTime >= durationMs;
+            return Instant.now().toEpochMilli() - spawnTime >= durationMs;
         }
     }
 
@@ -1385,8 +1397,8 @@ public class Realm {
         }
 
         // Spawn caps for rare/unique enemies
-        final Map<Integer, Integer> spawnCaps = new java.util.HashMap<>();
-        final Map<Integer, Integer> spawnCounts = new java.util.HashMap<>();
+        final Map<Integer, Integer> spawnCaps = new HashMap<>();
+        final Map<Integer, Integer> spawnCounts = new HashMap<>();
         spawnCaps.put(13, 3);  // The Man: max 3 per realm (summit only)
 
         for (int i = 1; i < mapHeight; i++) {
@@ -1554,8 +1566,8 @@ public class Realm {
      */
     public void processPoisonDots(RealmManagerServer mgr) {
         if (this.activePoisonDots.isEmpty()) return;
-        final long now = java.time.Instant.now().toEpochMilli();
-        final java.util.Iterator<PoisonDotState> it = this.activePoisonDots.iterator();
+        final long now = Instant.now().toEpochMilli();
+        final Iterator<PoisonDotState> it = this.activePoisonDots.iterator();
         while (it.hasNext()) {
             final PoisonDotState dot = it.next();
             final Enemy enemy = this.getEnemy(dot.enemyId);
@@ -1575,8 +1587,8 @@ public class Realm {
 
             dot.damageApplied += tickDamage;
             enemy.setHealth(enemy.getHealth() - tickDamage);
-            mgr.broadcastTextEffect(com.openrealm.game.contants.EntityType.ENEMY, enemy,
-                    com.openrealm.game.contants.TextEffect.DAMAGE, "-" + tickDamage);
+            mgr.broadcastTextEffect(EntityType.ENEMY, enemy,
+                    TextEffect.DAMAGE, "-" + tickDamage);
 
             if (enemy.getDeath()) {
                 mgr.enemyDeath(this, enemy);
@@ -1614,7 +1626,7 @@ public class Realm {
 
     public void processTraps(RealmManagerServer mgr) {
         if (this.activeTraps.isEmpty()) return;
-        final java.util.Iterator<TrapState> it = this.activeTraps.iterator();
+        final Iterator<TrapState> it = this.activeTraps.iterator();
         while (it.hasNext()) {
             final TrapState trap = it.next();
             if (trap.isExpired()) { it.remove(); continue; }
@@ -1625,12 +1637,12 @@ public class Realm {
                 // (10 tile radius — same as TextEffectPacket convention).
                 // Previously sent to every player in the realm regardless
                 // of whether the trap was on-screen for them.
-                final float armSightR = 10 * com.openrealm.game.contants.GlobalConstants.BASE_TILE_SIZE;
+                final float armSightR = 10 * GlobalConstants.BASE_TILE_SIZE;
                 final float armSightSq = armSightR * armSightR;
-                final com.openrealm.net.client.packet.CreateEffectPacket armPkt =
-                        com.openrealm.net.client.packet.CreateEffectPacket.aoeEffect(
+                final CreateEffectPacket armPkt =
+                        CreateEffectPacket.aoeEffect(
                             (short) 7, trap.x, trap.y, trap.triggerRadius,
-                            (short) (trap.expireTime - java.time.Instant.now().toEpochMilli()),
+                            (short) (trap.expireTime - Instant.now().toEpochMilli()),
                             trap.tier);
                 for (final Player p : this.players.values()) {
                     if (p.isHeadless()) continue;
@@ -1660,10 +1672,10 @@ public class Realm {
                 float blastRadius = trap.triggerRadius + 16.0f;
                 float blastSq = blastRadius * blastRadius;
                 // Broadcast trigger visual ONLY to nearby (in-sight) players.
-                final float trigSightR = 10 * com.openrealm.game.contants.GlobalConstants.BASE_TILE_SIZE;
+                final float trigSightR = 10 * GlobalConstants.BASE_TILE_SIZE;
                 final float trigSightSq = trigSightR * trigSightR;
-                final com.openrealm.net.client.packet.CreateEffectPacket trigPkt =
-                        com.openrealm.net.client.packet.CreateEffectPacket.aoeEffect(
+                final CreateEffectPacket trigPkt =
+                        CreateEffectPacket.aoeEffect(
                             (short) 8, trap.x, trap.y, blastRadius, (short) 500, trap.tier);
                 for (final Player p : this.players.values()) {
                     if (p.isHeadless()) continue;
@@ -1673,8 +1685,8 @@ public class Realm {
                         mgr.enqueueServerPacket(p, trigPkt);
                     }
                 }
-                final com.openrealm.game.contants.StatusEffectType effectType =
-                        com.openrealm.game.contants.StatusEffectType.valueOf(trap.effectId);
+                final StatusEffectType effectType =
+                        StatusEffectType.valueOf(trap.effectId);
                 for (final Enemy enemy : this.enemies.values()) {
                     if (enemy.getDeath()) continue;
                     float ecx = enemy.getPos().x + enemy.getSize() / 2f;
@@ -1683,13 +1695,13 @@ public class Realm {
                     if (dx * dx + dy * dy <= blastSq) {
                         if (effectType != null) {
                             enemy.addEffect(effectType, trap.effectDuration);
-                            mgr.broadcastTextEffect(this, com.openrealm.game.contants.EntityType.ENEMY, enemy,
-                                    com.openrealm.game.contants.TextEffect.PLAYER_INFO, "SLOWED");
+                            mgr.broadcastTextEffect(this, EntityType.ENEMY, enemy,
+                                    TextEffect.PLAYER_INFO, "SLOWED");
                         }
                         if (trap.damage > 0) {
                             enemy.setHealth(enemy.getHealth() - trap.damage);
-                            mgr.broadcastTextEffect(this, com.openrealm.game.contants.EntityType.ENEMY, enemy,
-                                    com.openrealm.game.contants.TextEffect.DAMAGE, "-" + trap.damage);
+                            mgr.broadcastTextEffect(this, EntityType.ENEMY, enemy,
+                                    TextEffect.DAMAGE, "-" + trap.damage);
                             if (enemy.getDeath()) {
                                 mgr.enemyDeath(this, enemy);
                             }
@@ -1711,7 +1723,7 @@ public class Realm {
      */
     public void processPoisonThrows(RealmManagerServer mgr) {
         if (this.pendingPoisonThrows.isEmpty()) return;
-        final java.util.Iterator<PoisonThrowState> it = this.pendingPoisonThrows.iterator();
+        final Iterator<PoisonThrowState> it = this.pendingPoisonThrows.iterator();
         while (it.hasNext()) {
             final PoisonThrowState t = it.next();
             if (!t.hasLanded()) continue;
@@ -1724,22 +1736,22 @@ public class Realm {
             // servers. enqueueServerPacketToRealm restricts to nearby
             // players who can actually see the effect.
             mgr.enqueueServerPacketToRealm(this,
-                    com.openrealm.net.client.packet.CreateEffectPacket.aoeEffect(
-                        com.openrealm.net.client.packet.CreateEffectPacket.EFFECT_POISON_SPLASH,
+                    CreateEffectPacket.aoeEffect(
+                        CreateEffectPacket.EFFECT_POISON_SPLASH,
                         t.landX, t.landY, t.radius, (short) 1500, t.tier));
 
             // Apply poison to enemies in radius
             final float radiusSq = t.radius * t.radius;
             for (final Enemy enemy : this.enemies.values()) {
                 if (enemy.getDeath()) continue;
-                if (enemy.hasEffect(com.openrealm.game.contants.StatusEffectType.STASIS)) continue;
+                if (enemy.hasEffect(StatusEffectType.STASIS)) continue;
                 float dx = enemy.getPos().x - t.landX;
                 float dy = enemy.getPos().y - t.landY;
                 if (dx * dx + dy * dy <= radiusSq) {
-                    enemy.addEffect(com.openrealm.game.contants.StatusEffectType.POISONED, t.poisonDuration);
+                    enemy.addEffect(StatusEffectType.POISONED, t.poisonDuration);
                     this.registerPoisonDot(enemy.getId(), t.totalDamage, t.poisonDuration, t.sourcePlayerId);
-                    mgr.broadcastTextEffect(com.openrealm.game.contants.EntityType.ENEMY, enemy,
-                            com.openrealm.game.contants.TextEffect.DAMAGE, "POISONED");
+                    mgr.broadcastTextEffect(EntityType.ENEMY, enemy,
+                            TextEffect.DAMAGE, "POISONED");
                 }
             }
         }
@@ -1757,7 +1769,7 @@ public class Realm {
      * nearer than {@code currentBestDist}. Used by enemy targeting so decoys
      * draw aggro the same way real players do.
      */
-    public Player getClosestDecoyTarget(final com.openrealm.game.math.Vector2f pos, float currentBestDist) {
+    public Player getClosestDecoyTarget(final Vector2f pos, float currentBestDist) {
         Player best = null;
         for (final DecoyState d : this.activeDecoys) {
             final Enemy decoy = this.enemies.get(d.enemyId);
@@ -1788,7 +1800,7 @@ public class Realm {
      */
     public void processDecoys(RealmManagerServer mgr) {
         if (this.activeDecoys.isEmpty()) return;
-        final java.util.Iterator<DecoyState> it = this.activeDecoys.iterator();
+        final Iterator<DecoyState> it = this.activeDecoys.iterator();
         while (it.hasNext()) {
             final DecoyState d = it.next();
             final Enemy decoy = this.enemies.get(d.enemyId);
@@ -1832,7 +1844,7 @@ public class Realm {
      * Remove decoys spawned by a disconnecting player.
      */
     public void removePlayerDecoys(long playerId) {
-        final java.util.Iterator<DecoyState> it = this.activeDecoys.iterator();
+        final Iterator<DecoyState> it = this.activeDecoys.iterator();
         while (it.hasNext()) {
             final DecoyState d = it.next();
             if (d.sourcePlayerId == playerId) {
@@ -1852,7 +1864,7 @@ public class Realm {
     public void spawnStaticEnemies(int mapId) {
         final MapModel mapModel = GameDataManager.MAPS.get(mapId);
         if (mapModel == null || mapModel.getStaticSpawns() == null) return;
-        for (final com.openrealm.game.model.StaticSpawn ss : mapModel.getStaticSpawns()) {
+        for (final StaticSpawn ss : mapModel.getStaticSpawns()) {
             final EnemyModel model = GameDataManager.ENEMIES.get(ss.getEnemyId());
             if (model == null) {
                 Realm.log.warn("Static spawn references unknown enemyId={}, skipping", ss.getEnemyId());
@@ -1884,14 +1896,14 @@ public class Realm {
         final int tileSize = this.tileManager.getMapLayers().get(0).getTileSize();
         final int mapW = this.tileManager.getMapLayers().get(0).getWidth();
         final int mapH = this.tileManager.getMapLayers().get(0).getHeight();
-        final java.util.Set<Long> occupied = new java.util.HashSet<>();
+        final Set<Long> occupied = new HashSet<>();
 
         Realm.log.info("[SET_PIECES] Map {}x{}, tileSize={}, hasZones={}, {} set piece types",
             mapW, mapH, tileSize, hasZones, params.getSetPieces().size());
 
-        for (com.openrealm.game.model.SetPiece sp : params.getSetPieces()) {
+        for (SetPiece sp : params.getSetPieces()) {
             // Resolve the setpiece template by ID
-            final com.openrealm.game.model.SetPieceModel model = GameDataManager.SETPIECES != null
+            final SetPieceModel model = GameDataManager.SETPIECES != null
                 ? GameDataManager.SETPIECES.get(sp.getSetPieceId()) : null;
             if (model == null) {
                 Realm.log.warn("[SET_PIECES] SetPieceModel not found for setPieceId={}", sp.getSetPieceId());
@@ -1944,8 +1956,8 @@ public class Realm {
      * (skip — leaves the existing terrain in place).
      * Optionally tracks occupied tiles in the provided set (may be null).
      */
-    public void stampSetPiece(com.openrealm.game.model.SetPieceModel model, int px, int py,
-                               java.util.Set<Long> occupied) {
+    public void stampSetPiece(SetPieceModel model, int px, int py,
+                               Set<Long> occupied) {
         if (model.getData() == null) return;
         for (int dy = 0; dy < model.getHeight(); dy++) {
             for (int dx = 0; dx < model.getWidth(); dx++) {
@@ -1963,7 +1975,7 @@ public class Realm {
                     int tileId = layer[dy][dx];
                     if (tileId <= 0) continue;
                     try {
-                        com.openrealm.game.tile.TileData data = GameDataManager.TILES.get(tileId) != null
+                        TileData data = GameDataManager.TILES.get(tileId) != null
                             ? GameDataManager.TILES.get(tileId).getData() : null;
                         this.tileManager.getMapLayers().get(layerIdx).setTileAt(ty, tx, (short) tileId, data);
                     } catch (Exception e) { /* skip */ }
@@ -1983,9 +1995,9 @@ public class Realm {
             for (int dx = 0; dx < width; dx++) {
                 int tx = px + dx, ty = py + dy;
                 try {
-                    com.openrealm.game.tile.Tile baseTile = this.tileManager.getMapLayers().get(0).getBlocks()[ty][tx];
+                    Tile baseTile = this.tileManager.getMapLayers().get(0).getBlocks()[ty][tx];
                     savedBase[dy][dx] = baseTile != null ? baseTile.getTileId() : 0;
-                    com.openrealm.game.tile.Tile collTile = this.tileManager.getMapLayers().get(1).getBlocks()[ty][tx];
+                    Tile collTile = this.tileManager.getMapLayers().get(1).getBlocks()[ty][tx];
                     savedColl[dy][dx] = collTile != null ? collTile.getTileId() : 0;
                 } catch (Exception e) {
                     savedBase[dy][dx] = 0;
@@ -2005,12 +2017,12 @@ public class Realm {
                 int tx = px + dx, ty = py + dy;
                 try {
                     int baseTileId = savedBase[dy][dx];
-                    com.openrealm.game.tile.TileData baseData = baseTileId > 0 && GameDataManager.TILES.get(baseTileId) != null
+                    TileData baseData = baseTileId > 0 && GameDataManager.TILES.get(baseTileId) != null
                         ? GameDataManager.TILES.get(baseTileId).getData() : null;
                     this.tileManager.getMapLayers().get(0).setTileAt(ty, tx, (short) baseTileId, baseData);
 
                     int collTileId = savedColl[dy][dx];
-                    com.openrealm.game.tile.TileData collData = collTileId > 0 && GameDataManager.TILES.get(collTileId) != null
+                    TileData collData = collTileId > 0 && GameDataManager.TILES.get(collTileId) != null
                         ? GameDataManager.TILES.get(collTileId).getData() : null;
                     this.tileManager.getMapLayers().get(1).setTileAt(ty, tx, (short) collTileId, collData);
                 } catch (Exception e) { /* skip */ }

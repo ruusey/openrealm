@@ -7,6 +7,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import com.openrealm.game.contants.GlobalConstants;
 import com.openrealm.game.data.GameDataManager;
 import com.openrealm.game.entity.Enemy;
+import com.openrealm.game.entity.Player;
 import com.openrealm.game.math.Vector2f;
 import com.openrealm.game.model.EnemyModel;
 import com.openrealm.game.model.MinionWave;
@@ -706,7 +707,7 @@ public class RealmOverseer {
 
     // ========== MESSAGING ==========
 
-    public void welcomePlayer(com.openrealm.game.entity.Player player) {
+    public void welcomePlayer(Player player) {
         String taunt = randomChoice(WELCOME_TAUNTS);
         try {
             mgr.enqueueServerPacket(player,

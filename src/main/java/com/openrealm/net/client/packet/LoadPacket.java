@@ -3,6 +3,7 @@ package com.openrealm.net.client.packet;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -16,6 +17,7 @@ import com.openrealm.net.Streamable;
 import com.openrealm.net.core.IOService;
 import com.openrealm.net.core.PacketId;
 import com.openrealm.net.core.SerializableField;
+import com.openrealm.net.core.nettypes.SerializableByte;
 import com.openrealm.net.entity.NetBullet;
 import com.openrealm.net.entity.NetEnemy;
 import com.openrealm.net.realm.ShortIdAllocator;
@@ -47,7 +49,7 @@ public class LoadPacket extends Packet {
     private NetLootContainer[] containers;
 	@SerializableField(order = 4, type = NetPortal.class, isCollection=true)
     private NetPortal[] portals;
-	@SerializableField(order = 5, type = com.openrealm.net.core.nettypes.SerializableByte.class)
+	@SerializableField(order = 5, type = SerializableByte.class)
     private byte difficulty;
 
     public static LoadPacket from(Player[] players, LootContainer[] loot, Bullet[] bullets, Enemy[] enemies,
@@ -120,29 +122,29 @@ public class LoadPacket extends Packet {
         // returned false even when the visible entity SETS were identical,
         // forcing a full LoadPacket on every tick (~140 kbit/s of redundant
         // player snapshots for 6 stationary test bots). Sets fix that.
-        final java.util.Set<Long> playerIdsThis = Stream.of(this.players).map(NetPlayer::getId)
+        final Set<Long> playerIdsThis = Stream.of(this.players).map(NetPlayer::getId)
                 .collect(Collectors.toSet());
-        final java.util.Set<Long> playerIdsOther = Stream.of(other.getPlayers()).map(NetPlayer::getId)
-                .collect(Collectors.toSet());
-
-        final java.util.Set<Long> lootIdsThis = Stream.of(this.containers).map(NetLootContainer::getLootContainerId)
-                .collect(Collectors.toSet());
-        final java.util.Set<Long> lootIdsOther = Stream.of(other.getContainers()).map(NetLootContainer::getLootContainerId)
+        final Set<Long> playerIdsOther = Stream.of(other.getPlayers()).map(NetPlayer::getId)
                 .collect(Collectors.toSet());
 
-        final java.util.Set<Long> enemyIdsThis = Stream.of(this.enemies).map(NetEnemy::getId)
+        final Set<Long> lootIdsThis = Stream.of(this.containers).map(NetLootContainer::getLootContainerId)
                 .collect(Collectors.toSet());
-        final java.util.Set<Long> enemyIdsOther = Stream.of(other.getEnemies()).map(NetEnemy::getId)
-                .collect(Collectors.toSet());
-
-        final java.util.Set<Long> bulletIdsThis = Stream.of(this.bullets).map(NetBullet::getId)
-                .collect(Collectors.toSet());
-        final java.util.Set<Long> bulletIdsOther = Stream.of(other.getBullets()).map(NetBullet::getId)
+        final Set<Long> lootIdsOther = Stream.of(other.getContainers()).map(NetLootContainer::getLootContainerId)
                 .collect(Collectors.toSet());
 
-        final java.util.Set<Long> portalIdsThis = Stream.of(this.portals).map(NetPortal::getId)
+        final Set<Long> enemyIdsThis = Stream.of(this.enemies).map(NetEnemy::getId)
                 .collect(Collectors.toSet());
-        final java.util.Set<Long> portalIdsOther = Stream.of(other.getPortals()).map(NetPortal::getId)
+        final Set<Long> enemyIdsOther = Stream.of(other.getEnemies()).map(NetEnemy::getId)
+                .collect(Collectors.toSet());
+
+        final Set<Long> bulletIdsThis = Stream.of(this.bullets).map(NetBullet::getId)
+                .collect(Collectors.toSet());
+        final Set<Long> bulletIdsOther = Stream.of(other.getBullets()).map(NetBullet::getId)
+                .collect(Collectors.toSet());
+
+        final Set<Long> portalIdsThis = Stream.of(this.portals).map(NetPortal::getId)
+                .collect(Collectors.toSet());
+        final Set<Long> portalIdsOther = Stream.of(other.getPortals()).map(NetPortal::getId)
                 .collect(Collectors.toSet());
 
         boolean containersEq = lootIdsThis.equals(lootIdsOther);
@@ -172,26 +174,26 @@ public class LoadPacket extends Packet {
      */
     public boolean entitySetEquals(LoadPacket other) {
         if (other == null) return false;
-        final java.util.Set<Long> playerIdsThis = Stream.of(this.players).map(NetPlayer::getId)
+        final Set<Long> playerIdsThis = Stream.of(this.players).map(NetPlayer::getId)
                 .collect(Collectors.toSet());
-        final java.util.Set<Long> playerIdsOther = Stream.of(other.getPlayers()).map(NetPlayer::getId)
+        final Set<Long> playerIdsOther = Stream.of(other.getPlayers()).map(NetPlayer::getId)
                 .collect(Collectors.toSet());
         if (!playerIdsThis.equals(playerIdsOther)) return false;
-        final java.util.Set<Long> enemyIdsThis = Stream.of(this.enemies).map(NetEnemy::getId)
+        final Set<Long> enemyIdsThis = Stream.of(this.enemies).map(NetEnemy::getId)
                 .collect(Collectors.toSet());
-        final java.util.Set<Long> enemyIdsOther = Stream.of(other.getEnemies()).map(NetEnemy::getId)
+        final Set<Long> enemyIdsOther = Stream.of(other.getEnemies()).map(NetEnemy::getId)
                 .collect(Collectors.toSet());
         if (!enemyIdsThis.equals(enemyIdsOther)) return false;
-        final java.util.Set<Long> portalIdsThis = Stream.of(this.portals).map(NetPortal::getId)
+        final Set<Long> portalIdsThis = Stream.of(this.portals).map(NetPortal::getId)
                 .collect(Collectors.toSet());
-        final java.util.Set<Long> portalIdsOther = Stream.of(other.getPortals()).map(NetPortal::getId)
+        final Set<Long> portalIdsOther = Stream.of(other.getPortals()).map(NetPortal::getId)
                 .collect(Collectors.toSet());
         if (!portalIdsThis.equals(portalIdsOther)) return false;
         // Loot ID set + contentsChanged: track loot churn here too so the fast
         // path still flushes loot updates without forcing a full snapshot.
-        final java.util.Set<Long> lootIdsThis = Stream.of(this.containers).map(NetLootContainer::getLootContainerId)
+        final Set<Long> lootIdsThis = Stream.of(this.containers).map(NetLootContainer::getLootContainerId)
                 .collect(Collectors.toSet());
-        final java.util.Set<Long> lootIdsOther = Stream.of(other.getContainers()).map(NetLootContainer::getLootContainerId)
+        final Set<Long> lootIdsOther = Stream.of(other.getContainers()).map(NetLootContainer::getLootContainerId)
                 .collect(Collectors.toSet());
         if (!lootIdsThis.equals(lootIdsOther)) return false;
         for (final NetLootContainer c : this.containers) {
@@ -209,9 +211,9 @@ public class LoadPacket extends Packet {
      */
     public LoadPacket bulletAndLootDelta(final LoadPacket other) throws Exception {
         if (other == null) return this;
-        final java.util.Set<Long> bulletIdsThis = Stream.of(this.bullets).map(NetBullet::getId)
+        final Set<Long> bulletIdsThis = Stream.of(this.bullets).map(NetBullet::getId)
                 .collect(Collectors.toSet());
-        final java.util.Set<Long> lootIdsThis = Stream.of(this.containers).map(NetLootContainer::getLootContainerId)
+        final Set<Long> lootIdsThis = Stream.of(this.containers).map(NetLootContainer::getLootContainerId)
                 .collect(Collectors.toSet());
         final List<NetBullet> bulletsDiff = new ArrayList<>();
         for (final NetBullet b : other.getBullets()) {
@@ -236,7 +238,7 @@ public class LoadPacket extends Packet {
     public UnloadPacket bulletUnloadDifference(final LoadPacket other) throws Exception {
         if (other == null) return UnloadPacket.from(new Long[0], new Long[0],
                 new Long[0], new Long[0], new Long[0]);
-        final java.util.Set<Long> bulletIdsOther = Stream.of(other.getBullets()).map(NetBullet::getId)
+        final Set<Long> bulletIdsOther = Stream.of(other.getBullets()).map(NetBullet::getId)
                 .collect(Collectors.toSet());
         final List<Long> bulletsDiff = new ArrayList<>();
         for (final NetBullet b : this.bullets) {
@@ -299,15 +301,15 @@ public class LoadPacket extends Packet {
     public LoadPacket combineDelta(final LoadPacket other) throws Exception {
         if (other == null) return this;
 
-        final java.util.Set<Long> playerIdsThis = Stream.of(this.players).map(NetPlayer::getId)
+        final Set<Long> playerIdsThis = Stream.of(this.players).map(NetPlayer::getId)
                 .collect(Collectors.toSet());
-        final java.util.Set<Long> enemyIdsThis = Stream.of(this.enemies).map(NetEnemy::getId)
+        final Set<Long> enemyIdsThis = Stream.of(this.enemies).map(NetEnemy::getId)
                 .collect(Collectors.toSet());
-        final java.util.Set<Long> portalIdsThis = Stream.of(this.portals).map(NetPortal::getId)
+        final Set<Long> portalIdsThis = Stream.of(this.portals).map(NetPortal::getId)
                 .collect(Collectors.toSet());
-        final java.util.Set<Long> bulletIdsThis = Stream.of(this.bullets).map(NetBullet::getId)
+        final Set<Long> bulletIdsThis = Stream.of(this.bullets).map(NetBullet::getId)
                 .collect(Collectors.toSet());
-        final java.util.Set<Long> lootIdsThis = Stream.of(this.containers).map(NetLootContainer::getLootContainerId)
+        final Set<Long> lootIdsThis = Stream.of(this.containers).map(NetLootContainer::getLootContainerId)
                 .collect(Collectors.toSet());
 
         final List<NetPlayer> playersDiff = new ArrayList<>();

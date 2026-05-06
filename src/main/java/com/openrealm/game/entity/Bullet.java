@@ -7,6 +7,7 @@ import java.util.List;
 import com.openrealm.game.contants.ProjectileFlag;
 import com.openrealm.game.contants.StatusEffectType;
 import com.openrealm.game.math.Vector2f;
+import com.openrealm.game.model.ProjectileEffect;
 
 import lombok.Data;
 import lombok.EqualsAndHashCode;
@@ -35,7 +36,7 @@ public class Bullet extends GameObject  {
      * Applied to the target entity when this bullet hits.
      * NOT behavior flags — those go in {@link #flags}.
      */
-    private List<com.openrealm.game.model.ProjectileEffect> effects;
+    private List<ProjectileEffect> effects;
 
     private boolean invert = false;
 

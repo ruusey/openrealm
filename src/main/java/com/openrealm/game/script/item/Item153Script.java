@@ -1,6 +1,8 @@
 package com.openrealm.game.script.item;
 
+import com.openrealm.game.contants.EntityType;
 import com.openrealm.game.contants.StatusEffectType;
+import com.openrealm.game.contants.TextEffect;
 import com.openrealm.game.entity.Player;
 import com.openrealm.game.entity.item.GameItem;
 import com.openrealm.game.math.Vector2f;
@@ -35,8 +37,8 @@ public class Item153Script extends UseableItemScriptBase {
             target.addEffect(abilityItem.getEffect().getEffectId(), duration);
             target.addEffect(StatusEffectType.DAMAGING, duration * 2);
             this.mgr.broadcastTextEffect(
-                com.openrealm.game.contants.EntityType.PLAYER, target,
-                com.openrealm.game.contants.TextEffect.PLAYER_INFO, "HEALING + DAMAGING");
+                EntityType.PLAYER, target,
+                TextEffect.PLAYER_INFO, "HEALING + DAMAGING");
         }
         // Broadcast paladin seal — its own holy-cross visual so it doesn't
         // read as a priest heal. Tier carries through for the colour tint.

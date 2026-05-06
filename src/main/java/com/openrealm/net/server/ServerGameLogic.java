@@ -1,6 +1,7 @@
 package com.openrealm.net.server;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,6 +25,7 @@ import com.openrealm.game.entity.Bullet;
 import com.openrealm.game.entity.Enemy;
 import com.openrealm.game.entity.Player;
 import com.openrealm.game.entity.Portal;
+import com.openrealm.game.entity.item.CombatModifiers;
 import com.openrealm.game.entity.item.GameItem;
 import com.openrealm.game.math.Vector2f;
 import com.openrealm.game.model.DungeonGenerationParams;
@@ -32,6 +34,7 @@ import com.openrealm.game.model.MapModel;
 import com.openrealm.game.model.PortalModel;
 import com.openrealm.util.GameObjectUtils;
 import com.openrealm.game.model.Projectile;
+import com.openrealm.game.model.ProjectileEffect;
 import com.openrealm.game.model.ProjectileGroup;
 import com.openrealm.net.Packet;
 import com.openrealm.net.messaging.CommandType;
@@ -185,9 +188,9 @@ public class ServerGameLogic {
 			// Save vault chests if leaving vault
 			if (currentRealm.getMapId() == 1) {
 				try {
-					java.util.List<com.openrealm.account.dto.ChestDto> chestsToSave = currentRealm.serializeChests();
+					List<ChestDto> chestsToSave = currentRealm.serializeChests();
 					ServerGameLogic.DATA_SERVICE.executePost(
-							"/data/account/" + user.getAccountUuid() + "/chest", chestsToSave, com.openrealm.account.dto.PlayerAccountDto.class);
+							"/data/account/" + user.getAccountUuid() + "/chest", chestsToSave, PlayerAccountDto.class);
 				} catch (Exception e) {
 					log.error("[SERVER] Failed to save vault chests: {}", e.getMessage());
 				}
@@ -489,8 +492,8 @@ public class ServerGameLogic {
 					.map(String::valueOf).reduce((a,b)->a+","+b).orElse("none"));
 				return;
 			}
-			final com.openrealm.game.entity.item.CombatModifiers cm =
-					com.openrealm.game.entity.item.CombatModifiers.fromItem(player.getInventory()[0]);
+			final CombatModifiers cm =
+					CombatModifiers.fromItem(player.getInventory()[0]);
 			float angle = Bullet.getAngle(source, dest);
 			for (Projectile proj : group.getProjectiles()) {
 				short offset = (short) (player.getSize() / (short) 2);
@@ -512,7 +515,7 @@ public class ServerGameLogic {
 		}
 	}
 
-	private static short applyCombatDamageMods(short base, com.openrealm.game.entity.item.CombatModifiers cm) {
+	private static short applyCombatDamageMods(short base, CombatModifiers cm) {
 		int dmg = base;
 		if (cm.getDamagePct() != 0) dmg = dmg + (dmg * cm.getDamagePct()) / 100;
 		if (cm.getCritChancePct() > 0) {
@@ -526,7 +529,7 @@ public class ServerGameLogic {
 
 	private static void spawnPlayerBullet(RealmManagerServer mgr, long realmId, Player player, int weaponPgId,
 			Projectile proj, Vector2f src, float angle, short damage,
-			com.openrealm.game.entity.item.CombatModifiers cm) {
+			CombatModifiers cm) {
 		final Bullet b = mgr.addProjectile(realmId, Realm.RANDOM.nextLong(), player.getId(), weaponPgId,
 				proj.getProjectileId(), src, angle, proj.getSize(),
 				proj.getMagnitude(), proj.getRange(), damage, false, proj.getFlags(), proj.getAmplitude(),
@@ -536,13 +539,13 @@ public class ServerGameLogic {
 	}
 
 	private static void mergeProjectileEffects(Bullet b, Projectile proj,
-			com.openrealm.game.entity.item.CombatModifiers cm) {
+			CombatModifiers cm) {
 		// Merge base projectile effects with any gem on-hit effects on the firing item.
-		final java.util.List<com.openrealm.game.model.ProjectileEffect> merged = new java.util.ArrayList<>();
+		final List<ProjectileEffect> merged = new ArrayList<>();
 		if (proj != null && proj.getEffects() != null) merged.addAll(proj.getEffects());
 		if (cm != null) {
-			for (com.openrealm.game.entity.item.CombatModifiers.OnHitEffect oh : cm.getOnHitEffects()) {
-				final com.openrealm.game.model.ProjectileEffect pe = new com.openrealm.game.model.ProjectileEffect();
+			for (CombatModifiers.OnHitEffect oh : cm.getOnHitEffects()) {
+				final ProjectileEffect pe = new ProjectileEffect();
 				pe.setEffectId((short) oh.getEffectId());
 				pe.setDuration(oh.getDurationMs());
 				merged.add(pe);
@@ -649,7 +652,7 @@ public class ServerGameLogic {
 	
 	public static void handleConsumeShardStackServer(RealmManagerServer mgr, Packet packet) {
 		try {
-			com.openrealm.net.server.ServerForgeHelper.handleConsumeShardStack(mgr, packet);
+			ServerForgeHelper.handleConsumeShardStack(mgr, packet);
 		} catch (Exception e) {
 			ServerGameLogic.log.error("Failed to handle ConsumeShardStack packet. Reason: {}", e);
 		}
@@ -657,7 +660,7 @@ public class ServerGameLogic {
 
 	public static void handleInteractTileServer(RealmManagerServer mgr, Packet packet) {
 		try {
-			com.openrealm.net.server.ServerForgeHelper.handleInteractTile(mgr, packet);
+			ServerForgeHelper.handleInteractTile(mgr, packet);
 		} catch (Exception e) {
 			ServerGameLogic.log.error("Failed to handle InteractTile packet. Reason: {}", e);
 		}
@@ -665,7 +668,7 @@ public class ServerGameLogic {
 
 	public static void handleForgeEnchantServer(RealmManagerServer mgr, Packet packet) {
 		try {
-			com.openrealm.net.server.ServerForgeHelper.handleForgeEnchant(mgr, packet);
+			ServerForgeHelper.handleForgeEnchant(mgr, packet);
 		} catch (Exception e) {
 			ServerGameLogic.log.error("Failed to handle ForgeEnchant packet. Reason: {}", e);
 		}
@@ -673,7 +676,7 @@ public class ServerGameLogic {
 
 	public static void handleForgeDisenchantServer(RealmManagerServer mgr, Packet packet) {
 		try {
-			com.openrealm.net.server.ServerForgeHelper.handleForgeDisenchant(mgr, packet);
+			ServerForgeHelper.handleForgeDisenchant(mgr, packet);
 		} catch (Exception e) {
 			ServerGameLogic.log.error("Failed to handle ForgeDisenchant packet. Reason: {}", e);
 		}
@@ -681,7 +684,7 @@ public class ServerGameLogic {
 
 	public static void handleBuyFameItemServer(RealmManagerServer mgr, Packet packet) {
 		try {
-			com.openrealm.net.server.ServerFameStoreHelper.handleBuy(mgr, packet);
+			ServerFameStoreHelper.handleBuy(mgr, packet);
 		} catch (Exception e) {
 			ServerGameLogic.log.error("Failed to handle BuyFameItem packet. Reason: {}", e);
 		}
@@ -802,7 +805,7 @@ public class ServerGameLogic {
 				// Relocate any equipped items that don't actually match their
 				// slot type or class. This cleans up legacy-bad state on
 				// every login so a single-time bug doesn't persist forever.
-				com.openrealm.net.server.ServerItemHelper.reconcileEquipment(player);
+				ServerItemHelper.reconcileEquipment(player);
 				player.applyStats(targetCharacter.getStats());
 				player.setName(accountName);
 				player.setHeadless(false);

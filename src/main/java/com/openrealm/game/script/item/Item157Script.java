@@ -1,5 +1,7 @@
 package com.openrealm.game.script.item;
 
+import com.openrealm.game.contants.EntityType;
+import com.openrealm.game.contants.TextEffect;
 import com.openrealm.game.entity.Player;
 import com.openrealm.game.entity.item.Effect;
 import com.openrealm.game.entity.item.GameItem;
@@ -59,8 +61,8 @@ public class Item157Script extends UseableItemScriptBase {
                 int toHeal = Math.min(healAmount, missing);
                 target.setHealth(target.getHealth() + toHeal);
                 this.mgr.broadcastTextEffect(
-                    com.openrealm.game.contants.EntityType.PLAYER, target,
-                    com.openrealm.game.contants.TextEffect.HEAL, "+" + toHeal);
+                    EntityType.PLAYER, target,
+                    TextEffect.HEAL, "+" + toHeal);
             }
         }
     }

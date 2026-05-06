@@ -6,6 +6,7 @@ import com.openrealm.net.Streamable;
 import com.openrealm.net.core.PacketId;
 import com.openrealm.net.core.SerializableField;
 import com.openrealm.net.core.nettypes.SerializableFloat;
+import com.openrealm.net.core.nettypes.SerializableInt;
 import com.openrealm.net.core.nettypes.SerializableLong;
 
 import lombok.AllArgsConstructor;
@@ -36,7 +37,7 @@ import lombok.extern.slf4j.Slf4j;
 public class PlayerMovePacket extends Packet {
 	@SerializableField(order = 0, type = SerializableLong.class)
     private long entityId;
-	@SerializableField(order = 1, type = com.openrealm.net.core.nettypes.SerializableInt.class)
+	@SerializableField(order = 1, type = SerializableInt.class)
     private int seq;
 	@SerializableField(order = 2, type = SerializableFloat.class)
     private float vx;

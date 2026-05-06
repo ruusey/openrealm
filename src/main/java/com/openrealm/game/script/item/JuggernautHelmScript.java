@@ -1,6 +1,8 @@
 package com.openrealm.game.script.item;
 
+import com.openrealm.game.contants.EntityType;
 import com.openrealm.game.contants.StatusEffectType;
+import com.openrealm.game.contants.TextEffect;
 import com.openrealm.game.entity.Player;
 import com.openrealm.game.entity.item.GameItem;
 import com.openrealm.game.math.Vector2f;
@@ -49,8 +51,8 @@ public class JuggernautHelmScript extends UseableItemScriptBase {
 
         // Apply Armored to self (doubles DEF)
         player.addEffect(StatusEffectType.ARMORED, duration);
-        this.mgr.broadcastTextEffect(com.openrealm.game.contants.EntityType.PLAYER, player,
-                com.openrealm.game.contants.TextEffect.PLAYER_INFO, "ARMORED");
+        this.mgr.broadcastTextEffect(EntityType.PLAYER, player,
+                TextEffect.PLAYER_INFO, "ARMORED");
 
         // Broadcast buff visual
         final Vector2f center = player.getPos().clone(player.getSize() / 2, player.getSize() / 2);

@@ -3,6 +3,8 @@ package com.openrealm.net.server;
 import java.lang.invoke.MethodHandle;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -28,6 +30,7 @@ import com.openrealm.game.contants.StatusEffectType;
 import com.openrealm.game.contants.TextEffect;
 import com.openrealm.game.data.GameDataManager;
 import com.openrealm.game.entity.Player;
+import com.openrealm.game.entity.Portal;
 import com.openrealm.game.entity.item.AttributeModifier;
 import com.openrealm.game.entity.item.Enchantment;
 import com.openrealm.game.entity.item.GameItem;
@@ -41,12 +44,15 @@ import com.openrealm.game.model.CharacterClassModel;
 import com.openrealm.game.model.DungeonGraphNode;
 import com.openrealm.game.model.MapModel;
 import com.openrealm.game.model.PortalModel;
+import com.openrealm.game.model.RealmEventModel;
 import com.openrealm.game.tile.Tile;
 import com.openrealm.net.messaging.CommandType;
 import com.openrealm.net.messaging.ServerCommandMessage;
+import com.openrealm.net.client.packet.UnloadPacket;
+import com.openrealm.net.client.packet.UpdatePacket;
 import com.openrealm.net.realm.Realm;
 import com.openrealm.net.realm.RealmManagerServer;
-import com.openrealm.net.client.packet.UnloadPacket;
+import com.openrealm.net.realm.RealmOverseer;
 import com.openrealm.net.server.packet.CommandPacket;
 import com.openrealm.net.server.packet.TextPacket;
 import com.openrealm.util.AdminRestrictedCommand;
@@ -836,11 +842,11 @@ public class ServerCommandHandler {
         if (message.getArgs() == null || message.getArgs().size() < 1) {
             final StringBuilder sb = new StringBuilder("Realm events:");
             if (GameDataManager.REALM_EVENTS != null) {
-                final java.util.List<com.openrealm.game.model.RealmEventModel> sorted =
+                final List<RealmEventModel> sorted =
                         new ArrayList<>(GameDataManager.REALM_EVENTS.values());
-                sorted.sort(java.util.Comparator.comparingInt(
-                        com.openrealm.game.model.RealmEventModel::getEventId));
-                for (final com.openrealm.game.model.RealmEventModel ev : sorted) {
+                sorted.sort(Comparator.comparingInt(
+                        RealmEventModel::getEventId));
+                for (final RealmEventModel ev : sorted) {
                     sb.append('\n').append("  ").append(ev.getEventId()).append(" — ").append(ev.getName());
                 }
             }
@@ -860,7 +866,7 @@ public class ServerCommandHandler {
         if (GameDataManager.REALM_EVENTS == null) {
             throw new IllegalStateException("Realm event registry not loaded yet");
         }
-        final com.openrealm.game.model.RealmEventModel eventModel =
+        final RealmEventModel eventModel =
                 GameDataManager.REALM_EVENTS.get(eventId);
         if (eventModel == null) {
             throw new IllegalArgumentException("No realm event with id " + eventId
@@ -875,7 +881,7 @@ public class ServerCommandHandler {
         if (playerRealm == null) {
             throw new IllegalStateException("No realm for player " + target.getName());
         }
-        final com.openrealm.net.realm.RealmOverseer overseer = playerRealm.getOverseer();
+        final RealmOverseer overseer = playerRealm.getOverseer();
         if (overseer == null) {
             throw new IllegalStateException(
                     "Current realm has no overseer (nexus/vault/static map) — run from an outdoor realm");
@@ -887,8 +893,8 @@ public class ServerCommandHandler {
         // doesn't end up standing on the boss / inside the setpiece.
         // Setpieces terraform freely under whatever's there, so the
         // spawn cannot fail for placement reasons.
-        final int tileSize = com.openrealm.game.contants.GlobalConstants.BASE_TILE_SIZE;
-        final com.openrealm.game.math.Vector2f spawnAt = target.getPos().clone();
+        final int tileSize = GlobalConstants.BASE_TILE_SIZE;
+        final Vector2f spawnAt = target.getPos().clone();
         spawnAt.y -= 6 * tileSize;
         final boolean ok = overseer.spawnRealmEvent(eventModel, spawnAt);
         if (!ok) {
@@ -1027,13 +1033,13 @@ public class ServerCommandHandler {
                 throw new IllegalArgumentException("Cannot teleport to " + destPlayer.getName() + " — they are in a different area.");
             }
             // Check teleportable (not invisible/stasis)
-            if (destPlayer.hasEffect(com.openrealm.game.contants.StatusEffectType.INVISIBLE)
-                    || destPlayer.hasEffect(com.openrealm.game.contants.StatusEffectType.STASIS)) {
+            if (destPlayer.hasEffect(StatusEffectType.INVISIBLE)
+                    || destPlayer.hasEffect(StatusEffectType.STASIS)) {
                 throw new IllegalArgumentException(destPlayer.getName() + " cannot be teleported to right now.");
             }
             target.setPos(destPlayer.getPos().clone());
             mgr.enqueueServerPacket(target,
-                    com.openrealm.net.server.packet.TextPacket.from("SYSTEM", target.getName(),
+                    TextPacket.from("SYSTEM", target.getName(),
                             "Teleported to " + destPlayer.getName()));
         }
     }
@@ -1160,7 +1166,7 @@ public class ServerCommandHandler {
         }
 
         // Create and link portal at player position
-        final com.openrealm.game.entity.Portal portal = new com.openrealm.game.entity.Portal(
+        final Portal portal = new Portal(
                 Realm.RANDOM.nextLong(), (short) portalModel.getPortalId(), target.getPos().clone());
         portal.linkPortal(currentRealm, destinationRealm);
         portal.setNeverExpires();
@@ -1211,7 +1217,7 @@ public class ServerCommandHandler {
 
         WorkerThread.doAsync(() -> {
             // Phase 1: Pre-create ALL accounts and characters in parallel batches of 10
-            final List<String[]> botCredentials = java.util.Collections.synchronizedList(new ArrayList<>());
+            final List<String[]> botCredentials = Collections.synchronizedList(new ArrayList<>());
             log.info("[BOTS] Phase 1: Creating {} accounts (10 at a time)...", count);
             for (int batch = 0; batch < count; batch += 10) {
                 final int batchEnd = Math.min(batch + 10, count);
@@ -1339,7 +1345,7 @@ public class ServerCommandHandler {
             // identified by the canonical "Bot_" name prefix (see spawnbots
             // line ~531) which never collides with real players.
             try {
-                final java.util.List<Player> allPlayers = mgr.getPlayers();
+                final List<Player> allPlayers = mgr.getPlayers();
                 for (final Player p : allPlayers) {
                     final String name = p.getName();
                     if (name != null && name.startsWith("Bot_")) {
@@ -1434,7 +1440,7 @@ public class ServerCommandHandler {
 
             // Clean up empty dungeon when last player leaves
             if (currentRealm.getPlayers().size() == 0 && currentRealm.getNodeId() != null) {
-                final com.openrealm.game.model.DungeonGraphNode node =
+                final DungeonGraphNode node =
                         GameDataManager.DUNGEON_GRAPH.get(currentRealm.getNodeId());
                 if (node != null && !node.isEntryPoint()) {
                     currentRealm.setShutdown(true);
@@ -1492,7 +1498,7 @@ public class ServerCommandHandler {
         log.info("[Admin] {} set rarity of {} to {}", target.getName(), item.getName(), r.displayName);
         mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
                 item.getName() + " is now " + r.displayName + " (" + r.gemSlots + " gem slots)"));
-        final com.openrealm.net.client.packet.UpdatePacket update =
+        final UpdatePacket update =
                 mgr.findPlayerRealm(target.getId()).getPlayerAsPacket(target.getId());
         if (update != null) mgr.enqueueServerPacket(target, update);
         mgr.persistPlayerAsync(target);
@@ -1513,12 +1519,12 @@ public class ServerCommandHandler {
             throw new IllegalArgumentException("Delta out of byte range.");
         final GameItem item = target.getInventory()[slot];
         if (item == null) throw new IllegalArgumentException("Slot " + slot + " is empty.");
-        if (item.getAttributeModifiers() == null) item.setAttributeModifiers(new java.util.ArrayList<>());
+        if (item.getAttributeModifiers() == null) item.setAttributeModifiers(new ArrayList<>());
         item.getAttributeModifiers().add(new AttributeModifier((byte) statId, (byte) delta));
         log.info("[Admin] {} added modifier stat={} delta={} to {}", target.getName(), statId, delta, item.getName());
         mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
                 "Added affix to " + item.getName()));
-        final com.openrealm.net.client.packet.UpdatePacket update =
+        final UpdatePacket update =
                 mgr.findPlayerRealm(target.getId()).getPlayerAsPacket(target.getId());
         if (update != null) mgr.enqueueServerPacket(target, update);
         mgr.persistPlayerAsync(target);
@@ -1540,7 +1546,7 @@ public class ServerCommandHandler {
         if (effect < 0 || effect > 6) throw new IllegalArgumentException("Effect 0-6.");
         final GameItem item = target.getInventory()[slot];
         if (item == null) throw new IllegalArgumentException("Slot " + slot + " is empty.");
-        if (item.getEnchantments() == null) item.setEnchantments(new java.util.ArrayList<>());
+        if (item.getEnchantments() == null) item.setEnchantments(new ArrayList<>());
         if (item.getEnchantments().size() >= item.getMaxEnchantments())
             throw new IllegalArgumentException("Item at rarity gem-slot cap (" + item.getMaxEnchantments() + ").");
         final Enchantment e = new Enchantment(
@@ -1553,7 +1559,7 @@ public class ServerCommandHandler {
                 target.getName(), effect, param1, magnitude, item.getName());
         mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
                 "Forged " + item.getName() + " (slots " + item.getEnchantments().size() + "/" + item.getMaxEnchantments() + ")"));
-        final com.openrealm.net.client.packet.UpdatePacket update =
+        final UpdatePacket update =
                 mgr.findPlayerRealm(target.getId()).getPlayerAsPacket(target.getId());
         if (update != null) mgr.enqueueServerPacket(target, update);
         mgr.persistPlayerAsync(target);

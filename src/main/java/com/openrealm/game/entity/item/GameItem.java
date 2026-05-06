@@ -58,7 +58,7 @@ public class GameItem extends SpriteModel {
     private int stackCount = 1;
     // Per-instance: applied enchantments (max controlled by rarity)
     @Builder.Default
-    private List<Enchantment> enchantments = new java.util.ArrayList<>();
+    private List<Enchantment> enchantments = new ArrayList<>();
     // Per-instance: rarity tier (orthogonal to power-tier). Drives gem-slot count
     // and tooltip color. 0=COMMON .. 5=MYTHICAL. See Rarity enum.
     @Builder.Default
@@ -66,7 +66,7 @@ public class GameItem extends SpriteModel {
     // Per-instance: random attribute affixes rolled on drop. Layered on top of
     // base stats and enchantments at stat-computation time.
     @Builder.Default
-    private List<AttributeModifier> attributeModifiers = new java.util.ArrayList<>();
+    private List<AttributeModifier> attributeModifiers = new ArrayList<>();
     // Per-template (catalog) override: gem effect type for items in category "gem".
     // -1 / unset for non-gem items. Used by ServerForgeHelper to translate the
     // gem item into an Enchantment with the right effectType/magnitude.
@@ -87,9 +87,9 @@ public class GameItem extends SpriteModel {
         this.forgeStatId = -1;
         this.forgeSlotId = -1;
         this.stackCount = 1;
-        this.enchantments = new java.util.ArrayList<>();
+        this.enchantments = new ArrayList<>();
         this.rarity = 0;
-        this.attributeModifiers = new java.util.ArrayList<>();
+        this.attributeModifiers = new ArrayList<>();
         this.gemEffectType = -1;
         this.gemParam1 = 0;
         this.gemMagnitude = 0;
@@ -116,7 +116,7 @@ public class GameItem extends SpriteModel {
         }
 
         if (this.enchantments != null && !this.enchantments.isEmpty()) {
-            final java.util.List<Enchantment> copy = new java.util.ArrayList<>(this.enchantments.size());
+            final List<Enchantment> copy = new ArrayList<>(this.enchantments.size());
             for (Enchantment e : this.enchantments) {
                 copy.add(e == null ? null : e.clone());
             }
@@ -124,7 +124,7 @@ public class GameItem extends SpriteModel {
         }
 
         if (this.attributeModifiers != null && !this.attributeModifiers.isEmpty()) {
-            final java.util.List<AttributeModifier> copy = new java.util.ArrayList<>(this.attributeModifiers.size());
+            final List<AttributeModifier> copy = new ArrayList<>(this.attributeModifiers.size());
             for (AttributeModifier m : this.attributeModifiers) {
                 copy.add(m == null ? null : m.clone());
             }
