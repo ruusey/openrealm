@@ -9,9 +9,35 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      # Each checkout uses an explicit path so the three repos land in
+      # sibling directories under $GITHUB_WORKSPACE, mirroring the local
+      # dev layout the run-openrealm scripts assume.
+      #
+      # SIBLING_REPO_TOKEN is a Personal Access Token (classic, repo scope,
+      # or fine-grained PAT with Contents:Read on both sibling repos)
+      # that you add to this repo's Actions secrets if openrealm-native-client
+      # or openrealm-data are private — the default GITHUB_TOKEN can only
+      # read the repo it was issued for. For public sibling repos the
+      # fallback to GITHUB_TOKEN is fine.
+      - name: Check out openrealm
+        uses: actions/checkout@v4
         with:
+          path: openrealm
           fetch-depth: 0
+
+      - name: Check out openrealm-native-client
+        uses: actions/checkout@v4
+        with:
+          repository: ruusey/openrealm-native-client
+          path: openrealm-native-client
+          token: ${{ secrets.SIBLING_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Check out openrealm-data
+        uses: actions/checkout@v4
+        with:
+          repository: ruusey/openrealm-data
+          path: openrealm-data
+          token: ${{ secrets.SIBLING_REPO_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -20,14 +46,16 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      - name: Extract version from pom.xml
+      - name: Extract version from openrealm pom.xml
         id: version
+        working-directory: openrealm
         run: |
           VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Generate changelog
         id: changelog
+        working-directory: openrealm
         run: |
           PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
           if [ -z "$PREV_TAG" ]; then
@@ -40,8 +68,34 @@ jobs:
           echo "$LOG" >> "$GITHUB_OUTPUT"
           echo "$EOF" >> "$GITHUB_OUTPUT"
 
-      - name: Build with Maven
+      # Build order doesn't matter — each repo is self-contained and
+      # produces a single runnable fat jar. Tests skipped on the sibling
+      # repos since openrealm-data's Spring tests may want a live Mongo
+      # and openrealm-native-client's tests aren't release-gating.
+      - name: Build openrealm (server)
+        working-directory: openrealm
         run: mvn -B package --file pom.xml
+
+      - name: Build openrealm-native-client
+        working-directory: openrealm-native-client
+        run: mvn -B package -DskipTests --file pom.xml
+
+      - name: Build openrealm-data
+        working-directory: openrealm-data
+        run: mvn -B package -DskipTests --file pom.xml
+
+      # Rename the openrealm fat jar to openrealm-server.jar so all three
+      # release assets follow a consistent <project>-<role>.jar naming
+      # scheme. The shade plugin in openrealm/pom.xml attaches its fat jar
+      # under classifier "shaded", which is why the source path is
+      # openrealm-shaded.jar rather than openrealm.jar.
+      - name: Stage release artifacts
+        run: |
+          mkdir -p release
+          cp openrealm/target/openrealm-shaded.jar                       release/openrealm-server.jar
+          cp openrealm-native-client/target/openrealm-native-client.jar  release/openrealm-native-client.jar
+          cp openrealm-data/target/openrealm-data.jar                    release/openrealm-data.jar
+          ls -la release/
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -51,13 +105,19 @@ jobs:
           body: |
             ## OpenRealm v${{ steps.version.outputs.version }}
 
-            Single JAR supporting `-client`, `-server`, and `-embedded` modes.
+            ### Artifacts
+            - **openrealm-server.jar** — game server. Run with `java -jar openrealm-server.jar <data-service-host>` (defaults to `127.0.0.1`).
+            - **openrealm-native-client.jar** — LibGDX desktop client. Run with `java -jar openrealm-native-client.jar`.
+            - **openrealm-data.jar** — Spring Boot data service (account / character / vault / leaderboard storage + webclient). Run with `java -jar openrealm-data.jar`.
 
             ### Changes
             ${{ steps.changelog.outputs.log }}
           draft: false
           prerelease: false
-          files: target/openrealm.jar
+          files: |
+            release/openrealm-server.jar
+            release/openrealm-native-client.jar
+            release/openrealm-data.jar
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

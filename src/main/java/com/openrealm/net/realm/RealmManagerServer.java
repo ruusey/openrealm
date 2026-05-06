@@ -1894,15 +1894,20 @@ public class RealmManagerServer implements Runnable {
 				if (p.getPositionMode() != ProjectilePositionMode.TARGET_PLAYER) {
 					source = dest;
 				}
-				spawnAbilityBullet(realmId, player, abilityItem.getDamage().getProjectileGroupId(), p,
-						source.clone(-offset, -offset), angle + Float.parseFloat(p.getAngle()), rolledDamage, abilityCm);
-				for (int extra = 1; extra <= abilityCm.getExtraProjectiles(); extra++) {
-					final float side = (extra % 2 == 0) ? 1f : -1f;
-					final float deltaA = side * 0.10f * ((extra + 1) / 2);
-					final short bonusDmg = applyCombatDamageMods(rolledDamage, abilityCm);
-					spawnAbilityBullet(realmId, player, abilityItem.getDamage().getProjectileGroupId(), p,
-							source.clone(-offset, -offset), angle + Float.parseFloat(p.getAngle()) + deltaA,
-							bonusDmg, abilityCm);
+				// Symmetric fan around the aim line — see ServerGameLogic
+				// shoot logic for the same fix. Aim hits the center of
+				// the spread regardless of how many extra projectiles
+				// the player has gemmed in.
+				{
+					final int totalBullets = 1 + abilityCm.getExtraProjectiles();
+					final float SPREAD = 0.10f;
+					final float baseA = angle + Float.parseFloat(p.getAngle());
+					for (int i = 0; i < totalBullets; i++) {
+						final float deltaA = (i - (totalBullets - 1) / 2f) * SPREAD;
+						final short rolled = applyCombatDamageMods(rolledDamage, abilityCm);
+						spawnAbilityBullet(realmId, player, abilityItem.getDamage().getProjectileGroupId(), p,
+								source.clone(-offset, -offset), baseA + deltaA, rolled, abilityCm);
+					}
 				}
 			}
 			// Apply self-effect if present (e.g., warrior helmet SPEEDY buff)
@@ -1918,14 +1923,16 @@ public class RealmManagerServer implements Runnable {
 				short rolledDamage = player.getInventory()[1].getDamage().getInRange();
 				rolledDamage += player.getComputedStats().getAtt();
 				rolledDamage = applyCombatDamageMods(rolledDamage, abilityCm);
-				spawnAbilityBullet(realmId, player, abilityItem.getDamage().getProjectileGroupId(), p,
-						dest.clone(-offset, -offset), Float.parseFloat(p.getAngle()), rolledDamage, abilityCm);
-				for (int extra = 1; extra <= abilityCm.getExtraProjectiles(); extra++) {
-					final float side = (extra % 2 == 0) ? 1f : -1f;
-					final float deltaA = side * 0.10f * ((extra + 1) / 2);
-					final short bonusDmg = applyCombatDamageMods(rolledDamage, abilityCm);
-					spawnAbilityBullet(realmId, player, abilityItem.getDamage().getProjectileGroupId(), p,
-							dest.clone(-offset, -offset), Float.parseFloat(p.getAngle()) + deltaA, bonusDmg, abilityCm);
+				{
+					final int totalBullets = 1 + abilityCm.getExtraProjectiles();
+					final float SPREAD = 0.10f;
+					final float baseA = Float.parseFloat(p.getAngle());
+					for (int i = 0; i < totalBullets; i++) {
+						final float deltaA = (i - (totalBullets - 1) / 2f) * SPREAD;
+						final short rolled = applyCombatDamageMods(rolledDamage, abilityCm);
+						spawnAbilityBullet(realmId, player, abilityItem.getDamage().getProjectileGroupId(), p,
+								dest.clone(-offset, -offset), baseA + deltaA, rolled, abilityCm);
+					}
 				}
 			}
 
