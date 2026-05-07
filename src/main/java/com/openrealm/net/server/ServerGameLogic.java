@@ -521,15 +521,20 @@ public class ServerGameLogic {
 				float shootAngle = angle + Float.parseFloat(proj.getAngle());
 				rolledDamage += player.getComputedStats().getAtt();
 				rolledDamage = applyCombatDamageMods(rolledDamage, cm);
-				spawnPlayerBullet(mgr, realm.getRealmId(), player, weaponPgId, proj,
-						source.clone(-offset, -offset), shootAngle, rolledDamage, cm);
-				// Extra-projectile gems: fire N additional copies fanned around the base angle.
-				for (int extra = 1; extra <= cm.getExtraProjectiles(); extra++) {
-					final float side = (extra % 2 == 0) ? 1f : -1f;
-					final float deltaA = side * 0.12f * ((extra + 1) / 2);
-					final short bonusDmg = applyCombatDamageMods(rolledDamage, cm);
+				// MultiShot / extra-projectile gems: fire (1 + extra) bullets fanned
+				// SYMMETRICALLY around the cursor — half the spread on each side.
+				// The previous formula biased the fan one-sided (primary at base
+				// angle, extras only on alternating sides starting with the left),
+				// so even with one extra the cursor sat on one bullet instead of
+				// between the two streams. Mirrors the centered pattern used by
+				// ability-bullet fan in RealmManagerServer.
+				final int totalBullets = 1 + cm.getExtraProjectiles();
+				final float SPREAD = 0.12f;
+				for (int i = 0; i < totalBullets; i++) {
+					final float deltaA = (i - (totalBullets - 1) / 2f) * SPREAD;
+					final short dmg = (i == 0) ? rolledDamage : applyCombatDamageMods(rolledDamage, cm);
 					spawnPlayerBullet(mgr, realm.getRealmId(), player, weaponPgId, proj,
-							source.clone(-offset, -offset), shootAngle + deltaA, bonusDmg, cm);
+							source.clone(-offset, -offset), shootAngle + deltaA, dmg, cm);
 				}
 			}
 		}
