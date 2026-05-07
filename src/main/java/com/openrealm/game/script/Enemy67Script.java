@@ -18,8 +18,8 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class Enemy67Script extends EnemyScriptBase {
 
-    private static final int HEAL_AMOUNT = 80;
-    private static final float HEAL_RADIUS = 224.0f;
+    private static final int HEAL_AMOUNT = 69;
+    private static final float HEAL_RADIUS = 50.0f;
 
     public Enemy67Script(RealmManagerServer mgr) {
         super(mgr);
