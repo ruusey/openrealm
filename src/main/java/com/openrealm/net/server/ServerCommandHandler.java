@@ -306,6 +306,36 @@ public class ServerCommandHandler {
         log.info("Player {} healed themselves", target.getName());
     }
 
+    @CommandHandler(value="size", description="Temporarily resize your character. Usage: /size {PIXELS} (or /size reset)")
+    @AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_MODERATOR})
+    public static void invokePlayerSize(RealmManagerServer mgr, Player target, ServerCommandMessage message)
+            throws Exception {
+        if (message.getArgs() == null || message.getArgs().size() != 1) {
+            throw new IllegalArgumentException("Usage: /size {PIXELS} (or /size reset)");
+        }
+        final String arg = message.getArgs().get(0);
+        final int newSize;
+        if ("reset".equalsIgnoreCase(arg) || "default".equalsIgnoreCase(arg)) {
+            newSize = GlobalConstants.PLAYER_SIZE;
+        } else {
+            newSize = Integer.parseInt(arg);
+            if (newSize < 4 || newSize > 256) {
+                throw new IllegalArgumentException("PIXELS must be between 4 and 256");
+            }
+        }
+        target.setSize(newSize);
+        // bounds is built off the size at construction; refresh both width
+        // and height so collision matches the new visual immediately.
+        if (target.getBounds() != null) {
+            target.getBounds().setWidth(newSize);
+            target.getBounds().setHeight(newSize);
+        }
+        log.info("Player {} resized themselves to {}px", target.getName(), newSize);
+        mgr.enqueueServerPacket(target,
+                TextPacket.from("SYSTEM", target.getName(),
+                        "Resized to " + newSize + "px (logout to reset)"));
+    }
+
     @CommandHandler(value="spawn", description="Spawn enemies by id. Usage: /spawn {ENEMY_ID} [COUNT]")
 	@AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_MODERATOR})
     public static void invokeEnemySpawn(RealmManagerServer mgr, Player target, ServerCommandMessage message)
