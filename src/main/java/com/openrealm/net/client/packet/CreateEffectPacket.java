@@ -71,6 +71,11 @@ public class CreateEffectPacket extends Packet {
 	public static final short EFFECT_WARRIOR_BUFF = 12;    // Warrior helm
 	public static final short EFFECT_NINJA_DASH = 13;      // Ninja dash trail
 	public static final short EFFECT_PALADIN_SEAL = 14;    // Paladin holy cross
+	// Vault Healer (Enemy 67) ambient fountain. Procedural parabolic-arc
+	// droplets continuously launched outward from the center, falling and
+	// splashing inside `radius`. Same lob math as the assassin's poison
+	// throw — just looped over the duration so it reads as a fountain.
+	public static final short EFFECT_WATER_FOUNTAIN = 15;
 
 	public static CreateEffectPacket aoeEffect(short type, float x, float y, float radius, short duration) {
 		return aoeEffect(type, x, y, radius, duration, (byte) 0);

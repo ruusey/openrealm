@@ -20,6 +20,12 @@ public class Enemy67Script extends EnemyScriptBase {
 
     private static final int HEAL_AMOUNT = 69;
     private static final float HEAL_RADIUS = 50.0f;
+    /** Pool radius around the statue — sized to sit on a water-tile pool a
+     *  mapper would place under it, NOT the heal AoE. */
+    private static final float FOUNTAIN_RADIUS = 72.0f;
+    /** One full ~1.6s loop; consecutive heal ticks overlap so the stream
+     *  reads as continuous on the client. */
+    private static final short FOUNTAIN_DURATION_MS = 1600;
 
     public Enemy67Script(RealmManagerServer mgr) {
         super(mgr);
@@ -47,6 +53,13 @@ public class Enemy67Script extends EnemyScriptBase {
         // Broadcast heal radius visual
         this.getMgr().enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.aoeEffect(
                 CreateEffectPacket.EFFECT_HEAL_RADIUS, center.x, center.y, HEAL_RADIUS, (short) 1500));
+
+        // Water fountain visual — droplets lob outward from the statue and
+        // splash inside the pool. Independent of HEAL_RADIUS so the visual
+        // pool can be sized separately from the heal AoE.
+        this.getMgr().enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.aoeEffect(
+                CreateEffectPacket.EFFECT_WATER_FOUNTAIN, center.x, center.y,
+                FOUNTAIN_RADIUS, FOUNTAIN_DURATION_MS));
 
         // Heal all players within range
         final float radiusSq = HEAL_RADIUS * HEAL_RADIUS;
