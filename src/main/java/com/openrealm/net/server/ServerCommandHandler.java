@@ -334,6 +334,32 @@ public class ServerCommandHandler {
         mgr.enqueueServerPacket(target,
                 TextPacket.from("SYSTEM", target.getName(),
                         "Resized to " + newSize + "px (logout to reset)"));
+        // Push an immediate LoadPacket so every nearby client picks up the
+        // new NetPlayer.size right away. UpdatePacket doesn't carry size, so
+        // without this both clients have to wait for the next periodic
+        // LoadPacket re-broadcast (typically only triggered by movement).
+        try {
+            final Realm rebroadcastRealm = mgr.findPlayerRealm(target.getId());
+            if (rebroadcastRealm != null) {
+                final com.openrealm.net.entity.NetPlayer net =
+                        com.openrealm.net.entity.NetPlayer.fromPlayer(target);
+                final com.openrealm.net.client.packet.LoadPacket resizeBroadcast =
+                        new com.openrealm.net.client.packet.LoadPacket(
+                                new com.openrealm.net.entity.NetPlayer[]{ net },
+                                new com.openrealm.net.entity.NetEnemy[0],
+                                new com.openrealm.net.entity.NetBullet[0],
+                                new com.openrealm.net.entity.NetLootContainer[0],
+                                new com.openrealm.net.entity.NetPortal[0],
+                                (byte) 0);
+                for (final Map.Entry<Long, Player> entry : rebroadcastRealm.getPlayers().entrySet()) {
+                    final Player p = entry.getValue();
+                    if (p == null || p.isHeadless()) continue;
+                    mgr.enqueueServerPacket(p, resizeBroadcast);
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("Failed to broadcast /size LoadPacket: {}", ex.getMessage());
+        }
     }
 
     @CommandHandler(value="spawn", description="Spawn enemies by id. Usage: /spawn {ENEMY_ID} [COUNT]")
