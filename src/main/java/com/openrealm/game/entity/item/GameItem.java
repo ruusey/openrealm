@@ -227,7 +227,7 @@ public class GameItem extends SpriteModel {
         byte rarity = gameItem.getRarity() == null ? 0 : gameItem.getRarity();
         final int enchCount = item.getEnchantments().size();
         if (rarity == 0 && enchCount > 1) {
-            // enchCount of 2 → UNCOMMON(1), 3 → RARE(2), ..., 6 → MYTHICAL(5)
+            // enchCount of 2 -> UNCOMMON(1), 3 -> RARE(2), ..., 6 -> MYTHICAL(5)
             final int idx = Math.min(Rarity.values().length - 1, enchCount - 1);
             rarity = (byte) idx;
             log.info("[Rarity] Migrating legacy item {} ({} enchantments) to {}",

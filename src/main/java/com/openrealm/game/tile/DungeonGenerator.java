@@ -786,7 +786,7 @@ public class DungeonGenerator {
 	 * between src and dest, producing a smooth arc.
 	 */
 	private void connectCurved(TileMap targetLayer, int srcX, int srcY, int destX, int destY) {
-		// Control point: midpoint offset perpendicular to src→dest line
+		// Control point: midpoint offset perpendicular to src->dest line
 		int midX = (srcX + destX) / 2;
 		int midY = (srcY + destY) / 2;
 		int dx = destX - srcX;

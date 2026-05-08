@@ -68,7 +68,7 @@ public class AssassinPoisonScript extends UseableItemScriptBase {
 
         // Broadcast the throw arc visual (800ms travel time). Tier flows
         // through both the throw and the splash so the colour family stays
-        // consistent. Soulrot Vial is untiered → tier 0.
+        // consistent. Soulrot Vial is untiered -> tier 0.
         final byte tier = (abilityItem.getItemId() == SOULROT_VIAL_ID)
                 ? (byte) 0 : (byte) (abilityItem.getItemId() - MIN_ID);
         final Vector2f playerCenter = player.getPos().clone(player.getSize() / 2, player.getSize() / 2);

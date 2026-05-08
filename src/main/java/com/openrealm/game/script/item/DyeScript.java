@@ -11,7 +11,7 @@ import com.openrealm.net.server.packet.TextPacket;
 /**
  * Use-handler for dye items (Green/Yellow/Red/Blue/Purple/Orange/White/Black).
  * On consume:
- *   1. Look up the dyeId from the helper's itemId→dyeId map.
+ *   1. Look up the dyeId from the helper's itemId->dyeId map.
  *   2. Set player.dyeId so the renderer recolors masked sprite regions.
  *   3. Push an UpdatePacket so other players see the change immediately.
  *   4. Remove the consumed dye from inventory.
