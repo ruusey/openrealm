@@ -763,7 +763,7 @@ public class ServerCommandHandler {
         final boolean forceNew = message.getArgs().size() >= 2
                 && "new".equalsIgnoreCase(message.getArgs().get(1));
 
-        // Resolve the arg three ways: numeric mapId → mapName lookup → nodeId.
+        // Resolve the arg three ways: numeric mapId -> mapName lookup -> nodeId.
         MapModel mapModel = null;
         String resolvedNodeId = null;
         try {

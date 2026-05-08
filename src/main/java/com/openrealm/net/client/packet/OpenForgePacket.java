@@ -12,7 +12,7 @@ import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
 /**
- * Server → client acknowledgement that the player can open their Forge UI.
+ * Server -> client acknowledgement that the player can open their Forge UI.
  * Sent in response to InteractTilePacket on a tile whose interactionType == "forge".
  */
 @Data

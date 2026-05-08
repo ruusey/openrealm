@@ -218,7 +218,7 @@ public class RealmManagerServer implements Runnable {
 	private static final int ENEMY_UPDATE_TICK_DIVISOR = 8; // Enemy health bars at 8Hz (was 16Hz)
 	// Enemy AI tick divisor — staggered so 1/N of enemies get updated each
 	// tick. MUST be a power of 2 (used as a bitmask). Value 2 gives each
-	// enemy a 32 Hz effective AI rate; value 4 → 16 Hz. 32 Hz is plenty
+	// enemy a 32 Hz effective AI rate; value 4 -> 16 Hz. 32 Hz is plenty
 	// for chase/attack AI and halves the per-tick cost at 10K enemies.
 	private static final int ENEMY_AI_TICK_DIVISOR = 2;
 	// Movement stagger for awake-but-off-screen enemies. If no player has
@@ -235,7 +235,7 @@ public class RealmManagerServer implements Runnable {
 
 	// Hard cap on concurrent ENEMY bullets per realm. The 1000-enemy stress
 	// test produced 15K live bullets (1.5 bullets/sec/enemy × ~10s lifetime)
-	// — bullet.update() and bullet→player collision iterate the full bullet
+	// — bullet.update() and bullet->player collision iterate the full bullet
 	// map every tick, so 15K live bullets dominate CPU and crater TPS. With
 	// the cap, excess enemy attacks fail-fast at addProjectile (return null,
 	// no spatial-grid insert, no LoadPacket entry, no per-tick update). At
@@ -669,7 +669,7 @@ public class RealmManagerServer implements Runnable {
 				// Reset per-tick caches so the first viewer in this realm
 				// builds the shared instances and subsequent viewers reuse
 				// them. Major win for nexus (40 players seeing each other
-				// → 40× fewer allocations per shared entity per tick).
+				// -> 40× fewer allocations per shared entity per tick).
 				realm.clearTickMovementCache();
 				realm.clearTickStrippedUpdateCache();
 
@@ -1610,10 +1610,10 @@ public class RealmManagerServer implements Runnable {
 			final int playerCount = activePlayers.length;
 			for (final Enemy enemy : realm.getEnemies().values()) {
 				// Single distance pass classifies the enemy:
-				//   visible — within viewport of ANY player → full 64Hz move
-				//   awake   — within chaseRange of ANY player but not visible →
+				//   visible — within viewport of ANY player -> full 64Hz move
+				//   awake   — within chaseRange of ANY player but not visible ->
 				//             AI staggered + movement only every Nth tick
-				//   dormant — outside chaseRange of every player → no work
+				//   dormant — outside chaseRange of every player -> no work
 				boolean awake = false;
 				boolean visible = false;
 				if (playerCount > 0) {

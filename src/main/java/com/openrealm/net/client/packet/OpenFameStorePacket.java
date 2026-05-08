@@ -12,7 +12,7 @@ import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
 /**
- * Server → client: signal that the player has interacted with a Fame Store
+ * Server -> client: signal that the player has interacted with a Fame Store
  * tile and should be shown the purchase UI. Includes the freshly-fetched
  * account fame total so the client can show "you have N fame" without making
  * its own REST call.

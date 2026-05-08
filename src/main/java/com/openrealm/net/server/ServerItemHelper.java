@@ -237,7 +237,7 @@ public class ServerItemHelper {
             }
             player.getInventory()[fromIdx] = null;
 
-        // Equip: inventory (4-19) → equipment (0-3)
+        // Equip: inventory (4-19) -> equipment (0-3)
         } else if (MoveItemPacket.isInventory(fromIdx)
                 && MoveItemPacket.isEquipment(targetIdx) && (from != null)) {
             if (!canEquipInSlot(player, from, targetIdx)) {
@@ -256,7 +256,7 @@ public class ServerItemHelper {
             }
             player.getInventory()[targetIdx] = from.clone();
 
-        // Equip → equip swap (e.g. dragging from slot 0 to slot 3 directly).
+        // Equip -> equip swap (e.g. dragging from slot 0 to slot 3 directly).
         // Both endpoints must validate against the destination slot.
         } else if (MoveItemPacket.isEquipment(fromIdx)
                 && MoveItemPacket.isEquipment(targetIdx) && (from != null)) {
@@ -306,7 +306,7 @@ public class ServerItemHelper {
                 player.getInventory()[targetIdx] = fromClone;
             }
 
-        // Unequip: equipment (0-3) → inventory (4-19). When the destination
+        // Unequip: equipment (0-3) -> inventory (4-19). When the destination
         // slot already holds an item, this becomes a swap: that item moves
         // INTO the equip slot. It must therefore pass the same equip-slot
         // validation as a normal equip — otherwise a client could put any

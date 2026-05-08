@@ -104,7 +104,7 @@ public class UpdatePacket extends Packet {
 	 * Build a stripped UpdatePacket directly from a Player WITHOUT mapping
 	 * the inventory. Used for the broadcast of nearby-other-player updates,
 	 * which strips inventory before sending anyway. The old path went
-	 * UpdatePacket.from(player) → withoutInventory(), which paid for a full
+	 * UpdatePacket.from(player) -> withoutInventory(), which paid for a full
 	 * 20-slot inventory ModelMapper reflection round just to throw the
 	 * result away. Skipping the inventory map saves ~50× per call.
 	 */

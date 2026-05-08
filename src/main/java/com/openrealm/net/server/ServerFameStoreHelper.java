@@ -47,7 +47,7 @@ public class ServerFameStoreHelper {
     }
 
     /**
-     * itemId → dyeId granted on use. Mirrors the dyeId field on each dye
+     * itemId -> dyeId granted on use. Mirrors the dyeId field on each dye
      * item in game-items.json. Server stores only the opaque dye id; the
      * client resolves it to a color or pattern via dye-assets.json. New
      * cosmetics (gradients, patterned cloths) are a data-only addition.

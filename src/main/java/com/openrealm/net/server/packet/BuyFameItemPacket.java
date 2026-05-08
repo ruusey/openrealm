@@ -13,7 +13,7 @@ import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
 /**
- * Client → server: request to purchase a fame-shop item with the account's
+ * Client -> server: request to purchase a fame-shop item with the account's
  * banked fame. The server validates fame balance, validates an inventory
  * slot is free, atomically deducts fame via the data service, and only then
  * grants the item. All checks are server-side — the client number is
