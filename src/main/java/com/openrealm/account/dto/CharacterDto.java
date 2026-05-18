@@ -57,7 +57,7 @@ public class CharacterDto extends TemporalDto {
             maxed = this.stats.getDef() >= maxStats.getDef();
             break;
         case 3:
-            maxed = this.stats.getAtt() >= maxStats.getAtt();
+            maxed = this.stats.getStr() >= maxStats.getStr();
             break;
         case 4:
             maxed = this.stats.getSpd() >= maxStats.getSpd();

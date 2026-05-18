@@ -13,7 +13,7 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class AttributeModifier {
-    private byte statId;       // 0..7 (VIT, WIS, HP, MP, ATT, DEF, SPD, DEX)
+    private byte statId;       // 0..7 (VIT, WIS, HP, MP, STR, DEF, SPD, DEX)
     private byte deltaValue;   // signed: −3..+3 typical, scaled by rarity
 
     public AttributeModifier clone() {

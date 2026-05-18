@@ -57,9 +57,9 @@ public class SorcererScepterScript extends UseableItemScriptBase {
         int wisBonus = Math.max(0, (player.getComputedStats().getWis() - 50) / 10);
         int maxTargets = BASE_TARGETS + (abilityItem.getItemId() - MIN_ID) + wisBonus; // scales with tier
 
-        // Base damage from item's damage field (min-max roll) + attack stat
+        // Base damage from item's damage field (min-max roll) + strength stat
         short baseDamage = (abilityItem.getDamage() != null) ? abilityItem.getDamage().getInRange() : 100;
-        baseDamage += player.getComputedStats().getAtt();
+        baseDamage += player.getComputedStats().getStr();
 
         final Vector2f playerCenter = player.getPos().clone(player.getSize() / 2, player.getSize() / 2);
         // Initial target: nearest enemy to where the user clicked, not the player

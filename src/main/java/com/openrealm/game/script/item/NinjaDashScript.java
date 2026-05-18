@@ -130,7 +130,7 @@ public class NinjaDashScript extends UseableItemScriptBase {
         final float bladeRadiusSq = bladeRadius * bladeRadius;
         final Damage dmgRange = abilityItem.getDamage();
         final short rolledBase = (dmgRange != null) ? dmgRange.getInRange() : (short) 100;
-        final int rawDamage = rolledBase + player.getComputedStats().getAtt();
+        final int rawDamage = rolledBase + player.getComputedStats().getStr();
 
         for (final Enemy enemy : targetRealm.getEnemies().values()) {
             if (enemy == null || enemy.getDeath()) continue;

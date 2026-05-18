@@ -12,7 +12,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -26,6 +28,7 @@ import com.openrealm.game.model.ability.AbilityEffect;
 import com.openrealm.game.model.ability.AbilityScaling;
 import com.openrealm.game.model.ability.PassiveAbility;
 import com.openrealm.game.model.ability.PassiveTrigger;
+import com.openrealm.net.client.packet.AbilityCastStartPacket;
 import com.openrealm.net.client.packet.CreateEffectPacket;
 import java.util.Optional;
 import java.util.Queue;
@@ -57,6 +60,7 @@ import com.openrealm.game.contants.ProjectilePositionMode;
 import com.openrealm.game.contants.TextEffect;
 import com.openrealm.game.data.GameDataManager;
 import com.openrealm.game.entity.Bullet;
+import com.openrealm.game.entity.CastState;
 import com.openrealm.game.entity.Enemy;
 import com.openrealm.game.entity.Entity;
 import com.openrealm.game.entity.GameObject;
@@ -69,6 +73,9 @@ import com.openrealm.game.entity.item.LootContainer;
 import com.openrealm.game.entity.item.Stats;
 import com.openrealm.game.math.Rectangle;
 import com.openrealm.game.math.Vector2f;
+import com.openrealm.game.metrics.MetricsDelta;
+import com.openrealm.game.metrics.MetricsDeltaDto;
+import com.openrealm.game.metrics.PlayerMetrics;
 import com.openrealm.game.model.EnemyModel;
 import com.openrealm.game.model.TerrainGenerationParameters;
 import com.openrealm.game.model.LootGroupModel;
@@ -184,7 +191,7 @@ public class RealmManagerServer implements Runnable {
 
 	// ─── Class passive tuning constants ───────────────────────────────────
 	// Heavy Buffer "Guiding Light" — EMPOWERED bonus = floor(caster.WIS / N)
-	// added to each of ATT/SPD/DEX. Lower divisor = stronger aura. At 5 a
+	// added to each of STR/SPD/DEX. Lower divisor = stronger aura. At 5 a
 	// maxed (75 WIS) buffer grants +15 to all three offensive stats; at 10
 	// it'd grant +7. Edit and rebuild to tune.
 	private static final int GUIDING_LIGHT_WIS_DIVISOR = 5;
@@ -1839,7 +1846,7 @@ public class RealmManagerServer implements Runnable {
 				// resolution path sees isCasting()==false (otherwise the
 				// "reject input-driven re-casts while casting" gate at the
 				// top of useAbility would refuse our own resolution).
-				final com.openrealm.game.entity.CastState cs = p.getCurrentCast();
+				final CastState cs = p.getCurrentCast();
 				if (cs != null && cs.getEndTickMs() <= Instant.now().toEpochMilli()) {
 					p.setCurrentCast(null);
 					this.useAbility(realm.getRealmId(), p.getId(),
@@ -1994,7 +2001,7 @@ public class RealmManagerServer implements Runnable {
 							p.addEffect(StatusEffectType.BRACED, REFRESH_MS);
 						}
 					} else if (pa.getId() == 11015) {
-						// Heavy Buffer "Guiding Light" — refresh EMPOWERED_ATT and
+						// Heavy Buffer "Guiding Light" — refresh EMPOWERED_STR and
 						// EMPOWERED_DEX on every party member within range INCLUDING
 						// the buffer itself (realm.getPlayers() contains the caster).
 						// Magnitude = floor(caster.WIS / GUIDING_LIGHT_WIS_DIVISOR).
@@ -2008,20 +2015,20 @@ public class RealmManagerServer implements Runnable {
 							final Vector2f ac = ally.getPos().clone(ally.getSize() / 2, ally.getSize() / 2);
 							final float dx = ac.x - pc.x, dy = ac.y - pc.y;
 							if (dx * dx + dy * dy > AURA_RADIUS_SQ) continue;
-							// Floating "+N ATT" / "+N DEX" cast text — only on the
+							// Floating "+N STR" / "+N DEX" cast text — only on the
 							// first application (transition from no-EMPOWERED to
 							// has-EMPOWERED). Without this guard we'd flood the
 							// screen with text every 125ms tick while standing
-							// inside the aura. We check EMPOWERED_ATT as the proxy
+							// inside the aura. We check EMPOWERED_STR as the proxy
 							// for "did this player just enter the aura" since both
 							// statuses always apply together.
-							if (bonus > 0 && !ally.hasEffect(StatusEffectType.EMPOWERED_ATT)) {
+							if (bonus > 0 && !ally.hasEffect(StatusEffectType.EMPOWERED_STR)) {
 								this.broadcastTextEffect(realm, EntityType.PLAYER, ally,
-										TextEffect.HEAL, "+" + bonus + " ATT");
+										TextEffect.HEAL, "+" + bonus + " STR");
 								this.broadcastTextEffect(realm, EntityType.PLAYER, ally,
 										TextEffect.HEAL, "+" + bonus + " DEX");
 							}
-							ally.addEffect(StatusEffectType.EMPOWERED_ATT, REFRESH_MS, bonus);
+							ally.addEffect(StatusEffectType.EMPOWERED_STR, REFRESH_MS, bonus);
 							ally.addEffect(StatusEffectType.EMPOWERED_DEX, REFRESH_MS, bonus);
 						}
 					} else if (pa.getId() == 11008) {
@@ -2053,7 +2060,7 @@ public class RealmManagerServer implements Runnable {
 			final long now = Instant.now().toEpochMilli();
 			final long DRAIN_PERIOD_MS = 1000L;
 			final int  DRAIN_PER_TICK  = 50;
-			final java.util.Iterator<SoulHarvestField> it = this.soulHarvestFields.iterator();
+			final Iterator<SoulHarvestField> it = this.soulHarvestFields.iterator();
 			while (it.hasNext()) {
 				final SoulHarvestField f = it.next();
 				if (now >= f.expiresAtMs) { it.remove(); continue; }
@@ -2130,7 +2137,7 @@ public class RealmManagerServer implements Runnable {
 		// actually paints), so stacking packets doesn't cause flicker.
 		if (!this.bladeOrbitStates.isEmpty() && this.tickCounter % 16 == 0) {
 			final long now = Instant.now().toEpochMilli();
-			final java.util.Iterator<BladeOrbitState> it = this.bladeOrbitStates.iterator();
+			final Iterator<BladeOrbitState> it = this.bladeOrbitStates.iterator();
 			while (it.hasNext()) {
 				final BladeOrbitState s = it.next();
 				if (now >= s.expiresAtMs) { it.remove(); continue; }
@@ -2151,7 +2158,7 @@ public class RealmManagerServer implements Runnable {
 		if (!this.bladeBlenderFields.isEmpty()) {
 			final long now = Instant.now().toEpochMilli();
 			final long DRAIN_PERIOD_MS = 1000L;
-			final java.util.Iterator<BladeBlenderField> it = this.bladeBlenderFields.iterator();
+			final Iterator<BladeBlenderField> it = this.bladeBlenderFields.iterator();
 			while (it.hasNext()) {
 				final BladeBlenderField f = it.next();
 				if (now >= f.expiresAtMs) { it.remove(); continue; }
@@ -2217,7 +2224,7 @@ public class RealmManagerServer implements Runnable {
 				if (!p.hasEffect(StatusEffectType.PHALANX_DOME)) continue;
 				final Vector2f pc = p.getPos().clone(p.getSize() / 2, p.getSize() / 2);
 				// Destroy enemy bullets inside the dome.
-				final java.util.List<Long> killedIds = new java.util.ArrayList<>();
+				final List<Long> killedIds = new ArrayList<>();
 				for (final Bullet b : realm.getBullets().values()) {
 					if (!b.isEnemy()) continue;
 					final float dx = b.getPos().x - pc.x;
@@ -2598,7 +2605,7 @@ public class RealmManagerServer implements Runnable {
 				player.getMetrics().recordCastStarted(ab.getId());
 			}
 			player.addEffect(StatusEffectType.SLOWED, castMs);
-			player.setCurrentCast(new com.openrealm.game.entity.CastState(
+			player.setCurrentCast(new CastState(
 					ab.getId(), slot, now, now + castMs, pos.x, pos.y, false));
 			// Push the slot cooldown forward so the cast time is included.
 			final long[] cds2 = player.getAbilityCooldowns();
@@ -2606,7 +2613,7 @@ public class RealmManagerServer implements Runnable {
 				cds2[slot] = now + castMs + abCooldownMs;
 			}
 			this.enqueueServerPacketToRealm(targetRealm,
-					new com.openrealm.net.client.packet.AbilityCastStartPacket(
+					new AbilityCastStartPacket(
 							playerId, ab.getId(), (byte) slot, (int) castMs, pos.x, pos.y));
 			return;
 		}
@@ -2631,7 +2638,7 @@ public class RealmManagerServer implements Runnable {
 		// applies BRACED + SLOWED). The primary (first) status keeps the legacy
 		// TELEPORT branch behavior; extras are appended to this list and applied
 		// alongside the primary at each apply site.
-		final java.util.List<Object[]> extraSelfStatuses = new java.util.ArrayList<>();
+		final List<Object[]> extraSelfStatuses = new ArrayList<>();
 		if (ab != null) {
 			effPgId           = -1;
 			effSelfStatus     = null;
@@ -3054,7 +3061,7 @@ public class RealmManagerServer implements Runnable {
 			if (ab.getTags().contains("rain_arrows")) {
 				final int ARROW_COUNT = 14;
 				final int ARROW_PID = 88;
-				final java.util.Random rng = java.util.concurrent.ThreadLocalRandom.current();
+				final Random rng = ThreadLocalRandom.current();
 				for (int i = 0; i < ARROW_COUNT; i++) {
 					final double r  = aoeRadius * Math.sqrt(rng.nextDouble());
 					final double th = rng.nextDouble() * 2.0 * Math.PI;
@@ -3067,7 +3074,7 @@ public class RealmManagerServer implements Runnable {
 							effCenter.x + offX, effCenter.y + offY - 280f);
 					this.addProjectile(targetRealm.getRealmId(), 0L, player.getId(),
 							ARROW_PID, -1, src, 0f, (short) 16, 9f, 320f,
-							(short) 0, false, new java.util.ArrayList<>(),
+							(short) 0, false, new ArrayList<>(),
 							(short) 0, (short) 0, player.getId());
 				}
 			}
@@ -3233,7 +3240,7 @@ public class RealmManagerServer implements Runnable {
 				short rolledDamage;
 				if (ab != null && ab.getBaseDamage() > 0) {
 					// Ability-data damage path: baseDamage + sum of scalings
-					// targeting DAMAGE. Player ATT is NOT auto-added; the
+					// targeting DAMAGE. Player STR is NOT auto-added; the
 					// Ability controls the full damage budget so designers
 					// can build large nukes (e.g. Meteor's 2000 base) without
 					// fighting the legacy weapon's small range.
@@ -3246,7 +3253,7 @@ public class RealmManagerServer implements Runnable {
 					rolledDamage = (short) Math.min(Short.MAX_VALUE, Math.max(0, dmg));
 				} else {
 					rolledDamage = abilityItem.getDamage().getInRange();
-					rolledDamage += player.getComputedStats().getAtt();
+					rolledDamage += player.getComputedStats().getStr();
 				}
 				rolledDamage = applyCombatDamageMods(rolledDamage, abilityCm);
 				if (p.getPositionMode() != ProjectilePositionMode.TARGET_PLAYER) {
@@ -3303,7 +3310,7 @@ public class RealmManagerServer implements Runnable {
 
 				final short offset = (short) (p.getSize() / (short) 2);
 				short rolledDamage = abilityItem.getDamage().getInRange();
-				rolledDamage += player.getComputedStats().getAtt();
+				rolledDamage += player.getComputedStats().getStr();
 				rolledDamage = applyCombatDamageMods(rolledDamage, abilityCm);
 				{
 					final int totalBullets = 1 + abilityCm.getExtraProjectiles();
@@ -3614,7 +3621,7 @@ public class RealmManagerServer implements Runnable {
 			final long encoded = Float.floatToRawIntBits(dx * dx + dy * dy);
 			(b.isEnemy() ? enemyOwned : playerOwned).add(new long[] { id, encoded });
 		}
-		final java.util.Comparator<long[]> byDist = (u, v) -> Float.compare(
+		final Comparator<long[]> byDist = (u, v) -> Float.compare(
 				Float.intBitsToFloat((int) u[1]),
 				Float.intBitsToFloat((int) v[1]));
 		playerOwned.sort(byDist);
@@ -3909,8 +3916,8 @@ public class RealmManagerServer implements Runnable {
 		clone.setName(player.getName());
 		clone.setHeadless(true);
 		clone.setBot(true);
-		clone.setAccountUuid(java.util.UUID.randomUUID().toString());
-		clone.setCharacterUuid(java.util.UUID.randomUUID().toString());
+		clone.setAccountUuid(UUID.randomUUID().toString());
+		clone.setCharacterUuid(UUID.randomUUID().toString());
 		// INVINCIBLE so stray hits don't kill the clone before its 3s
 		// timer is up; TAUNT_TARGET so enemy targeting (getClosestPlayer's
 		// taunt pass) prefers shooting the clone over the real ninja —
@@ -3944,7 +3951,7 @@ public class RealmManagerServer implements Runnable {
 			case 1: return s.getWis();
 			case 2: return s.getHp();
 			case 3: return s.getMp();
-			case 4: return s.getAtt();
+			case 4: return s.getStr();
 			case 5: return s.getDef();
 			case 6: return s.getSpd();
 			case 7: return s.getDex();
@@ -4263,7 +4270,7 @@ public class RealmManagerServer implements Runnable {
 		}
 
 		if (!isEnemy && player != null) {
-			damage = (short) (damage + player.getStats().getAtt());
+			damage = (short) (damage + player.getStats().getStr());
 		}
 
 		final long idToUse = id == 0l ? Realm.RANDOM.nextLong() : id;
@@ -4291,7 +4298,7 @@ public class RealmManagerServer implements Runnable {
 
 		final ProjectileGroup pg = GameDataManager.PROJECTILE_GROUPS.get(projectileGroupId);
 		if (!isEnemy && player != null) {
-			damage = (short) (damage + player.getStats().getAtt());
+			damage = (short) (damage + player.getStats().getStr());
 		}
 
 		final long idToUse = id == 0l ? Realm.RANDOM.nextLong() : id;
@@ -5069,7 +5076,7 @@ public class RealmManagerServer implements Runnable {
 			}
 			m.setHotbarInvested(invBoxed);
 			// Carry computed stats so teammate ability tooltips can render
-			// stat-scaled damage (ATT/DEX/WIS contributions, SP×N lines)
+			// stat-scaled damage (STR/DEX/WIS contributions, SP×N lines)
 			// against the OWNER's real numbers. We already have `st` from
 			// the HP/MP-max plumbing above — reuse it instead of recomputing.
 			m.setStats(NetStats.fromStats(st));
@@ -5183,12 +5190,11 @@ public class RealmManagerServer implements Runnable {
 				// events stack on top instead of losing the work. See
 				// docs/player-metrics-design.md.
 				try {
-					final com.openrealm.game.metrics.PlayerMetrics m = player.getMetrics();
+					final PlayerMetrics m = player.getMetrics();
 					if (m != null) {
-						final com.openrealm.game.metrics.MetricsDelta delta = m.drainAndReset();
+						final MetricsDelta delta = m.drainAndReset();
 						if (delta != null) {
-							final com.openrealm.game.metrics.MetricsDeltaDto dto =
-									com.openrealm.game.metrics.MetricsDeltaDto.from(delta);
+							final MetricsDeltaDto dto = MetricsDeltaDto.from(delta);
 							try {
 								ServerGameLogic.DATA_SERVICE.executePost(
 										"/data/account/character/" + character.getCharacterUuid() + "/metrics/delta",

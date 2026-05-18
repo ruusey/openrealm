@@ -12,12 +12,12 @@ import lombok.NoArgsConstructor;
  *
  * Wire format example:
  * <pre>
- *   { "stat": "ATT", "coeff": 0.8, "target": "DAMAGE" }
+ *   { "stat": "STR", "coeff": 0.8, "target": "DAMAGE" }
  *   { "stat": "VIT", "coeff": 10.0, "target": "STATUS_DURATION_MS", "effectIndex": 1 }
  *   { "stat": "DEF", "coeff": 0.001, "target": "PROC_CHANCE", "cap": 0.25 }
  * </pre>
  *
- * {@code stat} is the 3-letter name (HP/MP/DEF/ATT/SPD/DEX/VIT/WIS) — resolved
+ * {@code stat} is the 3-letter name (HP/MP/DEF/STR/SPD/DEX/VIT/WIS) — resolved
  * to the {@code Stats} index at apply-time. {@code curve} defaults to LINEAR.
  * {@code effectIndex} is only meaningful when the target refers to a specific
  * effect within the ability's {@code effects[]} list (e.g. STATUS_DURATION_MS).
@@ -26,7 +26,7 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class AbilityScaling {
-    /** Stat name: "HP" "MP" "DEF" "ATT" "SPD" "DEX" "VIT" "WIS". */
+    /** Stat name: "HP" "MP" "DEF" "STR" "SPD" "DEX" "VIT" "WIS". */
     private String stat;
     private float coeff;
     /** Resolved at load-time from {@code targetName}; UNKNOWN if not recognized. */
@@ -49,7 +49,7 @@ public class AbilityScaling {
 
     /**
      * Numeric stat-index lookup matching the Stats POJO order
-     * (0=VIT 1=WIS 2=HP 3=MP 4=ATT 5=DEF 6=SPD 7=DEX). Returns -1 for unknown.
+     * (0=VIT 1=WIS 2=HP 3=MP 4=STR 5=DEF 6=SPD 7=DEX). Returns -1 for unknown.
      *
      * Phase 2D — index 8 is a synthetic "SKILL_POINTS" input that the apply
      * site resolves to the player's invested level for the parent Ability.
@@ -63,7 +63,7 @@ public class AbilityScaling {
             case "WIS": return 1;
             case "HP":  return 2;
             case "MP":  return 3;
-            case "ATT": return 4;
+            case "STR": return 4;
             case "DEF": return 5;
             case "SPD": return 6;
             case "DEX": return 7;

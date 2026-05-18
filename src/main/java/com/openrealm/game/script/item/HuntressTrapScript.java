@@ -51,10 +51,10 @@ public class HuntressTrapScript extends UseableItemScriptBase {
         final Vector2f center = (targetPos != null) ? targetPos
                 : player.getPos().clone(player.getSize() / 2, player.getSize() / 2);
 
-        // Read damage from item data (avg of min/max + ATT)
+        // Read damage from item data (avg of min/max + STR)
         int damage = 85;
         if (abilityItem.getDamage() != null) {
-            damage = abilityItem.getDamage().getInRange() + player.getComputedStats().getAtt();
+            damage = abilityItem.getDamage().getInRange() + player.getComputedStats().getStr();
         }
 
         // Read effect from item data

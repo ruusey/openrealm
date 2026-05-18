@@ -90,7 +90,7 @@ public class Enemy extends Entity {
         this.stats.setHp(stats.getHp());
         this.stats.setMp(stats.getMp());
         this.stats.setDef(stats.getDef());
-        this.stats.setAtt(stats.getAtt());
+        this.stats.setStr(stats.getStr());
         this.stats.setSpd(stats.getSpd());
         this.stats.setDex(stats.getDex());
         this.stats.setVit(stats.getVit());

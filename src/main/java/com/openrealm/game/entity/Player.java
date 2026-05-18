@@ -22,6 +22,7 @@ import com.openrealm.game.entity.item.Enchantment;
 import com.openrealm.game.entity.item.GameItem;
 import com.openrealm.game.entity.item.LootContainer;
 import com.openrealm.game.entity.item.Stats;
+import com.openrealm.game.metrics.PlayerMetrics;
 import com.openrealm.game.model.ability.Ability;
 import com.openrealm.game.model.ability.AbilityTree;
 import com.openrealm.game.model.ability.PassiveAbility;
@@ -126,8 +127,7 @@ public class Player extends Entity {
 	 *  flushed to the data service every persistence tick; the absolute
 	 *  totals live in Mongo, not on the player object. */
 	@Builder.Default
-	private transient com.openrealm.game.metrics.PlayerMetrics metrics =
-			new com.openrealm.game.metrics.PlayerMetrics();
+	private transient PlayerMetrics metrics = new PlayerMetrics();
 	@Builder.Default
 	private transient int[] hotbarBindings = new int[]{0, 0, 0, 0};
 	// Phase 2D: counter for on-basic-attack passives (e.g. Wizard's Arcane
@@ -154,7 +154,7 @@ public class Player extends Entity {
 			int lastInputSeq, int lastProcessedInputSeq, float currentVx, float currentVy,
 			Queue<float[]> inputQueue, int hpPotions, int mpPotions, int dyeId, long cachedAccountFame,
 			long[] abilityCooldowns, CastState currentCast,
-			com.openrealm.game.metrics.PlayerMetrics metrics,
+			PlayerMetrics metrics,
 			int[] hotbarBindings, int basicAttackCounter,
 			int availableSkillPoints, Map<Integer, Integer> abilitySkillPoints) {
 		super(0, null, 0);
@@ -185,7 +185,7 @@ public class Player extends Entity {
 		// still get a usable Player (matches the field initializers).
 		this.abilityCooldowns = abilityCooldowns != null ? abilityCooldowns : new long[4];
 		this.currentCast = currentCast;
-		this.metrics = metrics != null ? metrics : new com.openrealm.game.metrics.PlayerMetrics();
+		this.metrics = metrics != null ? metrics : new PlayerMetrics();
 		this.hotbarBindings = hotbarBindings != null ? hotbarBindings : new int[]{0, 0, 0, 0};
 		this.basicAttackCounter = basicAttackCounter;
 		this.availableSkillPoints = availableSkillPoints;
@@ -249,7 +249,7 @@ public class Player extends Entity {
 		this.stats.setHp(stats.getHp().shortValue());
 		this.stats.setMp(stats.getMp().shortValue());
 		this.stats.setDef(stats.getDef().shortValue());
-		this.stats.setAtt(stats.getAtt().shortValue());
+		this.stats.setStr(stats.getStr().shortValue());
 		this.stats.setSpd(stats.getSpd().shortValue());
 		this.stats.setDex(stats.getDex().shortValue());
 		this.stats.setVit(stats.getVit().shortValue());
@@ -295,7 +295,7 @@ public class Player extends Entity {
 	public CharacterStatsDto serializeStats() {
 		return CharacterStatsDto.builder().xp(this.getExperience()).hp(Integer.valueOf((int) this.stats.getHp()))
 				.mp(Integer.valueOf((int) this.stats.getMp())).def(Integer.valueOf((int) this.stats.getDef()))
-				.att(Integer.valueOf((int) this.stats.getAtt())).spd(Integer.valueOf((int) this.stats.getSpd()))
+				.str(Integer.valueOf((int) this.stats.getStr())).spd(Integer.valueOf((int) this.stats.getSpd()))
 				.dex(Integer.valueOf((int) this.stats.getDex())).vit(Integer.valueOf((int) this.stats.getVit()))
 				.wis(Integer.valueOf((int) this.stats.getWis())).hpPotions(this.hpPotions).mpPotions(this.mpPotions)
 				.dyeId(Integer.valueOf(this.dyeId))
@@ -510,12 +510,12 @@ public class Player extends Entity {
 			float mpMult = 1.0f;
 			if (this.hasEffect(StatusEffectType.MANA_FOUNT)) mpMult = 2.0f;
 			// "Muscle for Brains" (Heavy DPS, passive 11016) swaps the regen
-			// driver from WIS to ATT. A heavy-armor warrior gets MP back from
+			// driver from WIS to STR. A heavy-armor warrior gets MP back from
 			// their physical stat rather than the magic stat they don't invest
 			// in. Any other class regens off WIS as before.
 			final PassiveAbility classPassive = this.getClassPassive();
 			final int regenStat = (classPassive != null && classPassive.getId() == 11016)
-					? stats.getAtt() : stats.getWis();
+					? stats.getStr() : stats.getWis();
 			final int regen = (int) ((0.12f * (regenStat + 4.2f)) * mpMult);
 			if (this.getMana() < stats.getMp()) {
 				int targetMana = this.getMana() + regen;
@@ -566,7 +566,7 @@ public class Player extends Entity {
 		if (scalePctByStat[1] != 0) stats.setWis((short) (stats.getWis() + (stats.getWis() * scalePctByStat[1]) / 100));
 		if (scalePctByStat[2] != 0) stats.setHp(stats.getHp() + (stats.getHp() * scalePctByStat[2]) / 100);
 		if (scalePctByStat[3] != 0) stats.setMp((short) (stats.getMp() + (stats.getMp() * scalePctByStat[3]) / 100));
-		if (scalePctByStat[4] != 0) stats.setAtt((short) (stats.getAtt() + (stats.getAtt() * scalePctByStat[4]) / 100));
+		if (scalePctByStat[4] != 0) stats.setStr((short) (stats.getStr() + (stats.getStr() * scalePctByStat[4]) / 100));
 		if (scalePctByStat[5] != 0) stats.setDef((short) (stats.getDef() + (stats.getDef() * scalePctByStat[5]) / 100));
 		if (scalePctByStat[6] != 0) stats.setSpd((short) (stats.getSpd() + (stats.getSpd() * scalePctByStat[6]) / 100));
 		if (scalePctByStat[7] != 0) stats.setDex((short) (stats.getDex() + (stats.getDex() * scalePctByStat[7]) / 100));
@@ -584,14 +584,14 @@ public class Player extends Entity {
 			stats.setVit((short) Math.min(Short.MAX_VALUE, stats.getVit() + 5));
 		}
 		// Heavy Buffer Guiding Light — split into two parallel statuses
-		// (EMPOWERED_ATT, EMPOWERED_DEX) so the UI can stack two distinct
+		// (EMPOWERED_STR, EMPOWERED_DEX) so the UI can stack two distinct
 		// icons over the player's head. The aura tick always applies both
 		// with the same magnitude (caster.WIS / divisor), but reading
 		// them separately means future kits can grant only one half if
 		// the design ever wants it.
-		if (this.hasEffect(StatusEffectType.EMPOWERED_ATT)) {
-			final short bonus = this.getEffectMagnitude(StatusEffectType.EMPOWERED_ATT);
-			if (bonus > 0) stats.setAtt((short) Math.min(Short.MAX_VALUE, stats.getAtt() + bonus));
+		if (this.hasEffect(StatusEffectType.EMPOWERED_STR)) {
+			final short bonus = this.getEffectMagnitude(StatusEffectType.EMPOWERED_STR);
+			if (bonus > 0) stats.setStr((short) Math.min(Short.MAX_VALUE, stats.getStr() + bonus));
 		}
 		if (this.hasEffect(StatusEffectType.EMPOWERED_DEX)) {
 			final short bonus = this.getEffectMagnitude(StatusEffectType.EMPOWERED_DEX);
@@ -606,7 +606,7 @@ public class Player extends Entity {
 		case 1: stats.setWis((short) (stats.getWis() + delta)); break;
 		case 2: stats.setHp(stats.getHp() + delta); break;
 		case 3: stats.setMp((short) (stats.getMp() + delta)); break;
-		case 4: stats.setAtt((short) (stats.getAtt() + delta)); break;
+		case 4: stats.setStr((short) (stats.getStr() + delta)); break;
 		case 5: stats.setDef((short) (stats.getDef() + delta)); break;
 		case 6: stats.setSpd((short) (stats.getSpd() + delta)); break;
 		case 7: stats.setDex((short) (stats.getDex() + delta)); break;
@@ -694,7 +694,7 @@ public class Player extends Entity {
 			maxed = this.stats.getDef() >= maxStats.getDef();
 			break;
 		case 3:
-			maxed = this.stats.getAtt() >= maxStats.getAtt();
+			maxed = this.stats.getStr() >= maxStats.getStr();
 			break;
 		case 4:
 			maxed = this.stats.getSpd() >= maxStats.getSpd();
@@ -720,7 +720,7 @@ public class Player extends Entity {
 		} else if (((item.getStats().getMp() > 0) && this.isStatMaxed(1))
 				|| ((item.getStats().getDef() > 0) && this.isStatMaxed(2))) {
 			canConsume = false;
-		} else if (((item.getStats().getAtt() > 0) && this.isStatMaxed(3))
+		} else if (((item.getStats().getStr() > 0) && this.isStatMaxed(3))
 				|| ((item.getStats().getSpd() > 0) && this.isStatMaxed(4))) {
 			canConsume = false;
 		} else if (((item.getStats().getDex() > 0) && this.isStatMaxed(5))

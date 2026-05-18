@@ -13,7 +13,7 @@ public class Stats {
     private int hp;
     private short mp;
     private short def;
-    private short att;
+    private short str;
     private short spd;
     private short dex;
     private short vit;
@@ -24,7 +24,7 @@ public class Stats {
         if (other == null)
             return this;
         return Stats.builder().hp(this.hp + other.getHp()).mp((short) (this.mp + other.getMp()))
-                .def((short) (this.def + other.getDef())).att((short) (this.att + other.getAtt()))
+                .def((short) (this.def + other.getDef())).str((short) (this.str + other.getStr()))
                 .spd((short) (this.spd + other.getSpd())).dex((short) (this.dex + other.getDex()))
                 .vit((short) (this.vit + other.getVit())).wis((short) (this.wis + other.getWis())).build();
     }
@@ -33,7 +33,7 @@ public class Stats {
         if (other == null)
             return this;
         return Stats.builder().hp(this.hp - other.getHp()).mp((short) (this.mp - other.getMp()))
-                .def((short) (this.def - other.getDef())).att((short) (this.att - other.getAtt()))
+                .def((short) (this.def - other.getDef())).str((short) (this.str - other.getStr()))
                 .spd((short) (this.spd - other.getSpd())).dex((short) (this.dex - other.getDex()))
                 .vit((short) (this.vit - other.getVit())).wis((short) (this.wis - other.getWis())).build();
     }
@@ -41,7 +41,7 @@ public class Stats {
     @Override
     public Stats clone() {
         return Stats.builder().hp(this.hp).mp(this.mp).def(this.def)
-                .att(this.att).spd(this.spd).dex(this.dex).vit(this.vit)
+                .str(this.str).spd(this.spd).dex(this.dex).vit(this.vit)
                 .wis(this.wis).build();
     }
 

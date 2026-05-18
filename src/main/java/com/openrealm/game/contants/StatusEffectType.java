@@ -83,14 +83,14 @@ public enum StatusEffectType {
      *  extra loot-tier roll bias is applied for whichever player tagged
      *  it. Pure server-side bookkeeping; no visible aura. */
     MARKED_FOR_LOOT((short) 33),
-    /** Heavy Buffer "Guiding Light" aura — ATT half. Adds a flat bonus to
-     *  the holder's ATT equal to the per-instance magnitude (caster's
+    /** Heavy Buffer "Guiding Light" aura — STR half. Adds a flat bonus to
+     *  the holder's STR equal to the per-instance magnitude (caster's
      *  WIS/5). Paired with EMPOWERED_DEX so both icons show separately
      *  above the player's head; the aura applies both at once. */
-    EMPOWERED_ATT((short) 34),
+    EMPOWERED_STR((short) 34),
     /** Heavy Buffer "Guiding Light" aura — DEX half. Mirrors
-     *  EMPOWERED_ATT but adds to DEX. Always applied alongside
-     *  EMPOWERED_ATT — two-icon UI is intentional. */
+     *  EMPOWERED_STR but adds to DEX. Always applied alongside
+     *  EMPOWERED_STR — two-icon UI is intentional. */
     EMPOWERED_DEX((short) 35);
 
     public static Map<Short, StatusEffectType> map = new HashMap<>();

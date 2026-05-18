@@ -1155,11 +1155,11 @@ public class Realm {
      * will reflect only what actually shipped). Difficulty is computed
      * from {@code originForDifficulty} when non-null.
      */
-    public LoadPacket buildLoadPacketForIds(java.util.Collection<Long> playerIds,
-                                            java.util.Collection<Long> enemyIds,
-                                            java.util.Collection<Long> bulletIds,
-                                            java.util.Collection<Long> containerIds,
-                                            java.util.Collection<Long> portalIds,
+    public LoadPacket buildLoadPacketForIds(Collection<Long> playerIds,
+                                            Collection<Long> enemyIds,
+                                            Collection<Long> bulletIds,
+                                            Collection<Long> containerIds,
+                                            Collection<Long> portalIds,
                                             Vector2f originForDifficulty) {
         try {
             final List<Player> ps = new ArrayList<>(playerIds.size());
@@ -2190,8 +2190,8 @@ public class Realm {
                 final float cx = clone.getPos().x + clone.getSize() / 2f;
                 final float cy = clone.getPos().y + clone.getSize() / 2f;
                 mgr.enqueueServerPacketToRealm(this,
-                        com.openrealm.net.client.packet.CreateEffectPacket.aoeEffect(
-                                com.openrealm.net.client.packet.CreateEffectPacket.EFFECT_SMOKE_POOF,
+                        CreateEffectPacket.aoeEffect(
+                                CreateEffectPacket.EFFECT_SMOKE_POOF,
                                 cx, cy, 40f, (short) 600));
                 this.removePlayer(clone);
                 it.remove();

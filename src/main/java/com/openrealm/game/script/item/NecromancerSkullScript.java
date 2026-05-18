@@ -58,7 +58,7 @@ public class NecromancerSkullScript extends UseableItemScriptBase {
         final Vector2f center = (targetPos != null) ? targetPos : player.getPos().clone(player.getSize() / 2, player.getSize() / 2);
 
         int tier = abilityItem.getItemId() - MIN_ID;
-        short baseDamage = (short) (DAMAGE_BY_TIER[tier] + player.getComputedStats().getAtt());
+        short baseDamage = (short) (DAMAGE_BY_TIER[tier] + player.getComputedStats().getStr());
         float radius = RADIUS_BY_TIER[tier];
         int healAmount = HEAL_BY_TIER[tier];
 

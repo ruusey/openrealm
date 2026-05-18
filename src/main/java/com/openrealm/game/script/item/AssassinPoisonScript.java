@@ -56,13 +56,13 @@ public class AssassinPoisonScript extends UseableItemScriptBase {
         final int totalDamage;
         final long poisonDuration;
         if (abilityItem.getItemId() == SOULROT_VIAL_ID) {
-            // Untiered Soulrot: flat 1000 + att, ticks over 10s. Wider damage
+            // Untiered Soulrot: flat 1000 + str, ticks over 10s. Wider damage
             // window than the tiered poisons but no scaling.
-            totalDamage = 1000 + player.getComputedStats().getAtt();
+            totalDamage = 1000 + player.getComputedStats().getStr();
             poisonDuration = 10000;
         } else {
             int tier = abilityItem.getItemId() - MIN_ID;
-            totalDamage = 150 + tier * 150 + player.getComputedStats().getAtt();
+            totalDamage = 150 + tier * 150 + player.getComputedStats().getStr();
             poisonDuration = 3000 + tier * 250;
         }
 

@@ -41,13 +41,13 @@ public class ServerForgeHelper {
     public static final int UNIVERSAL_ESSENCE_ITEM_ID = 820;
 
     // Pixel colors used to paint the forged pixel onto the item sprite, by statId 0..7.
-    // ARGB format: 0xAARRGGBB. statId order matches Stats: VIT, WIS, HP, MP, ATT, DEF, SPD, DEX.
+    // ARGB format: 0xAARRGGBB. statId order matches Stats: VIT, WIS, HP, MP, STR, DEF, SPD, DEX.
     public static final int[] STAT_COLORS = new int[] {
             0xFFC81F1F, // VIT red
             0xFF3F6CFF, // WIS blue
             0xFFF0A3A3, // HP pink
             0xFFA070D8, // MP purple
-            0xFFC850DC, // ATT magenta
+            0xFFC850DC, // STR magenta
             0xFF1A1A1A, // DEF black
             0xFF5FD06F, // SPD green
             0xFFF08C2C  // DEX orange
@@ -62,9 +62,9 @@ public class ServerForgeHelper {
     public static final int ENCHANT_ESSENCE_COST = 50;
     public static final int SHARDS_PER_CRYSTAL = 10;
     // HP and MP scale into the hundreds, so a +1 enchantment is essentially
-    // invisible — non-pool stats (VIT/WIS/ATT/DEF/SPD/DEX) cap at 75-ish and
+    // invisible — non-pool stats (VIT/WIS/STR/DEF/SPD/DEX) cap at 75-ish and
     // every point matters. Boost HP/MP enchant magnitude to keep parity.
-    // statId order: 0=VIT 1=WIS 2=HP 3=MP 4=ATT 5=DEF 6=SPD 7=DEX
+    // statId order: 0=VIT 1=WIS 2=HP 3=MP 4=STR 5=DEF 6=SPD 7=DEX
     public static final int HP_MP_ENCHANT_DELTA = 5;
     public static final int DEFAULT_ENCHANT_DELTA = 1;
 

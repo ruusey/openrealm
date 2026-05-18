@@ -52,7 +52,7 @@ public class Ability {
     /**
      * Phase 3: when > 0, server uses this as the bullet's base damage instead
      * of the legacy item's getInRange roll. Scalings with target=DAMAGE add
-     * on top. Player ATT is NOT auto-added (unlike legacy basics) — design
+     * on top. Player STR is NOT auto-added (unlike legacy basics) — design
      * intent is to let the Ability fully control damage from data.
      */
     private int baseDamage;

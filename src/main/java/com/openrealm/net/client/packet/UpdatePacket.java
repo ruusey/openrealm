@@ -128,7 +128,7 @@ public class UpdatePacket extends Packet {
 		light.setPlayerId(player.getId());
 		light.setPlayerName(player.getName());
 		// getComputedStats() so the wire reflects active aura/buff modifiers
-		// (PROTECTED +5 VIT, EMPOWERED +ATT/DEX, BRACED x1.5 DEF, etc.). Raw
+		// (PROTECTED +5 VIT, EMPOWERED +STR/DEX, BRACED x1.5 DEF, etc.). Raw
 		// stats are server-side bookkeeping for level-up math; the client
 		// renders what the player effectively HAS right now.
 		light.setStats(NetStats.fromStats(player.getComputedStats()));

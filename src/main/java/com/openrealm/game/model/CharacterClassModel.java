@@ -52,9 +52,9 @@ public class CharacterClassModel {
         int dexRange = (difference.getDex() / expModel.maxLevel()) + 1;
         if (dexRange < 0)
             dexRange = 1;
-        int attRange = (difference.getAtt() / expModel.maxLevel()) + 1;
-        if (attRange < 0)
-            attRange = 1;
+        int strRange = (difference.getStr() / expModel.maxLevel()) + 1;
+        if (strRange < 0)
+            strRange = 1;
         int wisRange = (difference.getWis() / expModel.maxLevel()) + 1;
         if (wisRange < 0)
             wisRange = 1;
@@ -67,12 +67,12 @@ public class CharacterClassModel {
         int randomMp = mpRange / 3 + Realm.RANDOM.nextInt(mpRange - mpRange / 3 + 1);
         int randomSpd = Math.max(1, spdRange / 3) + Realm.RANDOM.nextInt(Math.max(1, spdRange - spdRange / 3));
         int randomDex = Math.max(1, dexRange / 3) + Realm.RANDOM.nextInt(Math.max(1, dexRange - dexRange / 3));
-        int randomAtt = Math.max(1, attRange / 3) + Realm.RANDOM.nextInt(Math.max(1, attRange - attRange / 3));
+        int randomStr = Math.max(1, strRange / 3) + Realm.RANDOM.nextInt(Math.max(1, strRange - strRange / 3));
         int randomWis = Math.max(1, wisRange / 3) + Realm.RANDOM.nextInt(Math.max(1, wisRange - wisRange / 3));
         int randomVit = Math.max(1, vitRange / 3) + Realm.RANDOM.nextInt(Math.max(1, vitRange - vitRange / 3));
 
         // Return a random stat increase with the defense always being 0
-        return new Stats((short) randomHp, (short) randomMp, (short) 0, (short) randomAtt, (short) randomSpd,
+        return new Stats((short) randomHp, (short) randomMp, (short) 0, (short) randomStr, (short) randomSpd,
                 (short) randomDex, (short) randomVit, (short) randomWis);
     }
 
@@ -85,7 +85,7 @@ public class CharacterClassModel {
         if (combined.getMp() <= 0) {
             count++;
         }
-        if (combined.getAtt() <= 0) {
+        if (combined.getStr() <= 0) {
             count++;
         }
         if (combined.getDef() <= 0) {

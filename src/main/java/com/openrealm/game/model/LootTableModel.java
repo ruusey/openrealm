@@ -25,7 +25,7 @@ public class LootTableModel {
     private Map<String, Float> drops;
     private Map<String, Float> portalDrops;
 
-    // Shard itemIds 800..807 (vit, wis, hp, mp, att, def, spd, dex)
+    // Shard itemIds 800..807 (vit, wis, hp, mp, str, def, spd, dex)
     private static final int SHARD_ITEM_BASE = 800;
     // Essence itemIds 816..819 (weapon, ability, armor, ring)
     private static final int ESSENCE_ITEM_BASE = 816;
@@ -48,7 +48,7 @@ public class LootTableModel {
             if ("group".equals(prefix)) {
                 final LootGroupModel lootGroup = GameDataManager.LOOT_GROUPS.get(this.getLootGroupId(key));
                 if (lootGroup == null) continue;
-                final java.util.List<Integer> potentialDrops = lootGroup.getPotentialDrops();
+                final List<Integer> potentialDrops = lootGroup.getPotentialDrops();
                 // Empty loot group (no potentialDrops entries) — was throwing
                 // Random.nextInt(0) IllegalArgumentException at enemy death,
                 // which aborted enemyDeath() mid-flight and left the dead

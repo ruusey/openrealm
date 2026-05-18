@@ -25,7 +25,7 @@ public class NetStats extends SerializableFieldType<NetStats> {
 	@SerializableField(order = 2, type = SerializableShort.class)
 	private short def;
 	@SerializableField(order = 3, type = SerializableShort.class)
-	private short att;
+	private short str;
 	@SerializableField(order = 4, type = SerializableShort.class)
 	private short spd;
 	@SerializableField(order = 5, type = SerializableShort.class)
@@ -39,7 +39,7 @@ public class NetStats extends SerializableFieldType<NetStats> {
 		this.hp = 0;
 		this.mp = 0;
 		this.def = 0;
-		this.att = 0;
+		this.str = 0;
 		this.spd = 0;
 		this.dex = 0;
 		this.vit = 0;
@@ -53,7 +53,7 @@ public class NetStats extends SerializableFieldType<NetStats> {
 		stream.writeInt(v.hp);
 		stream.writeShort(v.mp);
 		stream.writeShort(v.def);
-		stream.writeShort(v.att);
+		stream.writeShort(v.str);
 		stream.writeShort(v.spd);
 		stream.writeShort(v.dex);
 		stream.writeShort(v.vit);
@@ -77,14 +77,14 @@ public class NetStats extends SerializableFieldType<NetStats> {
 		if (stats == null) return new NetStats();
 		return new NetStats(
 			stats.getHp(), (short) stats.getMp(),
-			(short) stats.getDef(), (short) stats.getAtt(),
+			(short) stats.getDef(), (short) stats.getStr(),
 			(short) stats.getSpd(), (short) stats.getDex(),
 			(short) stats.getVit(), (short) stats.getWis()
 		);
 	}
 
 	public Stats asStats() {
-		return Stats.builder().hp(this.hp).mp(this.mp).def(this.def).att(this.att).spd(this.spd).dex(this.dex)
+		return Stats.builder().hp(this.hp).mp(this.mp).def(this.def).str(this.str).spd(this.spd).dex(this.dex)
 				.vit(this.vit).wis(this.wis).build();
 	}
 

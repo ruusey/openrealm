@@ -1,6 +1,7 @@
 package com.openrealm.game.entity;
 
 import java.time.Instant;
+import java.util.Set;
 
 import com.openrealm.game.contants.StatusEffectType;
 import com.openrealm.game.math.Rectangle;
@@ -121,7 +122,7 @@ public abstract class Entity extends GameObject {
      *  WARDED / VULNERABLE gates in addEffect. Beneficial statuses (HEALING,
      *  SPEEDY, INVINCIBLE, PROTECTED, BRACED, ARMORED, MANA_FOUNT, etc.) are
      *  NOT in this set so they apply normally even on warded targets. */
-    private static final java.util.Set<Short> DEBUFF_IDS = java.util.Set.of(
+    private static final Set<Short> DEBUFF_IDS = Set.of(
             StatusEffectType.PARALYZED.effectId,
             StatusEffectType.STUNNED.effectId,
             StatusEffectType.DAZED.effectId,

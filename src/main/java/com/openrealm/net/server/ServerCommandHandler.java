@@ -54,8 +54,14 @@ import com.openrealm.game.model.RealmEventModel;
 import com.openrealm.game.tile.Tile;
 import com.openrealm.net.messaging.CommandType;
 import com.openrealm.net.messaging.ServerCommandMessage;
+import com.openrealm.net.client.packet.LoadPacket;
 import com.openrealm.net.client.packet.UnloadPacket;
 import com.openrealm.net.client.packet.UpdatePacket;
+import com.openrealm.net.entity.NetBullet;
+import com.openrealm.net.entity.NetEnemy;
+import com.openrealm.net.entity.NetLootContainer;
+import com.openrealm.net.entity.NetPlayer;
+import com.openrealm.net.entity.NetPortal;
 import com.openrealm.net.party.PartyManager;
 import com.openrealm.net.realm.Realm;
 import com.openrealm.net.realm.RealmManagerServer;
@@ -207,8 +213,8 @@ public class ServerCommandHandler {
         case "mp":
             target.getStats().setMp(valueToSet);
             break;
-        case "att":
-            target.getStats().setAtt(valueToSet);
+        case "str":
+            target.getStats().setStr(valueToSet);
             break;
         case "def":
             target.getStats().setDef(valueToSet);
@@ -479,15 +485,14 @@ public class ServerCommandHandler {
         try {
             final Realm rebroadcastRealm = mgr.findPlayerRealm(target.getId());
             if (rebroadcastRealm != null) {
-                final com.openrealm.net.entity.NetPlayer net =
-                        com.openrealm.net.entity.NetPlayer.fromPlayer(target);
-                final com.openrealm.net.client.packet.LoadPacket resizeBroadcast =
-                        new com.openrealm.net.client.packet.LoadPacket(
-                                new com.openrealm.net.entity.NetPlayer[]{ net },
-                                new com.openrealm.net.entity.NetEnemy[0],
-                                new com.openrealm.net.entity.NetBullet[0],
-                                new com.openrealm.net.entity.NetLootContainer[0],
-                                new com.openrealm.net.entity.NetPortal[0],
+                final NetPlayer net = NetPlayer.fromPlayer(target);
+                final LoadPacket resizeBroadcast =
+                        new LoadPacket(
+                                new NetPlayer[]{ net },
+                                new NetEnemy[0],
+                                new NetBullet[0],
+                                new NetLootContainer[0],
+                                new NetPortal[0],
                                 (byte) 0);
                 for (final Map.Entry<Long, Player> entry : rebroadcastRealm.getPlayers().entrySet()) {
                     final Player p = entry.getValue();

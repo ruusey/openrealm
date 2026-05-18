@@ -1,5 +1,6 @@
 package com.openrealm.game.metrics;
 
+import java.util.HashMap;
 import java.util.Map;
 
 import lombok.AllArgsConstructor;
@@ -85,7 +86,7 @@ public class MetricsDeltaDto {
 
     private static Map<String, Long> stringifyShort(Map<Short, Long> in) {
         if (in == null || in.isEmpty()) return null;
-        final java.util.HashMap<String, Long> out = new java.util.HashMap<>(in.size());
+        final HashMap<String, Long> out = new HashMap<>(in.size());
         for (Map.Entry<Short, Long> e : in.entrySet()) {
             out.put(String.valueOf(e.getKey()), e.getValue());
         }
@@ -93,7 +94,7 @@ public class MetricsDeltaDto {
     }
     private static Map<String, Long> stringifyInt(Map<Integer, Long> in) {
         if (in == null || in.isEmpty()) return null;
-        final java.util.HashMap<String, Long> out = new java.util.HashMap<>(in.size());
+        final HashMap<String, Long> out = new HashMap<>(in.size());
         for (Map.Entry<Integer, Long> e : in.entrySet()) {
             out.put(String.valueOf(e.getKey()), e.getValue());
         }

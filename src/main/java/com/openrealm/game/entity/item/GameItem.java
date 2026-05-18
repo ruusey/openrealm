@@ -47,7 +47,7 @@ public class GameItem extends SpriteModel {
     // Item category — used by forge & stacking. "generic", "shard", "crystal", "essence", "gem"
     @Builder.Default
     private String category = "generic";
-    // For shards/crystals: 0=VIT 1=WIS 2=HP 3=MP 4=ATT 5=DEF 6=SPD 7=DEX. -1 if N/A.
+    // For shards/crystals: 0=VIT 1=WIS 2=HP 3=MP 4=STR 5=DEF 6=SPD 7=DEX. -1 if N/A.
     @Builder.Default
     private byte forgeStatId = -1;
     // For essence: 0=weapon 1=ability 2=armor 3=ring. -1 if N/A.
