@@ -72,13 +72,18 @@ jobs:
       # produces a single runnable fat jar. Tests skipped on the sibling
       # repos since openrealm-data's Spring tests may want a live Mongo
       # and openrealm-native-client's tests aren't release-gating.
+      # Use `install` (not `package`) so the openrealm jar lands in the
+      # runner's local Maven repo. openrealm-data declares openrealm as a
+      # compile dependency — without an `install` first, the data build
+      # falls back to Maven Central, which doesn't host this project,
+      # and the whole bundle release fails with "Could not find artifact".
       - name: Build openrealm (server)
         working-directory: openrealm
-        run: mvn -B package --file pom.xml
+        run: mvn -B install --file pom.xml
 
       - name: Build openrealm-native-client
         working-directory: openrealm-native-client
-        run: mvn -B package -DskipTests --file pom.xml
+        run: mvn -B install -DskipTests --file pom.xml
 
       - name: Build openrealm-data
         working-directory: openrealm-data
