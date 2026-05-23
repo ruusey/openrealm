@@ -4,7 +4,7 @@
 	<modelVersion>4.0.0</modelVersion>
 	<groupId>com.openrealm.game</groupId>
 	<artifactId>openrealm</artifactId>
-	<version>0.6.0</version>
+	<version>0.7.0</version>
 	<name>openrealm</name>
 	<description>Game Server for OpenRealm</description>
 	<properties>
