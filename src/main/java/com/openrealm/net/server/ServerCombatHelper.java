@@ -292,13 +292,17 @@ public final class ServerCombatHelper {
                 if (g != null) g.onHitTarget(srcP, e, b, dmgToInflict, srcP.getInventory()[0]);
             }
         }
-        // Piercing flag: pass-through enemies get one-hit-per-enemy de-dup via
-        // hasHitEnemy; player projectiles without pierce stay alive for one
-        // additional enemy; everything else expires on first contact.
+        // Piercing flag is now the ONLY way a bullet survives multiple
+        // enemy hits — pass-through bullets get one-hit-per-enemy de-dup
+        // via hasHitEnemy. Everything else (including PLAYER_PROJECTILE
+        // without pierce) expires on first contact. The legacy "+1 extra
+        // pierce for player projectiles" rule was making non-piercing
+        // wand/staff/sword shots damage the enemy directly behind the
+        // first hit — invisible client-side because the predicted bullet
+        // de-renders correctly, but server-authoritative damage applied
+        // to ghosts.
         if (b.hasFlag(ProjectileFlag.PASS_THROUGH_ENEMIES)) {
             if (!b.isEnemyHit()) b.setEnemyHit(true);
-        } else if (b.hasFlag(ProjectileFlag.PLAYER_PROJECTILE) && !b.isEnemyHit()) {
-            b.setEnemyHit(true);
         } else {
             targetRealm.getExpiredBullets().add(b.getId());
             targetRealm.removeBullet(b);
