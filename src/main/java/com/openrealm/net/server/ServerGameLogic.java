@@ -1178,9 +1178,6 @@ public class ServerGameLogic {
 			return false;
 		}
 		if (actualPlayer.getId() != declaredPlayerId) {
-			// Logged with full identity so a re-login that immediately
-			// disconnects with "player ID mismatch" is debuggable from a
-			// single log line — previously we only had the raw ids.
 			log.warn("[SERVER] validateCallingPlayer mismatch — packet={} from srcIp={}, "
 					+ "actualPlayer={} (id={}), declaredId={}, accountUuid={}",
 				packet.getClass().getSimpleName(), packet.getSrcIp(),
