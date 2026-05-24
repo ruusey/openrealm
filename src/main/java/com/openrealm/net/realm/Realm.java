@@ -67,6 +67,11 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class Realm {
     public static final transient SecureRandom RANDOM = new SecureRandom();
+    private static final long POISON_TICK_INTERVAL_MS = 200;
+    // Cap is hit only under stress; we sort by distance first so truncation
+    // is deterministic and doesn't flicker with HashSet iteration order.
+    private static final int MAX_BULLETS_PER_LOAD = 1000;
+    private static final int MAX_ENEMIES_PER_LOAD = 500;
     private long realmId;
     private int mapId;
     private String nodeId;
@@ -108,7 +113,6 @@ public class Realm {
     private transient RealmOverseer overseer;
 
     private final List<PoisonDotState> activePoisonDots = new ArrayList<>();
-    private static final long POISON_TICK_INTERVAL_MS = 200;
 
     private final List<PoisonThrowState> pendingPoisonThrows = new ArrayList<>();
     private final List<TrapState> activeTraps = new ArrayList<>();
@@ -118,12 +122,18 @@ public class Realm {
     private final List<CloneState> activeClones = new ArrayList<>();
     private final List<ActiveRealmEvent> activeRealmEvents = new ArrayList<>();
 
+    private boolean isServer;
+    private boolean shutdown = false;
+
+    // Flip to true ONLY after vault chests have been spawned, so serializeChestsForSave
+    // can refuse to wipe persisted chests if a save races with setup.
+    private volatile boolean chestsLoaded = false;
+
+    private float bulletScaleThisTick = 1.0f;
+
     public List<ActiveRealmEvent> getActiveRealmEvents() {
         return this.activeRealmEvents;
     }
-
-    private boolean isServer;
-    private boolean shutdown = false;
 
     public Realm(boolean isServer, int mapId) {
         this.realmId = Realm.RANDOM.nextLong();
@@ -172,10 +182,6 @@ public class Realm {
     public Set<Player> getPlayersExcept(long playerId){
     	return this.players.values().stream().filter(p->p.getId()!=playerId).collect(Collectors.toSet());
     }
-
-    // Flip to true ONLY after vault chests have been spawned, so serializeChestsForSave
-    // can refuse to wipe persisted chests if a save races with setup.
-    private volatile boolean chestsLoaded = false;
 
     public void setupChests(final Player player) {
         try {
@@ -645,11 +651,6 @@ public class Realm {
         BulletDist(Bullet b, float d) { this.bullet = b; this.distSq = d; }
     }
 
-    // Cap is hit only under stress; we sort by distance first so truncation
-    // is deterministic and doesn't flicker with HashSet iteration order.
-    private static final int MAX_BULLETS_PER_LOAD = 1000;
-    private static final int MAX_ENEMIES_PER_LOAD = 500;
-
     public LoadPacket getLoadPacketCircularFast(Vector2f center, float radius) {
         return getLoadPacketCircularFast(center, radius, -1);
     }
@@ -898,8 +899,6 @@ public class Realm {
             this.tickStrippedUpdateCache.clear();
         }
     }
-
-    private float bulletScaleThisTick = 1.0f;
 
     public void setBulletScaleThisTick(float scale) {
         this.bulletScaleThisTick = scale;

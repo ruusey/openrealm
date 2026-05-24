@@ -93,6 +93,8 @@ public class ServerGameLogic {
 	private static final long INVALID_WEAPON_WARN_INTERVAL_MS = 5000L;
 	public static final int WINDOW_WIDTH = 1920;
 	public static final int WINDOW_HEIGHT = 1080;
+	private static final byte LOGIN_REQUEST_MSG_CODE = 1;
+	private static final byte SERVER_COMMAND_MSG_CODE = 3;
 
 	public static OpenRealmServerDataService DATA_SERVICE = null;
 
@@ -778,9 +780,6 @@ public class ServerGameLogic {
 			log.error("[SERVER] handleTextServer broadcast failed: {}", e.getMessage(), e);
 		}
 	}
-	
-	private static final byte LOGIN_REQUEST_MSG_CODE = 1;
-	private static final byte SERVER_COMMAND_MSG_CODE = 3;
 	
 	public static void handleCommandServer(RealmManagerServer mgr, Packet packet) {
 		final CommandPacket commandPacket = (CommandPacket) packet;

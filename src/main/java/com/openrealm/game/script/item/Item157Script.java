@@ -16,6 +16,9 @@ import com.openrealm.net.realm.RealmManagerServer;
  */
 public class Item157Script extends UseableItemScriptBase {
 
+    // RotMG wiki heal values: T0=50, T1=90, T2=100, T3=110, T4=120, T5=130, T6=140
+    private static final int[] HEAL_BY_TIER = { 50, 90, 100, 110, 120, 130, 140 };
+
     public Item157Script(final RealmManagerServer mgr) {
         super(mgr);
     }
@@ -28,9 +31,6 @@ public class Item157Script extends UseableItemScriptBase {
     @Override
     public void invokeUseItem(final Realm targetRealm, final Player player, final GameItem item) {
     }
-
-    // RotMG wiki heal values: T0=50, T1=90, T2=100, T3=110, T4=120, T5=130, T6=140
-    private static final int[] HEAL_BY_TIER = { 50, 90, 100, 110, 120, 130, 140 };
 
     @Override
     public void invokeItemAbility(final Realm targetRealm, final Player player, final GameItem abilityItem) {

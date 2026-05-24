@@ -17,8 +17,6 @@ import com.openrealm.net.realm.Realm;
  * Weight tables and modifier bands rebalanced for the new low end.
  */
 public final class LootRarityRoller {
-    private LootRarityRoller() {}
-
     private static final int NUM_STATS = 8;
 
     // Default per-tier rarity weights, indexed by Rarity ordinal:
@@ -30,6 +28,8 @@ public final class LootRarityRoller {
             { 10f, 20f, 30f, 25f, 11f,  4f }, // tier 9–11
             {  3f, 12f, 25f, 30f, 20f, 10f }, // tier 12+
     };
+
+    private LootRarityRoller() {}
 
     private static int tierBand(int tier) {
         if (tier < 0) return 0;

@@ -231,18 +231,40 @@ public class RealmManagerServer implements Runnable {
 		(10f * GlobalConstants.BASE_TILE_SIZE) * (10f * GlobalConstants.BASE_TILE_SIZE);
 
 	private static final int MAX_ENEMY_BULLETS_PER_REALM = 10000;
+	private static final int MAX_NEW_ENEMIES_PER_LOAD = 500;
+	private static final int MAX_NEW_BULLETS_PER_LOAD = 1000;
+	private static final float MAX_AWAKE_RADIUS = 720f;
+
+	private static final int PROX_DORMANT = 0;
+	private static final int PROX_AWAKE = 1;
+	private static final int PROX_VISIBLE = 2;
+
+	private static final float PHALANX_RADIUS = 128f;
+	private static final float PHALANX_RADIUS_SQ = PHALANX_RADIUS * PHALANX_RADIUS;
+
+	private static final int MAX_PACKETS_PER_TICK = 200;
+	private static final Set<Class<? extends Packet>> PRIORITY_PACKETS = Set.of(
+			PlayerShootPacket.class,
+			PlayerMovePacket.class,
+			HeartbeatPacket.class,
+			CommandPacket.class
+	);
+
+	private static final long TICK_BUDGET_NANOS = 16_000_000L;
+	private long lastSlowTickLogMs = 0L;
+	private long updatePlayersNanos = 0L;
+	private long updateEnemiesNanos = 0L;
+	private long updateBulletsNanos = 0L;
+	private long updateGlobalNanos = 0L;
 
 	private boolean  isSetup = false;
-	
+
 	private long lastWriteSampleTime = Instant.now().toEpochMilli();
 	private final AtomicLong bytesWritten = new AtomicLong(0);
 	private final ConcurrentHashMap<String, AtomicLong> bytesWrittenByPacketType = new ConcurrentHashMap<>();
-	// Inbound bandwidth (post-compression, on-the-wire). Mirrors the
-	// outbound counters above so we can log a true read-rate that matches
-	// the bytes actually crossing the network.
 	private final AtomicLong bytesRead = new AtomicLong(0);
 	private final ConcurrentHashMap<String, AtomicLong> bytesReadByPacketType = new ConcurrentHashMap<>();
-	
+
 	public RealmManagerServer() { }
 
 	public void doRunServer() {
@@ -354,13 +376,6 @@ public class RealmManagerServer implements Runnable {
 		log.info("[SERVER] RealmManagerServer exiting run().");
 	}
 
-	private static final long TICK_BUDGET_NANOS = 16_000_000L;
-	private long lastSlowTickLogMs = 0L;
-	private long updPlayersNanos = 0L;
-	private long updEnemiesNanos = 0L;
-	private long updBulletsNanos = 0L;
-	private long updTailNanos = 0L;
-
 	private void tick() {
 		final long tickStart = System.nanoTime();
 		long tJoins = 0, tTransitions = 0, tPackets = 0, tUpdate = 0, tEnqueue = 0, tSend = 0, tOverseer = 0;
@@ -428,12 +443,12 @@ public class RealmManagerServer implements Runnable {
 					totalBullets += r.getBullets().size();
 					totalPlayers += r.getPlayers().size();
 				}
-				log.warn("[SERVER] slow tick: total={}ms (joins={}, trans={}, pkts={}, update={}[plyrs={},enems={},blts={},tail={}], enqueue={}, send={}, overseer={}) — realms={}, players={}, enemies={}, bullets={}",
+				log.warn("[SERVER] slow tick: total={}ms (joins={}, trans={}, pkts={}, update={}[plyrs={},enems={},blts={},global={}], enqueue={}, send={}, overseer={}) — realms={}, players={}, enemies={}, bullets={}",
 					tickTotal / 1_000_000,
 					tJoins / 1_000_000, tTransitions / 1_000_000, tPackets / 1_000_000,
 					tUpdate / 1_000_000,
-					this.updPlayersNanos / 1_000_000, this.updEnemiesNanos / 1_000_000,
-					this.updBulletsNanos / 1_000_000, this.updTailNanos / 1_000_000,
+					this.updatePlayersNanos / 1_000_000, this.updateEnemiesNanos / 1_000_000,
+					this.updateBulletsNanos / 1_000_000, this.updateGlobalNanos / 1_000_000,
 					tEnqueue / 1_000_000, tSend / 1_000_000, tOverseer / 1_000_000,
 					this.realms.size(), totalPlayers, totalEnemies, totalBullets);
 			}
@@ -953,23 +968,6 @@ public class RealmManagerServer implements Runnable {
 			toRemoveReasons.put(player, "heartbeat timeout (" + elapsed + "ms since last heartbeat)");
 		}
 	}
-
-	// Maximum packets to process per tick across all clients.
-	// Prevents ability spam from 25+ bots from starving the tick thread.
-	private static final int MAX_PACKETS_PER_TICK = 200;
-
-	// Packet types that get priority processing every tick — never throttled,
-	// never dropped, regardless of how saturated the rest of the queue is.
-	// CommandPacket is here so admin/console commands like /killbots stay
-	// responsive even when the server is overloaded with player input
-	// (otherwise a 40-player non-spam test floods the queue with moves and
-	// the operator can't recover the box).
-	private static final Set<Class<? extends Packet>> PRIORITY_PACKETS = Set.of(
-			PlayerShootPacket.class,
-			PlayerMovePacket.class,
-			HeartbeatPacket.class,
-			CommandPacket.class
-	);
 
 	public void processServerPackets() {
 		// Two-pass processing: priority packets first, then everything else (capped)
@@ -1532,13 +1530,14 @@ public class RealmManagerServer implements Runnable {
 
 	// Updates all game objects on the server
 	public void update(double time) {
-		this.updPlayersNanos = 0L;
-		this.updEnemiesNanos = 0L;
-		this.updBulletsNanos = 0L;
-		this.updTailNanos = 0L;
+		this.updatePlayersNanos = 0L;
+		this.updateEnemiesNanos = 0L;
+		this.updateBulletsNanos = 0L;
+		this.updateGlobalNanos = 0L;
 
 		for (final Realm realm : this.realms.values()) {
 			if (realm.getPlayers().isEmpty()) {
+				// Skip all processing if no players are present. No need to update that which no one can see
 				this.parkIdleRealmEnemies(realm);
 				continue;
 			}
@@ -1547,9 +1546,9 @@ public class RealmManagerServer implements Runnable {
 			this.tickRealmBullets(realm);
 		}
 
-		final long tailStart = System.nanoTime();
-		this.tickGlobalTail();
-		this.updTailNanos += System.nanoTime() - tailStart;
+		final long globalStart = System.nanoTime();
+		this.tickGlobal();
+		this.updateGlobalNanos += System.nanoTime() - globalStart;
 	}
 
 	private void parkIdleRealmEnemies(final Realm realm) {
@@ -1573,7 +1572,7 @@ public class RealmManagerServer implements Runnable {
 			this.movePlayer(realm.getRealmId(), live);
 			this.resolveCompletedCast(realm, live);
 		}
-		this.updPlayersNanos += System.nanoTime() - start;
+		this.updatePlayersNanos += System.nanoTime() - start;
 	}
 
 	// Clear currentCast BEFORE re-entering useAbility so the resolution path
@@ -1587,8 +1586,6 @@ public class RealmManagerServer implements Runnable {
 				new Vector2f(cs.getWorldTargetX(), cs.getWorldTargetY()),
 				(byte) cs.getSlot(), true);
 	}
-
-	private static final float MAX_AWAKE_RADIUS = 720f;
 
 	private void tickRealmEnemies(final Realm realm, final double time) {
 		final long start = System.nanoTime();
@@ -1609,7 +1606,7 @@ public class RealmManagerServer implements Runnable {
 			if (enemy == null) continue;
 			tickAwakeEnemy(realm, enemy, activePlayers, time, aiTick, moveFarTick);
 		}
-		this.updEnemiesNanos += System.nanoTime() - start;
+		this.updateEnemiesNanos += System.nanoTime() - start;
 	}
 
 	private static Set<Long> collectAwakeCandidates(final Realm realm, final Player[] activePlayers) {
@@ -1648,10 +1645,6 @@ public class RealmManagerServer implements Runnable {
 		}
 	}
 
-	private static final int PROX_DORMANT = 0;
-	private static final int PROX_AWAKE = 1;
-	private static final int PROX_VISIBLE = 2;
-
 	private static int classifyEnemyProximity(final Enemy enemy, final Player[] activePlayers) {
 		final float ex = enemy.getPos().x;
 		final float ey = enemy.getPos().y;
@@ -1673,10 +1666,10 @@ public class RealmManagerServer implements Runnable {
 		for (final Bullet bullet : realm.getBullets().values()) {
 			bullet.update(bulletScale);
 		}
-		this.updBulletsNanos += System.nanoTime() - start;
+		this.updateBulletsNanos += System.nanoTime() - start;
 	}
 
-	private void tickGlobalTail() {
+	private void tickGlobal() {
 		this.removeExpiredBullets();
 		this.removeExpiredLootContainers();
 		this.removeExpiredPortals();
@@ -1709,9 +1702,6 @@ public class RealmManagerServer implements Runnable {
 			if (sent.add(pid)) this.broadcastPartyUpdate(pid);
 		}
 	}
-
-	private static final float PHALANX_RADIUS = 128f;
-	private static final float PHALANX_RADIUS_SQ = PHALANX_RADIUS * PHALANX_RADIUS;
 
 	private void tickPhalanxDomes() {
 		final boolean refreshDomeVisual = (this.tickCounter % 12 == 0);
@@ -2090,11 +2080,6 @@ public class RealmManagerServer implements Runnable {
 	}
 
 	
-	// Caps apply only to the LOAD side — cap-trimmed IDs stay out of the
-	// ledger and the wire, so they never produce a spurious unload.
-	private static final int MAX_NEW_ENEMIES_PER_LOAD = 500;
-	private static final int MAX_NEW_BULLETS_PER_LOAD = 1000;
-
 	private static Set<Long> setDiff(final Set<Long> a, final Set<Long> b) {
 		if (a.isEmpty()) return new HashSet<>();
 		if (b.isEmpty()) return new HashSet<>(a);

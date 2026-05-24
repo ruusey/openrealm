@@ -67,6 +67,10 @@ public class Bullet extends GameObject  {
     private float cosAngle;
     private long lastUpdateNanos = System.nanoTime();
 
+    // 10-second lifetime ceiling (640 ticks @ 64Hz). Tick-counter based to
+    // avoid the wall-clock syscall that used to run per-bullet per-tick.
+    private static final long MAX_LIFETIME_TICKS = 640L;
+
     public Bullet() {
     	super(0l,null,0);
     }
@@ -183,10 +187,6 @@ public class Bullet extends GameObject  {
     public float getMagnitude() {
         return this.magnitude;
     }
-
-    // 10-second lifetime ceiling (640 ticks @ 64Hz). Tick-counter based to
-    // avoid the wall-clock syscall that used to run per-bullet per-tick.
-    private static final long MAX_LIFETIME_TICKS = 640L;
 
     public boolean remove() {
         return this.range <= 0.0;

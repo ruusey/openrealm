@@ -25,6 +25,13 @@ public abstract class GameObject {
 
     public boolean discovered;
 
+    private static final float SNAP_DISTANCE_SQ = (3 * 32) * (3 * 32);
+
+    protected float correctionOffsetX = 0f;
+    protected float correctionOffsetY = 0f;
+    private static final float CORRECTION_BLEND_RATE = 0.15f;
+    private static final float CORRECTION_SNAP_THRESHOLD_SQ = (3 * 32) * (3 * 32);
+
     public GameObject(long id, Vector2f origin, int spriteX, int spriteY, int size) {
         this(id, origin, size);
     }
@@ -69,8 +76,6 @@ public abstract class GameObject {
         this.pos = new Vector2f(lerpX, lerpY);
     }
 
-    private static final float SNAP_DISTANCE_SQ = (3 * 32) * (3 * 32);
-
     public void applyMovementLerp(NetObjectMovement packet, float pct) {
         float dx = packet.getPosX() - this.pos.x;
         float dy = packet.getPosY() - this.pos.y;
@@ -102,11 +107,6 @@ public abstract class GameObject {
         this.dx = packet.getVelX();
         this.dy = packet.getVelY();
     }
-
-    protected float correctionOffsetX = 0f;
-    protected float correctionOffsetY = 0f;
-    private static final float CORRECTION_BLEND_RATE = 0.15f;
-    private static final float CORRECTION_SNAP_THRESHOLD_SQ = (3 * 32) * (3 * 32);
 
     public void applyServerCorrection(NetObjectMovement packet) {
         float errorX = packet.getPosX() - this.pos.x;

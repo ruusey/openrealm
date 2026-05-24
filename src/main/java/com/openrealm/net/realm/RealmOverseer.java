@@ -33,6 +33,7 @@ public class RealmOverseer {
     private static final int EVENT_CHECK_INTERVAL_TICKS = 6400;
     private static final double REALM_EVENT_SPAWN_CHANCE = 0.15;
     private static final int MAX_CONCURRENT_EVENTS = 1;
+    private static final int EVENT_MARKER_INTERVAL_TICKS = 192;
 
     private final Realm realm;
     private final RealmManagerServer mgr;
@@ -348,8 +349,6 @@ public class RealmOverseer {
             event.getName(), tileX, tileY, boss.getId(), event.getDurationSeconds());
         return true;
     }
-
-    private static final int EVENT_MARKER_INTERVAL_TICKS = 192;
 
     /** Send "ADD|eventId|bossId|x|y|name" marker to all human players. */
     private void broadcastEventMarker(ActiveRealmEvent evt, Enemy boss, RealmEventModel eventModel) {

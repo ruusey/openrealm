@@ -40,12 +40,6 @@ public class ServerFameStoreHelper {
     public static final long DYE_FAME_COST = 500L;
     public static final long ITEM_FAME_COST = DYE_FAME_COST;
 
-    /** Whether the given itemId is sellable through the fame store. */
-    private static boolean isFameStoreItem(int itemId) {
-        return (itemId >= DYE_ITEM_MIN && itemId <= DYE_ITEM_MAX)
-            || (itemId >= CRYSTAL_ITEM_MIN && itemId <= CRYSTAL_ITEM_MAX);
-    }
-
     /**
      * itemId -> dyeId granted on use. Mirrors the dyeId field on each dye
      * item in game-items.json. Server stores only the opaque dye id; the
@@ -62,6 +56,12 @@ public class ServerFameStoreHelper {
         DYE_ITEM_TO_DYE_ID.put(826, 6); // orange
         DYE_ITEM_TO_DYE_ID.put(827, 7); // white
         DYE_ITEM_TO_DYE_ID.put(828, 8); // black
+    }
+
+    /** Whether the given itemId is sellable through the fame store. */
+    private static boolean isFameStoreItem(int itemId) {
+        return (itemId >= DYE_ITEM_MIN && itemId <= DYE_ITEM_MAX)
+            || (itemId >= CRYSTAL_ITEM_MIN && itemId <= CRYSTAL_ITEM_MAX);
     }
 
     /**
