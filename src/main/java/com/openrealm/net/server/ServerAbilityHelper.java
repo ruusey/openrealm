@@ -442,14 +442,13 @@ public final class ServerAbilityHelper {
 							(short) 0, (short) 0, player.getId());
 				}
 			}
-			int abDamage = 0;
-			if (ab.getBaseDamage() > 0) {
-				abDamage = ab.getBaseDamage();
-				for (AbilityScaling sc : ab.scalingList()) {
-					if (!"DAMAGE".equalsIgnoreCase(sc.getTarget())) continue;
-					final int statVal = resolveScalingInput(player, ab, sc);
-					abDamage += (int) sc.curveEnum().apply(statVal, sc.getCoeff(), sc.getCap());
-				}
+			// DAMAGE scaling must run even when baseDamage==0 — many migrated abilities
+			// rely solely on stat scaling for their damage.
+			int abDamage = ab.getBaseDamage();
+			for (AbilityScaling sc : ab.scalingList()) {
+				if (!"DAMAGE".equalsIgnoreCase(sc.getTarget())) continue;
+				final int statVal = resolveScalingInput(player, ab, sc);
+				abDamage += (int) sc.curveEnum().apply(statVal, sc.getCoeff(), sc.getCap());
 			}
 			final short finalDmg = (short) Math.min(Short.MAX_VALUE, Math.max(0, abDamage));
 			final boolean armorPierce = ab.getTags().contains("armor_pierce");
