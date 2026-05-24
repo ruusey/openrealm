@@ -82,6 +82,16 @@ public class Ability {
      */
     private int cdReductionPerPointMs = 0;
 
+    /**
+     * Max distance (px) the cursor can be from the caster center when this
+     * ability is cast. -1 = unlimited (legacy). 0 = self-only (the cursor
+     * position is ignored, the ability resolves on the caster's own center).
+     * &gt;0 = clamp the target point along the cursor vector to this distance
+     * before any effect runs. Server enforces; clients pre-clamp so the cast
+     * lands where the player visually expects.
+     */
+    private int maxCastRange = -1;
+
     /** Convenience: nullsafe effects. */
     public List<AbilityEffect> effectList() {
         return this.effects == null ? new ArrayList<>() : this.effects;

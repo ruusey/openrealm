@@ -57,6 +57,27 @@ public final class ServerAbilityHelper {
 
 		final int slot = abilityIndex >= 0 && abilityIndex < 4 ? abilityIndex : 0;
 		final Ability ab = player.getActiveAbility(slot);
+		if (ab != null) {
+			final int maxRange = ab.getMaxCastRange();
+			if (maxRange >= 0) {
+				final float cx = player.getPos().x + player.getSize() * 0.5f;
+				final float cy = player.getPos().y + player.getSize() * 0.5f;
+				if (maxRange == 0) {
+					pos.x = cx;
+					pos.y = cy;
+				} else {
+					final float dx = pos.x - cx;
+					final float dy = pos.y - cy;
+					final float distSq = dx * dx + dy * dy;
+					final long maxSq = (long) maxRange * maxRange;
+					if (distSq > maxSq) {
+						final float scale = maxRange / (float) Math.sqrt(distSq);
+						pos.x = cx + dx * scale;
+						pos.y = cy + dy * scale;
+					}
+				}
+			}
+		}
 		log.info("[USEABILITY] playerId={} classId={} slot={} hotbarId={} ab={} tags={}",
 				player.getId(), player.getClassId(), slot,
 				player.getHotbarId(slot),
