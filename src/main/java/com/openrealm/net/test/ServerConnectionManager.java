@@ -22,9 +22,6 @@ import com.openrealm.game.contants.GlobalConstants;
 import com.openrealm.game.contants.PacketType;
 import com.openrealm.game.entity.Player;
 import com.openrealm.net.Packet;
-import com.openrealm.net.realm.Realm;
-import com.openrealm.net.realm.RealmManagerServer;
-import com.openrealm.net.server.ProcessingThread;
 import com.openrealm.util.TimedWorkerThread;
 import com.openrealm.util.WorkerThread;
 
@@ -247,31 +244,31 @@ public class ServerConnectionManager implements Runnable {
 		};
 
 		// Expire connections if the handshake is not complete after 2.5 seconds
-		final Runnable timeoutCheck = () -> {
-			ServerConnectionManager.log.info("Beginning connection timeout check...");
-			while (!this.shutdownSocketAccept) {
-				try {
-					final Set<String> toRemove = new HashSet<>();
-					for (Entry<String, ClientConnectionThread> entry : this.clients.entrySet()) {
-						final long timeSinceConnect = Instant.now().toEpochMilli()
-								- this.clientConnectTime.get(entry.getKey());
-						if (timeSinceConnect > GlobalConstants.SOCKET_READ_TIMEOUT
-								&& !entry.getValue().isHandshakeComplete()) {
-							toRemove.add(entry.getKey());
-						}
-					}
-
-					for (String remove : toRemove) {
-						ClientConnectionThread thread = this.clients.remove(remove);
-						thread.setShutdownProcessing(true);
-						ServerConnectionManager.log.info("Removed expired connection {}", thread.getClientSocket());
-					}
-					Thread.sleep(250);
-				} catch (Exception e) {
-					ServerConnectionManager.log.error("Failed to check expired connections. Reason: {}", e);
-				}
-			}
-		};
+//		final Runnable timeoutCheck = () -> {
+//			ServerConnectionManager.log.info("Beginning connection timeout check...");
+//			while (!this.shutdownSocketAccept) {
+//				try {
+//					final Set<String> toRemove = new HashSet<>();
+//					for (Entry<String, ClientConnectionThread> entry : this.clients.entrySet()) {
+//						final long timeSinceConnect = Instant.now().toEpochMilli()
+//								- this.clientConnectTime.get(entry.getKey());
+//						if (timeSinceConnect > GlobalConstants.SOCKET_READ_TIMEOUT
+//								&& !entry.getValue().isHandshakeComplete()) {
+//							toRemove.add(entry.getKey());
+//						}
+//					}
+//
+//					for (String remove : toRemove) {
+//						ClientConnectionThread thread = this.clients.remove(remove);
+//						thread.setShutdownProcessing(true);
+//						ServerConnectionManager.log.info("Removed expired connection {}", thread.getClientSocket());
+//					}
+//					Thread.sleep(250);
+//				} catch (Exception e) {
+//					ServerConnectionManager.log.error("Failed to check expired connections. Reason: {}", e);
+//				}
+//			}
+//		};
 		
 		Runnable invokeCallbacks = () -> {
 			try {
