@@ -5,7 +5,6 @@ import java.util.UUID;
 
 import com.openrealm.game.contants.ProjectileFlag;
 import com.openrealm.game.contants.StatusEffectType;
-import com.openrealm.game.contants.ProjectilePositionMode;
 import com.openrealm.game.data.GameDataManager;
 import com.openrealm.game.entity.item.Stats;
 import com.openrealm.game.math.Vector2f;
@@ -57,9 +56,7 @@ public class Enemy extends Entity {
     private static final long PHASE_TRANSITION_DURATION_MS = 1200;
     private String uuid;
 
-    // Marks enemies created by an admin command (/spawn, /event, etc.) so
-    // /clearspawn can wipe them without touching map-static NPCs. Defaults
-    // false; never persisted.
+    /** True for /spawn-created enemies so /clearspawn can target them. Not persisted. */
     private transient boolean adminSpawned = false;
 
     public Enemy() {
@@ -77,7 +74,6 @@ public class Enemy extends Entity {
         if (origin != null) {
             this.spawnPos = origin.clone();
         }
-        // Initialize fields previously only in Monster subclass
         this.chaseRange = (int) this.model.getChaseRange();
         this.attackRange = (int) this.model.getAttackRange();
         this.right = true;
@@ -110,8 +106,6 @@ public class Enemy extends Entity {
     public int getMaxHealth() {
         return (this.stats != null) ? this.stats.getHp() : this.health;
     }
-
-    // ========== PHASE RESOLUTION ==========
 
     private EnemyPhase getActivePhase() {
         List<EnemyPhase> phases = this.model.getPhases();
@@ -151,8 +145,6 @@ public class Enemy extends Entity {
         if (this.hasEffect(StatusEffectType.SLOWED)) speed *= 0.5f;
         return Math.min(speed, MAX_ENEMY_SPEED);
     }
-
-    // ========== MOVEMENT PATTERNS ==========
 
     private void applyMovement(Player player, EnemyPhase phase) {
         if (player == null || player.hasEffect(StatusEffectType.INVISIBLE)) {
@@ -351,8 +343,6 @@ public class Enemy extends Entity {
         updateDirectionFlags();
     }
 
-    // ========== MOVEMENT HELPERS ==========
-
     private void setDirectionToward(Vector2f target, float speed) {
         float ddx = target.x - this.pos.x;
         float ddy = target.y - this.pos.y;
@@ -382,8 +372,6 @@ public class Enemy extends Entity {
         this.right = this.dx > 0.1f;
     }
 
-    // ========== ATTACK PATTERNS ==========
-
     private void processAttacks(Player player, EnemyPhase phase, RealmManagerServer mgr, Realm targetRealm) {
         if (player.hasEffect(StatusEffectType.INVISIBLE)) return;
         if (this.hasEffect(StatusEffectType.STUNNED)) return;
@@ -408,9 +396,7 @@ public class Enemy extends Entity {
                     });
                 }
             }
-            // Additive scripts (e.g. Enemy26 grenade) want to layer on top of
-            // the JSON-defined phase attacks rather than replace them, so we
-            // fall through to the data-driven path below.
+            // Additive scripts layer on top of JSON-defined phase attacks; fall through.
             if (!script.isAdditive()) return;
         }
 
@@ -420,13 +406,7 @@ public class Enemy extends Entity {
             if (this.attackCooldowns == null || this.attackCooldowns.length != attacks.size()) {
                 this.attackCooldowns = new long[attacks.size()];
                 this.attackAngleAccumulators = new float[attacks.size()];
-                // Stagger initial fire times so multiple patterns don't
-                // synchronize on the first post-init / post-phase-transition
-                // tick. Without this, every pattern hits its (now - 0) >=
-                // cooldownMs gate on the same instant — players experience
-                // a "release the kraken" burst right after phase invul
-                // ends. Each subsequent pattern is delayed by 250ms so the
-                // first volleys spread out over a beat.
+                // Stagger initial fire times by 250ms each to avoid synchronized volleys post-transition.
                 final long bootNow = System.currentTimeMillis();
                 for (int i = 0; i < attacks.size(); i++) {
                     final int cooldownMs = attacks.get(i).getCooldownMs();
@@ -476,11 +456,7 @@ public class Enemy extends Entity {
 
         Vector2f dest = player.getBounds().getPos().clone(player.getSize() / 2, player.getSize() / 2);
 
-        // FIXED_RING uses fixedAngle (world-locked) as the base AND distributes
-        // shotCount evenly around 360° like RING. This is the clean way to get
-        // a "consistent slow spiral" — without it, RING's base tracks the
-        // boss→player vector each volley, so a player circling the boss
-        // cancels the spiral's accumulated rotation.
+        // FIXED_RING: world-locked base angle + RING-style 360° distribution (slow-spiral).
         final boolean fixedRing = "FIXED_RING".equals(ap.getAimMode());
         final boolean ringDistribution = "RING".equals(ap.getAimMode()) || fixedRing;
 
@@ -607,23 +583,11 @@ public class Enemy extends Entity {
             Player player, RealmManagerServer mgr, Realm targetRealm,
             int speedCount, float minSpeedMult, float maxSpeedMult) {
         final int projCount = group.getProjectiles().size();
-        // DAZED on an enemy halves the number of projectiles per attack
-        // instead of reducing fire rate (the player-DAZED behaviour).
-        // Stepping by 2 through the group preserves the spread pattern
-        // (every other projectile drops out) so a 5-cone becomes a sparser
-        // 3-cone, a 4-cone becomes a 2-cone, etc., rather than a
-        // one-sided burst that would happen if we just truncated.
+        // DAZED on an enemy halves projectiles per attack (step by 2, preserves spread).
         final int projStep = (this.hasEffect(StatusEffectType.DAZED) && projCount > 1) ? 2 : 1;
         for (int i = 0; i < projCount; i += projStep) {
             Projectile p = group.getProjectiles().get(i);
-            // Enemy projectiles always aim toward the player, with the
-            // per-projectile angle treated as a fan/offset relative to
-            // that direction. The positionMode flag is a player-ability
-            // concept (cursor-targeted spells like wizard's meteor) and
-            // does not apply to enemy fire — without this fix, any
-            // projectile group with positionMode=ABSOLUTE/RELATIVE fired
-            // straight south regardless of player position (Stone
-            // Guardian cone attack was the reported case).
+            // Per-projectile angle is treated as a fan offset; positionMode ignored for enemies.
             final float angle = baseAngle + Float.parseFloat(p.getAngle());
 
             Vector2f projSource = source.clone();
@@ -698,8 +662,7 @@ public class Enemy extends Entity {
         fireProjectileGroup(group, source, angle, player, mgr, targetRealm);
     }
 
-    // ========== LEGACY CHASE (for backwards compat without phases) ==========
-
+    /** Legacy chase used by enemies without a phase definition. */
     public void chase(Player player) {
         if (player == null || player.hasEffect(StatusEffectType.INVISIBLE)) {
             this.up = false;
@@ -711,11 +674,7 @@ public class Enemy extends Entity {
             return;
         }
 
-        // Stationary NPCs (Healer, Decoy) declare maxSpeed=0 in their model.
-        // Without this guard chase() still pushed them at the hard-coded
-        // CHASE_SPEED toward the player. Once the player walked out of
-        // viewport the client kept extrapolating the last non-zero velocity
-        // and the healer drifted past the map boundary.
+        // Stationary NPCs declare maxSpeed=0 — don't push them at CHASE_SPEED.
         if (this.model != null && this.model.getMaxSpeed() == 0f) {
             this.dx = 0;
             this.dy = 0;
@@ -735,12 +694,9 @@ public class Enemy extends Entity {
         }
     }
 
-    // ========== UPDATE LOOPS ==========
-
     public void update(long realmId, RealmManagerServer mgr, double time) {
         final Realm targetRealm = mgr.getRealms().get(realmId);
-        // Scripted NPCs (e.g. Enemy67 vault healer) need to see hidden admins so
-        // friendly scripts still trigger; everything else honours the /hide filter.
+        // Scripted NPCs see hidden admins so friendly scripts still trigger.
         final boolean includeHidden = mgr.getEnemyScript(this.enemyId) != null;
         final Player player = mgr.getClosestPlayer(targetRealm.getRealmId(), this.getPos(), this.chaseRange, includeHidden);
         super.update(time);

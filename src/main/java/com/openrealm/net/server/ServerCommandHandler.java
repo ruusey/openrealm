@@ -81,9 +81,6 @@ public class ServerCommandHandler {
     private static final List<StressTestClient> ACTIVE_BOTS = new ArrayList<>();
     private static final List<String> BOT_ACCOUNT_GUIDS = new ArrayList<>();
     
-    // Handler methods are passed a reference to the current RealmManager, the
-    // invoking Player object
-    // and the ServerCommand message object.
     public static void invokeCommand(RealmManagerServer mgr, CommandPacket command) throws Exception {
         final ServerCommandMessage message = CommandType.fromPacket(command);
         final long fromPlayerId = mgr.getRemoteAddresses().get(command.getSrcIp());
@@ -97,20 +94,15 @@ public class ServerCommandHandler {
             log.warn("Command '{}' from player {} ignored — player not found in realm", message.getCommand(), fromPlayerId);
             return;
         }
-        // Look up this players account to see if they are allowed
-        // to run Admin server commands
         try {
         	final String cmdLower = message.getCommand().toLowerCase();
         	final AccountProvision[] requiredProvisions = RESTRICTED_COMMAND_PROVISIONS.get(cmdLower);
         	if (requiredProvisions != null) {
-        	    // /admin toggle: when disabled, restricted commands are blocked
-        	    // regardless of provisions. /admin itself bypasses so the user
-        	    // can re-enable from a disabled state.
+        	    // /admin itself bypasses the toggle so user can re-enable from disabled state.
         	    if (!fromPlayer.isAdminModeEnabled() && !"admin".equals(cmdLower)) {
         	        throw new IllegalStateException(
         	            "Admin mode is OFF — type /admin to re-enable");
         	    }
-        	    // Check cached provisions first, then fetch from API if not cached
         	    List<AccountProvision> held = PLAYER_PROVISION_CACHE.get(fromPlayer.getId());
         	    if (held == null) {
         	        log.info("Player {} invoking restricted command '{}' — fetching provisions", fromPlayer.getName(), message.getCommand());
@@ -142,10 +134,6 @@ public class ServerCommandHandler {
         }
     }
 
-    // Native client (ClientGameLogic.handleServerError) and webclient
-    // (main.js commandId===4) both render this CommandPacket into chat as
-    // "Error: ...". A previous belt-and-suspenders TextPacket here caused
-    // the message to appear twice — removed.
     private static void sendCommandError(RealmManagerServer mgr, Player fromPlayer, int code, String reason) {
         try {
             final CommandPacket errorResponse = CommandPacket.createError(fromPlayer, code, reason);
@@ -182,7 +170,6 @@ public class ServerCommandHandler {
 			} else {
 				targetAccount.addProvision(AccountProvision.OPENREALM_ADMIN);
 			}
-			// Clear provision cache so changes take effect immediately
 			PLAYER_PROVISION_CACHE.remove(toOp.getId());
 			ServerGameLogic.DATA_SERVICE.executePut("/admin/account", targetAccount,
 					AccountDto.class);
@@ -320,19 +307,12 @@ public class ServerCommandHandler {
     @AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_MODERATOR})
     public static void invokeCooldownReset(RealmManagerServer mgr, Player target, ServerCommandMessage message)
             throws Exception {
-        // Per-hotbar-slot cooldowns (Phase 2A onward). Zero each entry so
-        // the next cast in any slot bypasses the cd > now gate in useAbility.
         final long[] cds = target.getAbilityCooldowns();
         if (cds != null) {
             for (int i = 0; i < cds.length; i++) cds[i] = 0L;
         }
-        // Legacy single-ability gate keyed by player id — older items that
-        // still flow through playerAbilityState would otherwise stay locked
-        // for their cooldownDuration even after the slot table is cleared.
+        // Legacy single-ability gate — items flowing through playerAbilityState bypass the slot table.
         mgr.getPlayerAbilityState().remove(target.getId());
-        // Force-clear any in-progress cast bar so the client doesn't sit
-        // on a stale "casting..." progress that the next packet would
-        // immediately overwrite anyway.
         target.setCurrentCast(null);
         log.info("Player {} reset all ability cooldowns", target.getName());
         mgr.enqueueServerPacket(target,
@@ -375,9 +355,7 @@ public class ServerCommandHandler {
                 replySystem(mgr, target, "Invite declined.");
                 final Player inviterP = mgr.getPlayerById(inviter);
                 if (inviterP != null) replySystem(mgr, inviterP, target.getName() + " declined your party invite.");
-                // If the inviter is stuck in a 1-person lobby with no other
-                // pending invites, tear it down so they don't sit in a
-                // phantom party.
+                // Tear down 1-person lobby if no other pending invites remain.
                 final long disbanded = pm.disbandIfSoloWithNoPendingInvites(inviter);
                 if (disbanded != 0L && inviterP != null) {
                     mgr.sendEmptyPartyUpdate(inviterP);
@@ -442,8 +420,6 @@ public class ServerCommandHandler {
         target.setAvailableSkillPoints(Math.max(0, target.getAvailableSkillPoints() + amount));
         log.info("[SKILL-POINTS] /sp granted {} to {} (pool now {})",
                 amount, target.getName(), target.getAvailableSkillPoints());
-        // Push a fresh UpdatePacket so the client UI reflects the new pool
-        // immediately instead of waiting for the next periodic sync.
         mgr.enqueueServerPacket(target, UpdatePacket.from(target));
     }
 
@@ -465,8 +441,7 @@ public class ServerCommandHandler {
             }
         }
         target.setSize(newSize);
-        // bounds is built off the size at construction; refresh both width
-        // and height so collision matches the new visual immediately.
+        // bounds is built at construction; refresh so collision matches the new size.
         if (target.getBounds() != null) {
             target.getBounds().setWidth(newSize);
             target.getBounds().setHeight(newSize);
@@ -475,10 +450,7 @@ public class ServerCommandHandler {
         mgr.enqueueServerPacket(target,
                 TextPacket.from("SYSTEM", target.getName(),
                         "Resized to " + newSize + "px (logout to reset)"));
-        // Push an immediate LoadPacket so every nearby client picks up the
-        // new NetPlayer.size right away. UpdatePacket doesn't carry size, so
-        // without this both clients have to wait for the next periodic
-        // LoadPacket re-broadcast (typically only triggered by movement).
+        // UpdatePacket doesn't carry size — broadcast LoadPacket so clients pick up the change.
         try {
             final Realm rebroadcastRealm = mgr.findPlayerRealm(target.getId());
             if (rebroadcastRealm != null) {
@@ -509,9 +481,6 @@ public class ServerCommandHandler {
         if (message.getArgs() == null || message.getArgs().isEmpty() || message.getArgs().size() > 2)
             throw new IllegalArgumentException("Usage: /spawn {ENEMY_ID_OR_NAME} [COUNT]");
 
-        // Accept either the numeric ID or the logical enemy name. Ambiguous
-        // names throw with the colliding IDs so the user can rename in the
-        // editor — see GameDataLookup for the resolution contract.
         final int enemyId = GameDataLookup.resolveEnemyId(message.getArgs().get(0));
         int count = 1;
         if (message.getArgs().size() == 2) {
@@ -519,9 +488,6 @@ public class ServerCommandHandler {
             if (count < 1) {
                 throw new IllegalArgumentException("COUNT must be >= 1");
             }
-            // Cap to keep a single command from accidentally OOMing the box
-            // — 5000 enemies × ~200 bytes each + collision/AI bookkeeping
-            // is enough to stress-test a 2-vCPU instance.
             if (count > 5000) {
                 throw new IllegalArgumentException("COUNT capped at 5000 per command");
             }
@@ -533,11 +499,7 @@ public class ServerCommandHandler {
         if (from == null) {
             throw new IllegalArgumentException("No realm for player");
         }
-        // Spawn N copies inside a fixed confined disc around the caller —
-        // the radius does NOT grow with count so 1000+ enemies pile up in
-        // the same testable space (the whole point of the stress-test
-        // command). Random angle + sqrt(rand) radius gives a uniform-area
-        // distribution within the disc instead of clumping at the edge.
+        // Fixed disc radius regardless of count, with uniform-area distribution.
         final Random rng = new Random();
         final float baseX = target.getPos().x;
         final float baseY = target.getPos().y;
@@ -586,13 +548,8 @@ public class ServerCommandHandler {
         final float radiusSq = radius * radius;
         final Vector2f center = target.getPos();
 
-        // Snapshot first — we mutate the enemies map while iterating, so do
-        // a separate pass to collect IDs and a second pass to remove. Skip
-        // the heavy enemyDeath() flow (XP, loot, overseer notify, level-up
-        // text) since this is intended for stress-test cleanup, not gameplay.
-        // Skip INVINCIBLE entities so static NPCs (nexus healers, vault
-        // healer, lobby bosses) don't get wiped by /kill stress-test cleanup
-        // — they're tagged with permanentEffects:[6] and have no respawn path.
+        // Two-pass snapshot to avoid mutating enemies map mid-iteration.
+        // Skip INVINCIBLE entities (static NPCs with permanentEffects:[6], no respawn path).
         final List<Enemy> toKill = new ArrayList<>();
         for (final Enemy e : realm.getEnemies().values()) {
             if (e == null || e.getDeath()) continue;
@@ -611,11 +568,7 @@ public class ServerCommandHandler {
             realm.removeEnemy(e);
         }
 
-        // Explicit broadcast UnloadPacket so every client drops the killed
-        // enemies the same tick /kill ran, instead of waiting for the
-        // per-viewer ledger diff to emit an unload on its next sync tick.
-        // Harmless for clients whose ledger never contained the enemy
-        // (unload of an unknown ID is a no-op on the client).
+        // Explicit UnloadPacket so clients drop killed enemies this tick (not next ledger diff).
         if (killedIds.length > 0) {
             final UnloadPacket unload = UnloadPacket.from(
                 new Long[0], new Long[0], killedIds, new Long[0], new Long[0]);
@@ -639,9 +592,7 @@ public class ServerCommandHandler {
         if (realm == null)
             throw new IllegalArgumentException("No realm for player");
 
-        // Collect-then-remove pattern (matches /kill) so we don't mutate the
-        // map mid-iteration. Filter strictly on the adminSpawned flag set by
-        // /spawn — naturally-spawning realm event mobs and map NPCs survive.
+        // Filter strictly on adminSpawned flag — natural spawns and map NPCs survive.
         final List<Enemy> toClear = new ArrayList<>();
         for (final Enemy e : realm.getEnemies().values()) {
             if (e == null || e.getDeath()) continue;
@@ -655,8 +606,6 @@ public class ServerCommandHandler {
             realm.getExpiredEnemies().add(e.getId());
             realm.removeEnemy(e);
         }
-        // Same explicit broadcast unload as /kill — see that comment for why
-        // the LoadPacket diff alone isn't enough at the per-packet entity cap.
         if (clearedIds.length > 0) {
             final UnloadPacket unload = UnloadPacket.from(
                 new Long[0], new Long[0], clearedIds, new Long[0], new Long[0]);
@@ -735,10 +684,7 @@ public class ServerCommandHandler {
     @AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_MODERATOR})
     public static void invokeAdminToggle(RealmManagerServer mgr, Player target,
             ServerCommandMessage message) throws Exception {
-        // Toggle direction. The dispatcher already lets /admin through even
-        // when admin mode is OFF (so the user can re-enable from disabled).
         if (target.isAdminModeEnabled()) {
-            // Going OFF: stash chatRole and mask it, drop godmode.
             target.setStoredChatRole(target.getChatRole());
             target.setChatRole("");
             if (target.hasEffect(StatusEffectType.INVINCIBLE)) {
@@ -749,7 +695,6 @@ public class ServerCommandHandler {
             mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
                     "Admin mode OFF — restricted commands blocked, name color reset, godmode cleared"));
         } else {
-            // Going ON: restore chatRole if we cached one.
             if (target.getStoredChatRole() != null && !target.getStoredChatRole().isEmpty()) {
                 target.setChatRole(target.getStoredChatRole());
             }
@@ -758,8 +703,7 @@ public class ServerCommandHandler {
             mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
                     "Admin mode ON — restricted commands available again"));
         }
-        // Force the realm's load-state cache to invalidate so the chatRole
-        // change reaches every viewer's next LoadPacket on the next tick.
+        // Invalidate realm load-state so chatRole change reaches viewers next tick.
         final Realm realm = mgr.findPlayerRealm(target.getId());
         if (realm != null) {
             mgr.invalidateRealmLoadState(realm);
@@ -772,8 +716,6 @@ public class ServerCommandHandler {
             ServerCommandMessage message) throws Exception {
         if (target.isHiddenFromOthers()) {
             target.setHiddenFromOthers(false);
-            // Drop godmode only if we set it (we can't easily tell — best
-            // effort: clear it, the user can /godmode if they wanted it).
             if (target.hasEffect(StatusEffectType.INVINCIBLE)) {
                 target.resetEffects();
             }
@@ -787,10 +729,7 @@ public class ServerCommandHandler {
             mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
                     "Hide ON — invisible to other players, untargetable, godmode enabled."));
         }
-        // Force every viewer to rebuild their LoadPacket so the player
-        // disappears (or reappears) on the next tick rather than after the
-        // 3s periodic full snapshot. Existing viewers' next diff drops the
-        // hidden player via the standard difference() logic.
+        // Invalidate so viewers drop/restore the hidden player on next tick (not 3s snapshot).
         final Realm realm = mgr.findPlayerRealm(target.getId());
         if (realm != null) {
             mgr.invalidateRealmLoadState(realm);
@@ -804,12 +743,8 @@ public class ServerCommandHandler {
         if (message.getArgs() == null || message.getArgs().isEmpty()) {
             throw new IllegalArgumentException("Usage: /gmc {message}");
         }
-        // Reassemble the message from args. The command parser splits on
-        // whitespace, so "hello there" arrives as ["hello", "there"].
+        // Reassemble — parser splits on whitespace.
         final String body = String.join(" ", message.getArgs());
-        // Recipient set: any online player whose chatRole is a GM tier.
-        // SYSTEM-prefixed TextPacket (with the [GM] body marker) keeps the
-        // wire format identical to existing chat — no client codec change.
         final String labeled = "[GM] " + target.getName() + ": " + body;
         int delivered = 0;
         for (final Player p : mgr.getPlayers()) {
@@ -843,7 +778,6 @@ public class ServerCommandHandler {
         }
         final Realm currentRealm = mgr.findPlayerRealm(target.getId());
         if (currentRealm != null && currentRealm.getRealmId() == victimRealm.getRealmId()) {
-            // Same realm — just snap to their position.
             target.setPos(victim.getPos().clone());
             mgr.enqueueServerPacket(target, TextPacket.from("SYSTEM", target.getName(),
                     "Already in " + name + "'s realm — snapped to their position."));
@@ -878,7 +812,6 @@ public class ServerCommandHandler {
             throw new IllegalArgumentException("One of the realms could not be located");
         }
         if (adminRealm.getRealmId() == victimRealm.getRealmId()) {
-            // Same realm — just snap them to admin position.
             victim.setPos(target.getPos().clone());
             mgr.enqueueServerPacket(victim, TextPacket.from("SYSTEM", victim.getName(),
                     "You were summoned by " + target.getName()));
@@ -887,8 +820,6 @@ public class ServerCommandHandler {
             log.info("Player {} /summon {} (same realm)", target.getName(), name);
             return;
         }
-        // Cross-realm summon. Use the same transfer helper but applied to
-        // the victim, not the admin.
         transferAdminToRealm(mgr, victim, victimRealm, adminRealm, target.getPos());
         mgr.enqueueServerPacket(victim, TextPacket.from("SYSTEM", victim.getName(),
                 "You were summoned by " + target.getName()));
@@ -909,7 +840,7 @@ public class ServerCommandHandler {
         final boolean forceNew = message.getArgs().size() >= 2
                 && "new".equalsIgnoreCase(message.getArgs().get(1));
 
-        // Resolve the arg three ways: numeric mapId -> mapName lookup -> nodeId.
+        // Resolve: numeric mapId -> mapName -> nodeId.
         MapModel mapModel = null;
         String resolvedNodeId = null;
         try {
@@ -938,10 +869,7 @@ public class ServerCommandHandler {
                     + "'. Try a numeric mapId, mapName, or dungeon-graph nodeId.");
         }
 
-        // Shared-ness comes from the dungeon-graph node, not the map. If the
-        // resolved node is shared (overworld/nexus/town), join the existing
-        // instance; otherwise treat it as a private dungeon and spin up a
-        // fresh one (or reuse only when forceNew == false and a match exists).
+        // Shared-ness comes from dungeon-graph node, not map.
         boolean isShared = false;
         if (resolvedNodeId != null) {
             final DungeonGraphNode node = GameDataManager.DUNGEON_GRAPH.get(resolvedNodeId);
@@ -982,19 +910,13 @@ public class ServerCommandHandler {
                 target.getName(), arg, targetRealm.getRealmId(), forceNew);
     }
 
-    /**
-     * Move {@code who} from {@code from} (may be null on first transfer) into
-     * {@code to} at {@code spawnPos}. Mirrors the existing portal-use flow
-     * in ServerGameLogic: vault save, dungeon cleanup, invincibility grace,
-     * load-state invalidation, immediate map send, onPlayerJoin welcome.
-     */
+    /** Mirrors portal-use flow: vault save, dungeon cleanup, invincibility grace, load invalidation. */
     private static void transferAdminToRealm(RealmManagerServer mgr, Player who,
             Realm from, Realm to, Vector2f spawnPos) {
         if (from != null) {
             from.getPlayers().remove(who.getId());
             from.removePlayer(who);
 
-            // Vault save (mirrors portal flow): persist chests on the way out.
             if (from.getMapId() == 1) {
                 try {
                     final List<ChestDto> chests = from.serializeChests();
@@ -1018,7 +940,6 @@ public class ServerCommandHandler {
                 mgr.getRealms().remove(from.getRealmId());
             }
 
-            // Empty-dungeon cleanup (only when last player leaves a non-shared node).
             if (from.getPlayers().isEmpty() && from.getNodeId() != null
                     && !"nexus".equals(from.getNodeId())) {
                 final DungeonGraphNode node = GameDataManager.DUNGEON_GRAPH.get(from.getNodeId());
@@ -1043,8 +964,6 @@ public class ServerCommandHandler {
     @AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_MODERATOR})
     public static void invokeSpawnEvent(RealmManagerServer mgr, Player target, ServerCommandMessage message)
             throws Exception {
-        // No args: print the event catalog so the admin can pick one without
-        // grepping the data files.
         if (message.getArgs() == null || message.getArgs().size() < 1) {
             final StringBuilder sb = new StringBuilder("Realm events:");
             if (GameDataManager.REALM_EVENTS != null) {
@@ -1079,10 +998,7 @@ public class ServerCommandHandler {
                     + " — run /event with no args to list available ids");
         }
 
-        // The overseer owns the spawn flow (setpiece stamp, boss spawn,
-        // active-event tracking, minion-wave thresholds, minimap markers).
-        // Static maps (nexus, vault) don't have an overseer — bail with a
-        // clear error so the admin retries from a regular zone.
+        // Overseer owns the spawn flow; static maps (nexus/vault) have none.
         final Realm playerRealm = mgr.findPlayerRealm(target.getId());
         if (playerRealm == null) {
             throw new IllegalStateException("No realm for player " + target.getName());
@@ -1095,10 +1011,7 @@ public class ServerCommandHandler {
 
         log.info("Player {} (admin) /event {} ({}) in realm {}",
                 target.getName(), eventId, eventModel.getName(), playerRealm.getRealmId());
-        // Drop the encounter ~6 tiles NORTH of the admin so the player
-        // doesn't end up standing on the boss / inside the setpiece.
-        // Setpieces terraform freely under whatever's there, so the
-        // spawn cannot fail for placement reasons.
+        // Spawn 6 tiles north so admin doesn't end up inside the setpiece.
         final int tileSize = GlobalConstants.BASE_TILE_SIZE;
         final Vector2f spawnAt = target.getPos().clone();
         spawnAt.y -= 6 * tileSize;
@@ -1192,7 +1105,6 @@ public class ServerCommandHandler {
             log.warn("[FAME] grant failed for {} ({} fame): {}", recipient.getName(), amount, ex.getMessage());
             throw new IllegalArgumentException("Grant failed: " + ex.getMessage());
         }
-        // Refresh the cached fame total so the next /fame-store open reflects it.
         if (newTotal != null) recipient.setCachedAccountFame(newTotal);
 
         log.info("[FAME] Player {} granted {} account fame to {} (now {})",
@@ -1231,14 +1143,12 @@ public class ServerCommandHandler {
             if (destPlayer == null) {
                 throw new IllegalArgumentException("Player " + message.getArgs().get(0) + " is not online.");
             }
-            // Only allow teleport within the same realm — cross-realm teleport
-            // would place the player at coordinates in the wrong map
+            // Cross-realm teleport would land at coordinates in the wrong map.
             final Realm targetRealm = mgr.findPlayerRealm(target.getId());
             final Realm destRealm = mgr.findPlayerRealm(destPlayer.getId());
             if (targetRealm == null || destRealm == null || targetRealm.getRealmId() != destRealm.getRealmId()) {
                 throw new IllegalArgumentException("Cannot teleport to " + destPlayer.getName() + " — they are in a different area.");
             }
-            // Check teleportable (not invisible/stasis)
             if (destPlayer.hasEffect(StatusEffectType.INVISIBLE)
                     || destPlayer.hasEffect(StatusEffectType.STASIS)) {
                 throw new IllegalArgumentException(destPlayer.getName() + " cannot be teleported to right now.");
@@ -1258,16 +1168,13 @@ public class ServerCommandHandler {
             throw new IllegalArgumentException("Usage: /item {ITEM_ID_OR_NAME} [COUNT]");
         log.info("Player {} spawn item {}", target.getName(), message);
         final Realm targetRealm = mgr.findPlayerRealm(target.getId());
-        // Accept ID or exact name — GameDataLookup throws on ambiguity.
         final int gameItemId = GameDataLookup.resolveItemId(message.getArgs().get(0));
         final GameItem itemTemplate = GameDataManager.GAME_ITEMS.get(gameItemId);
         if (itemTemplate == null) {
             throw new IllegalArgumentException("Item with ID " + gameItemId + " does not exist.");
         }
 
-        // Stackables (shards, essence, potions): COUNT is the requested stack
-        // size, capped at the item's maxStack. Spawns one item with that
-        // stackCount rather than COUNT separate copies.
+        // Stackables: COUNT becomes stackCount (capped at maxStack).
         if (itemTemplate.isStackable()) {
             int requested = 1;
             if (message.getArgs().size() >= 2) {
@@ -1283,8 +1190,7 @@ public class ServerCommandHandler {
             return;
         }
 
-        // Non-stackables: COUNT is the number of separate copies (capped at 32),
-        // packed into loot bags of 8.
+        // Non-stackables: COUNT separate copies (cap 32), packed in bags of 8.
         int count = 1;
         if (message.getArgs().size() >= 2) {
             count = Math.min(32, Math.max(1, Integer.parseInt(message.getArgs().get(1))));
@@ -1304,17 +1210,6 @@ public class ServerCommandHandler {
         }
     }
 
-    /**
-     * Bulk-spawn one weapon per archetype at a chosen tier, or one weapon
-     * across every tier for a chosen archetype. Lets the designer test the
-     * full grid without typing /item 81 times.
-     *
-     * Usage:
-     *   /tierset tier {0-8}              — spawns 9 weapons (all archetypes) at tier
-     *   /tierset arch {sword|axe|hammer|dagger|bow|knife|tome|staff|wand}
-     *                                    — spawns 9 weapons (all tiers) for archetype
-     *   /tierset all                     — spawns all 81 weapons. Use sparingly.
-     */
     @CommandHandler(value="tierset", description="Bulk-spawn tiered weapons. Usage: /tierset {tier N | arch NAME | all}")
     @AdminRestrictedCommand(provisions={AccountProvision.OPENREALM_MODERATOR})
     public static void invokeSpawnTierSet(RealmManagerServer mgr, Player target, ServerCommandMessage message)
@@ -1354,10 +1249,7 @@ public class ServerCommandHandler {
         } else {
             throw new IllegalArgumentException("Usage: /tierset {tier N | arch NAME | all}");
         }
-        // Resolve all templates first so we can skip missing IDs cleanly instead
-        // of stuffing nulls into LootContainers (which renders as phantom slots
-        // on the client). Log any misses up-front so the test loop surfaces
-        // missing catalog entries instead of silently dropping the loot bag.
+        // Resolve up-front so missing IDs don't end up as nulls in LootContainers.
         final java.util.List<GameItem> resolved = new java.util.ArrayList<>();
         final java.util.List<Integer> missing = new java.util.ArrayList<>();
         for (final Integer iid : ids) {
@@ -1393,13 +1285,7 @@ public class ServerCommandHandler {
         final String mapToken = String.join(" ", message.getArgs());
         log.info("Player {} spawning portal to map '{}'", target.getName(), mapToken);
 
-        // Resolve via GameDataLookup — accepts either an integer mapId or an
-        // exact (case-insensitive) mapName. Ambiguous names throw with the
-        // colliding ids in the message, so the user knows to rename one of
-        // the offending maps in the editor. The old partial-match fallback
-        // was silently sending people to whatever map sorted first in the
-        // map.values() iteration order; remove it so portal targeting is
-        // always deterministic.
+        // Strict resolve (id or exact mapName) — partial-match fallback was non-deterministic.
         final MapModel targetMap;
         try {
             targetMap = GameDataLookup.resolveMap(mapToken);
@@ -1410,7 +1296,6 @@ public class ServerCommandHandler {
             throw new IllegalArgumentException(notFound.getMessage() + " Available: " + available);
         }
 
-        // Find a portal model that targets this map, or fall back to a generic portal
         PortalModel portalModel = null;
         for (PortalModel pm : GameDataManager.PORTALS.values()) {
             if (pm.getMapId() == targetMap.getMapId()) {
@@ -1418,12 +1303,11 @@ public class ServerCommandHandler {
                 break;
             }
         }
-        // Fall back to dungeon portal (portalId 6) if no matching portal model
+        // Default: dungeon portal (portalId 6).
         if (portalModel == null) {
             portalModel = GameDataManager.PORTALS.get(6);
         }
 
-        // Check if a shared dungeon graph node exists for this map
         final Realm currentRealm = mgr.findPlayerRealm(target.getId());
         Realm destinationRealm = null;
         String targetNodeId = null;
@@ -1443,7 +1327,6 @@ public class ServerCommandHandler {
             mgr.addRealm(destinationRealm);
         }
 
-        // Create and link portal at player position
         final Portal portal = new Portal(
                 Realm.RANDOM.nextLong(), (short) portalModel.getPortalId(), target.getPos().clone());
         portal.linkPortal(currentRealm, destinationRealm);
@@ -1492,16 +1375,12 @@ public class ServerCommandHandler {
         final int serverPort = 2222;
 
         WorkerThread.doAsync(() -> {
-            // Pools sized for "fast" rather than "polite" — the data service
-            // and game server are both local on the same host so per-request
-            // cost is small. 32 in parallel saturates the HTTP keepalive pool
-            // without thrashing the file descriptor limit.
             final int CREATE_PARALLELISM  = 32;
             final int CONNECT_PARALLELISM = 32;
             final long PHASE_TIMEOUT_SEC  = 60;
             final long startMs = System.currentTimeMillis();
 
-            // ---- Phase 1: account + character creation, fully parallel ----
+            // Phase 1: parallel account + character creation.
             final List<String[]> botCredentials = Collections.synchronizedList(new ArrayList<>());
             log.info("[BOTS] Phase 1: Creating {} accounts ({}-way parallel)...", count, CREATE_PARALLELISM);
             final ExecutorService createPool = Executors.newFixedThreadPool(CREATE_PARALLELISM, r -> {
@@ -1551,11 +1430,7 @@ public class ServerCommandHandler {
             log.info("[BOTS] Phase 1 done in {} ms — {} / {} accounts ready",
                     System.currentTimeMillis() - startMs, botCredentials.size(), count);
 
-            // ---- Phase 2: connect + login + godmode + realm-transfer, parallel ----
-            // Each task drives one bot to "logged in", then takes the mgr lock
-            // briefly to apply godmode + realm transfer. Lock prevents race on
-            // realm collection mutation in transferAdminToRealm; total locked
-            // section is microseconds so this doesn't serialize the connect.
+            // Phase 2: parallel connect + login + godmode + realm-transfer (mgr lock prevents realm-collection race).
             log.info("[BOTS] Phase 2: Connecting {} bots ({}-way parallel)...", botCredentials.size(), CONNECT_PARALLELISM);
             final long phase2Start = System.currentTimeMillis();
             final AtomicInteger success = new AtomicInteger(0);
@@ -1569,18 +1444,12 @@ public class ServerCommandHandler {
                     try {
                         final StressTestClient bot = new StressTestClient(idx, serverHost, serverPort,
                                 creds[0], creds[1], creds[2], spamMode);
-                        // Server-side authoritative placement (see below) handles
-                        // both realm and coords — no need for the bot to /tp itself.
                         synchronized (ACTIVE_BOTS) { ACTIVE_BOTS.add(bot); }
                         Thread botThread = new Thread(bot, "bot-runner-" + idx);
                         botThread.setDaemon(true);
                         botThread.start();
 
-                        // Poll for login. 10s ceiling — at CONNECT_PARALLELISM=32
-                        // the data svc + game svc on the same host can occasionally
-                        // queue past 3s during 200-bot bursts. Losing the wait here
-                        // means the bot never gets realm-transferred and stays in
-                        // nexus, which is the symptom users see.
+                        // 10s ceiling — data+game svc queueing under 200-bot bursts can exceed 3s.
                         final long waitStart = System.currentTimeMillis();
                         while (!bot.isLoggedIn() && !bot.isShutdown()
                                 && (System.currentTimeMillis() - waitStart) < 10000) {
@@ -1591,9 +1460,6 @@ public class ServerCommandHandler {
                             return;
                         }
                         success.incrementAndGet();
-                        // Godmode + unconditional realm placement. Synchronized on
-                        // mgr so realm collection mutation is race-free across the
-                        // CONNECT_PARALLELISM workers.
                         synchronized (mgr) {
                             try {
                                 final Player botPlayer = mgr.getPlayers().stream()
@@ -1610,24 +1476,11 @@ public class ServerCommandHandler {
                                             target.getName(), idx);
                                     return;
                                 }
-                                // Always move the bot into the caster's realm. The
-                                // previous "skip if realms already match" guard was
-                                // the bug: bots default-spawn into nexus, and when
-                                // the caster was ALSO in nexus the transfer was
-                                // skipped — but the bot was still wherever nexus
-                                // login dropped them (not near the caster). And
-                                // when realms differed, races between the bot's
-                                // self-/tp and the server-side transfer made
-                                // placement unreliable. Unconditional server-side
-                                // transfer handles both cases.
                                 final Realm botRealm = mgr.findPlayerRealm(botPlayer.getId());
                                 final float ox = target.getPos().x + (Realm.RANDOM.nextFloat() * 60 - 30);
                                 final float oy = target.getPos().y + (Realm.RANDOM.nextFloat() * 60 - 30);
                                 if (botRealm != null && botRealm.getRealmId() == casterRealm.getRealmId()) {
-                                    // Already in caster's realm — just position.
-                                    // (transferAdminToRealm would do unwanted
-                                    // bookkeeping like vault-save / dungeon-cleanup
-                                    // if we passed the same realm as both from/to.)
+                                    // Skip transferAdminToRealm when source==dest (would do unwanted vault-save/cleanup).
                                     botPlayer.setPos(new Vector2f(ox, oy));
                                 } else {
                                     transferAdminToRealm(mgr, botPlayer, botRealm, casterRealm,
@@ -1666,14 +1519,7 @@ public class ServerCommandHandler {
             int deleted = 0;
             int orphans = 0;
 
-            // Step 1: Scan ALL realms for orphan bot Players whose StressTestClient
-            // is no longer tracked (server was restarted, client crashed, etc.).
-            // The in-memory ACTIVE_BOTS list is JVM-static and gets wiped on
-            // restart while the bot Player objects + DB accounts persist —
-            // before this scan, /killbots would report "0 bots" even though
-            // ghost bots were visible standing around in the realm. Bots are
-            // identified by the canonical "Bot_" name prefix (see spawnbots
-            // line ~531) which never collides with real players.
+            // Scan all realms for orphan "Bot_"-prefixed players (ACTIVE_BOTS lost on JVM restart).
             try {
                 final List<Player> allPlayers = mgr.getPlayers();
                 for (final Player p : allPlayers) {
@@ -1682,7 +1528,6 @@ public class ServerCommandHandler {
                         try {
                             mgr.disconnectPlayer(p, "killbots cleanup");
                             orphans++;
-                            // Track the account guid for deletion below.
                             if (p.getAccountUuid() != null) {
                                 synchronized (BOT_ACCOUNT_GUIDS) {
                                     if (!BOT_ACCOUNT_GUIDS.contains(p.getAccountUuid())) {
@@ -1702,7 +1547,6 @@ public class ServerCommandHandler {
                 log.error("[BOTS] Orphan scan failed: {}", e.getMessage());
             }
 
-            // Step 2: Shutdown all tracked bot clients
             synchronized (ACTIVE_BOTS) {
                 for (StressTestClient bot : ACTIVE_BOTS) {
                     try {
@@ -1715,11 +1559,9 @@ public class ServerCommandHandler {
                 ACTIVE_BOTS.clear();
             }
 
-            // Delete bot accounts from database
             synchronized (BOT_ACCOUNT_GUIDS) {
                 for (String accountGuid : BOT_ACCOUNT_GUIDS) {
                     try {
-                        // Get account to find characters
                         PlayerAccountDto account = ServerGameLogic.DATA_SERVICE.executeGet(
                                 "/data/account/" + accountGuid, null, PlayerAccountDto.class);
                         if (account != null && account.getCharacters() != null) {
@@ -1757,7 +1599,6 @@ public class ServerCommandHandler {
         final Realm currentRealm = mgr.findPlayerRealm(target.getId());
 
         if (direction.equals("up")) {
-            // Anyone can go up to the overworld
             currentRealm.getPlayers().remove(target.getId());
             currentRealm.removePlayer(target);
             final Realm topRealm = mgr.getTopRealm();
@@ -1768,7 +1609,6 @@ public class ServerCommandHandler {
             ServerGameLogic.sendImmediateLoadMap(mgr, topRealm, target);
             ServerGameLogic.onPlayerJoin(mgr, topRealm, target);
 
-            // Clean up empty dungeon when last player leaves
             if (currentRealm.getPlayers().size() == 0 && currentRealm.getNodeId() != null) {
                 final DungeonGraphNode node =
                         GameDataManager.DUNGEON_GRAPH.get(currentRealm.getNodeId());
@@ -1778,14 +1618,12 @@ public class ServerCommandHandler {
                 }
             }
         } else if (direction.equals("down")) {
-            // Admin only — check inline
             boolean isAdmin = false;
             try {
                 final AccountDto account = ServerGameLogic.DATA_SERVICE.executeGet(
                         "/admin/account/" + target.getAccountUuid(), null, AccountDto.class);
                 isAdmin = account != null && account.isAdmin();
             } catch (Exception e) {
-                // Failed to check — deny
             }
             if (!isAdmin) {
                 throw new IllegalStateException("Only administrators can use /realm down");

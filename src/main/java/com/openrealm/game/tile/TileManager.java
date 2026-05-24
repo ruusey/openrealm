@@ -44,12 +44,11 @@ public class TileManager {
     private TerrainGenerationParameters terrainParams;
     private int mapId;
 
-    // Server side constructor
     public TileManager(int mapId) {
         this.mapId = mapId;
         MapModel model = GameDataManager.MAPS.get(mapId);
         log.info("[TileManager] Building map {}", model);
-        // Three types of maps. Fixed data, generated terrain and generated dungeon
+        // Three map types: fixed data, generated terrain, generated dungeon.
         if (model.getData() != null) {
             this.mapLayers = this.getLayersFromData(model);
         } else if (model.getDungeonId()>-1){
@@ -82,7 +81,6 @@ public class TileManager {
         this.mapLayers = this.getLayersFromTerrain(width, height, tileSize, params);
     }
 
-    // Client side constructor
     public TileManager(MapModel model) {
         this.mapLayers = new ArrayList<>();
         TileMap baseLayer = new TileMap((short) model.getMapId(), model.getTileSize(), model.getWidth(),
@@ -93,7 +91,7 @@ public class TileManager {
         this.mapLayers.add(collisionLayer);
     }
 
-    // Get the zone for a world position (returns null if no zones defined)
+    /** Zone for a world position; null if no zones are defined. */
     public OverworldZone getZoneForPosition(float worldX, float worldY) {
         if (this.terrainParams == null || this.terrainParams.getZones() == null
                 || this.terrainParams.getZones().isEmpty()) {
@@ -115,11 +113,9 @@ public class TileManager {
                 return zone;
             }
         }
-        // Fallback: return outermost zone
         return this.terrainParams.getZones().get(this.terrainParams.getZones().size() - 1);
     }
 
-    // Generates a random terrain of size with the given parameters
     private List<TileMap> getLayersFromTerrain(int width, int height, int tileSize,
             TerrainGenerationParameters params) {
         final Random random = new Random(Instant.now().toEpochMilli());
@@ -129,12 +125,10 @@ public class TileManager {
         final boolean hasZones = params.getZones() != null && !params.getZones().isEmpty();
 
         if (hasZones) {
-            // Zone-based terrain: each tile gets its TileGroup from its zone
             final float centerX = width / 2f;
             final float centerY = height / 2f;
             final float maxDist = (float) Math.sqrt(centerX * centerX + centerY * centerY);
 
-            // Pre-resolve tile models per group: base terrain (layer 0) and decorations (layer 1)
             final Map<Integer, List<TileModel>> baseByGroup = new HashMap<>();
             final Map<Integer, List<TileModel>> decorationByGroup = new HashMap<>();
             for (TileGroup group : params.getTileGroups()) {
@@ -159,7 +153,6 @@ public class TileManager {
                     float dist = (float) Math.sqrt(dx * dx + dy * dy);
                     float normalizedDist = dist / maxDist;
 
-                    // Find zone for this tile
                     OverworldZone zone = null;
                     for (OverworldZone z : params.getZones()) {
                         if (normalizedDist >= z.getMinRadius() && normalizedDist < z.getMaxRadius()) {
@@ -176,7 +169,6 @@ public class TileManager {
                             .filter(g -> g.getOrdinal() == groupOrd).findFirst()
                             .orElse(params.getTileGroups().get(0));
 
-                    // Base layer tile (always placed — opaque ground)
                     List<TileModel> baseTiles = baseByGroup.getOrDefault(groupOrd,
                             baseByGroup.values().iterator().next());
                     if (!baseTiles.isEmpty()) {
@@ -190,7 +182,6 @@ public class TileManager {
                         }
                     }
 
-                    // Decoration/collision layer tile (placed on layer 1 over the base)
                     List<TileModel> decoTiles = decorationByGroup.getOrDefault(groupOrd,
                             Collections.emptyList());
                     if (!decoTiles.isEmpty()) {
@@ -203,7 +194,6 @@ public class TileManager {
                 }
             }
         } else {
-            // Legacy single-group terrain generation
             for (TileGroup group : params.getTileGroups()) {
                 List<TileModel> baseTiles = group.getTileIds().stream()
                         .map(id -> GameDataManager.TILES.get(id))
@@ -216,7 +206,6 @@ public class TileManager {
                         .filter(tm -> tm != null)
                         .collect(Collectors.toList()) : new ArrayList<>();
 
-                // Fill base layer with terrain tiles
                 for (int i = 0; i < height; i++) {
                     for (int j = 0; j < width; j++) {
                         TileModel tileIdToCreate = baseTiles.get(random.nextInt(baseTiles.size()));
@@ -229,7 +218,6 @@ public class TileManager {
                         }
                     }
                 }
-                // Fill decoration/collision layer from decorationTileIds
                 if (!decoTiles.isEmpty()) {
                     for (int i = 0; i < height; i++) {
                         for (int j = 0; j < width; j++) {
@@ -247,8 +235,6 @@ public class TileManager {
         return Arrays.asList(baseLayer, collisionLayer);
     }
 
-    // Builds map layers from a map model that has statically defined layers (is not
-    // a terrain)
     private List<TileMap> getLayersFromData(MapModel model) {
         Map<String, int[][]> layerMap = model.getData();
         TileMap baseLayer = new TileMap((short) model.getMapId(), model.getTileSize(), model.getWidth(),
@@ -351,19 +337,15 @@ public class TileManager {
     }
 
     public Vector2f getSafePosition() {
-        // If the map defines explicit spawn points, pick one randomly
         if (this.mapId > 0) {
             MapModel model = GameDataManager.MAPS.get(this.mapId);
             if (model != null && model.getSpawnPoints() != null && !model.getSpawnPoints().isEmpty()) {
                 return model.getRandomSpawnPoint();
             }
         }
-        // If zones are defined, spawn in the outermost zone (beach/shore),
-        // biased toward the OUTER edge so new players land near the water and
-        // not next to the next-tier zone (grasslands) where harder enemies wander.
+        // Outermost-zone, outer-edge-biased spawn so new players land away from inner-tier enemies.
         if (this.terrainParams != null && this.terrainParams.getZones() != null
                 && !this.terrainParams.getZones().isEmpty()) {
-            // Find the zone with the highest maxRadius (outermost)
             OverworldZone outerZone = this.terrainParams.getZones().stream()
                     .max((a, b) -> Float.compare(a.getMaxRadius(), b.getMaxRadius()))
                     .orElse(null);
@@ -385,13 +367,7 @@ public class TileManager {
         return this.getSafePositionInZone(zone, false);
     }
 
-    /**
-     * Pick a safe random position inside a zone's radial band.
-     * If {@code outerEdgeBias} is true, only the outer 25% of the zone's radial
-     * band is considered — i.e. positions closest to the next-outer zone (or
-     * the map edge / water for the outermost zone). Used for new-player spawns
-     * so they land far from the next-tier zone.
-     */
+    /** Safe random position in a zone's radial band; outerEdgeBias restricts to outer 25%. */
     public Vector2f getSafePositionInZone(OverworldZone zone, boolean outerEdgeBias) {
         final int width = this.getBaseLayer().getWidth();
         final int height = this.getBaseLayer().getHeight();
@@ -401,10 +377,6 @@ public class TileManager {
         final float maxDist = (float) Math.sqrt(centerX * centerX + centerY * centerY);
         final float zoneMin = zone.getMinRadius() * maxDist;
         final float zoneMax = zone.getMaxRadius() * maxDist;
-        // When biasing toward the outer edge, only accept positions in the outer
-        // 25% of the zone band. For the beach (0.55..1.01 of map radius) this
-        // restricts spawns to the outer ~12% of the map radius — right at the
-        // water's edge, far from any inner-zone enemies.
         final float minDist = outerEdgeBias
                 ? (zoneMin + (zoneMax - zoneMin) * 0.75f)
                 : zoneMin;
@@ -420,11 +392,9 @@ public class TileManager {
                 return pos;
             }
         }
-        // Fallback 1: relax the outer-edge bias if we couldn't find a spot
         if (outerEdgeBias) {
             return this.getSafePositionInZone(zone, false);
         }
-        // Fallback 2: any safe random position
         Vector2f pos = this.randomPos();
         int fallbackAttempts = 0;
         while ((this.collidesAtPosition(pos, this.getBaseLayer().getTileSize()) || this.isVoidTile(pos, 0, 0))
@@ -439,7 +409,6 @@ public class TileManager {
         final TileMap collisionLayer = this.getCollisionLayer();
         final int tileX = (int) pos.x / collisionLayer.getTileSize();
         final int tileY = (int) pos.y / collisionLayer.getTileSize();
-        // If the player clicks off the map
         if(!collisionLayer.isValidPosition(tileX, tileY)){
         	return true;
         }
@@ -492,9 +461,7 @@ public class TileManager {
     }
 
     public boolean collidesSlowTile(Entity e) {
-        // Simple center-cell lookup. The previous AABB-based check used a 28x28
-        // hitbox which mismatched the client's check, causing slow-tile detection
-        // to disagree near tile boundaries and produce position desync / snapping.
+        // Center-cell lookup must match the client check exactly or slow-tile detection desyncs.
         final Vector2f centerPos = e.getCenteredPosition();
         final int ts = this.getBaseLayer().getTileSize();
         final int tx = (int) (centerPos.x / (float) ts);
@@ -513,11 +480,7 @@ public class TileManager {
         final int startX = (int) (centerPos.x / (float) this.getBaseLayer().getTileSize());
         final int startY = (int) (centerPos.y / (float) this.getBaseLayer().getTileSize());
 
-        // Bounds check parallels slowsOnTile above. /spawnbots scatters bots
-        // on random dx/dy with no map clamping; their center can land outside
-        // the tile grid (e.g. index 608 in a 50-wide map) and AIOOBE the
-        // per-tick movePlayer ground-damage check, killing the tick loop.
-        // Off-map entities can't be on a damaging tile by definition.
+        // Off-map (e.g. /spawnbots can place bots outside the grid) can't damage; bail.
         final Tile[][] blocks = this.getBaseLayer().getBlocks();
         if (startY < 0 || startY >= blocks.length
                 || startX < 0 || startX >= blocks[0].length) {
@@ -536,18 +499,13 @@ public class TileManager {
 
     public boolean collisionTile(Entity e, float ax, float ay) {
         final Vector2f futurePos = e.getPos().clone(ax, ay);
-        // 85% hitbox for tile collision. Top-left anchored to match the client's
-        // _checkCollision in game.js exactly.
+        // 85% hitbox, top-left anchored — MUST match client _checkCollision.
         final int hitSize = (int) (e.getSize() * 0.85f);
         for (Tile t : this.getCollisionTiles(e.getPos())) {
             if ((t == null) || t.isVoid()) {
                 continue;
             }
-            // CRITICAL: respect the tile's hasCollision flag — many decoration
-            // tiles (candles, decoration_4/5/6 in the nexus) live in the
-            // collision layer but are visual-only with hasCollision=0. The
-            // client filters these out; the server must too or the player
-            // gets stuck on invisible blockers and the client snaps back.
+            // MUST respect tile's hasCollision flag (visual-only decorations live in collision layer).
             final TileData td = t.getData();
             if (td == null || !td.hasCollision()) continue;
             Rectangle tileBounds = new Rectangle(t.getPos(), t.getWidth(), t.getHeight());
@@ -559,12 +517,8 @@ public class TileManager {
         return false;
     }
 
-    /**
-     * Hitbox-based collision check at an arbitrary position and size.
-     * Use this to validate a destination before placing/teleporting an entity.
-     */
+    /** Validates a destination position; use before placing/teleporting an entity. */
     public boolean collidesAtPosition(Vector2f pos, int entitySize) {
-        // 85% hitbox to match collisionTile and the client check.
         final int hitSize = (int) (entitySize * 0.85f);
         for (Tile t : this.getCollisionTiles(pos)) {
             if (t == null || t.isVoid()) continue;
@@ -583,7 +537,6 @@ public class TileManager {
         return new Vector2f(x, y);
     }
 
-    // Reusable viewport rectangles to avoid allocation every frame/tick
     private static final ThreadLocal<Rectangle> VIEWPORT_RECT = ThreadLocal.withInitial(
             () -> new Rectangle(new Vector2f(), 0, 0));
     private static final ThreadLocal<Vector2f> VIEWPORT_POS = ThreadLocal.withInitial(Vector2f::new);
@@ -657,10 +610,8 @@ public class TileManager {
     }
 
     public void mergeMap(LoadMapPacket packet) {
-    	// Acquire the map lock to prevent the render thread from displaying out of 
-    	// date tile information
+    	// MUST hold mapLock — prevents render thread from reading mid-resize.
     	this.acquireMapLock();
-        // Resize the map on dimension change
         if(this.getMapHeight()!=packet.getMapHeight() || this.getMapWidth()!=packet.getMapWidth()) {
            MapModel model = GameDataManager.MAPS.get((int)packet.getMapId());
            TileMap baseLayer = new TileMap((short) model.getMapId(), model.getTileSize(), model.getWidth(),

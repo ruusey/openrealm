@@ -88,18 +88,12 @@ import lombok.extern.slf4j.Slf4j;
 public class ServerGameLogic {
 	public static final String GAME_VERSION = "0.6.0";
 
-	/** Per-player throttle for the "invalid weapon equipped" chat message —
-	 *  one notice per 5s so a player holding fire on a legacy ability item
-	 *  doesn't get flooded with system spam. Keyed by playerId. */
+	/** Per-player throttle for the "invalid weapon equipped" notice (one per 5s). */
 	private static final Map<Long, Long> INVALID_WEAPON_WARN_AT = new ConcurrentHashMap<>();
 	private static final long INVALID_WEAPON_WARN_INTERVAL_MS = 5000L;
 	public static final int WINDOW_WIDTH = 1920;
 	public static final int WINDOW_HEIGHT = 1080;
 
-	/**
-	 * As of release 0.3.0 DATA_SERVICE static class variable is required for Game
-	 * functionality
-	 */
 	public static OpenRealmServerDataService DATA_SERVICE = null;
 
 	public static void sendImmediateLoadMap(RealmManagerServer mgr, Realm realm, Player player) {
@@ -158,10 +152,7 @@ public class ServerGameLogic {
 		if (!validateCallingPlayer(mgr, packet, usePortalPacket.getPlayerId())) {
 			return;
 		}
-		// CRITICAL: wrap entire body in try/finally so the realm lock is always
-		// released. Previously any HTTP exception (executePost to /data/...),
-		// realm generation failure, or NPE would leak the lock and deadlock the
-		// next tick's acquireRealmLock() call — server freeze, requires restart.
+		// MUST release the realm lock in finally — leaked locks deadlock the next tick.
 		mgr.acquireRealmLock();
 		try {
 
@@ -205,12 +196,8 @@ public class ServerGameLogic {
 			if (user == null) { return; }
 			currentRealm.removePlayer(user);
 
-			// Save vault chests if leaving vault. Async fire-and-log so the
-			// portal-handler tick doesn't park a worker thread on the HTTP
-			// round-trip — server can stay responsive under a vault-exit
-			// storm. serializeChestsForSave returns null if setupChests
-			// hasn't completed, in which case we skip the save entirely
-			// (would otherwise wipe the persisted vault with []).
+			// serializeChestsForSave returns null if setupChests hasn't completed — skip save
+			// so we don't wipe persisted vault with [].
 			if (currentRealm.getMapId() == 1) {
 				final List<ChestDto> chestsToSave = currentRealm.serializeChestsForSave();
 				if (chestsToSave != null) {
@@ -272,11 +259,8 @@ public class ServerGameLogic {
 		final PortalModel portalUsed = GameDataManager.PORTALS.get((int) used.getPortalId());
 		currentRealm.removePlayer(user);
 
-		// Save + remove vault realm if leaving a vault (regardless of target).
-		// Async fire-and-log so the portal handler doesn't park a worker
-		// thread on the HTTP round-trip. serializeChestsForSave returns
-		// null if setupChests hasn't completed — skip the POST so we don't
-		// wipe the persisted vault with [].
+		// Save + remove vault realm if leaving a vault. Skip POST when
+		// serializeChestsForSave returns null (setupChests incomplete).
 		if (currentRealm.getMapId() == 1) {
 			final List<ChestDto> chestsToSave = currentRealm.serializeChestsForSave();
 			if (chestsToSave != null) {
@@ -336,9 +320,7 @@ public class ServerGameLogic {
 		}
 
 		if (targetRealm == null) {
-			// Non-shared: each portal creates its own dungeon instance (1:1 portal-to-dungeon).
-			// Realm generation is CPU-heavy (terrain, enemies, dungeon layout), so we run
-			// it on a worker thread to avoid blocking the tick loop for other players.
+			// Non-shared dungeon instance — generate on worker thread (CPU-heavy).
 			final String resolvedNodeId = (resolvedNode != null) ? resolvedNode.getNodeId() : targetNodeId;
 			final int mapId = (resolvedNode != null) ? resolvedNode.getMapId() : (targetNode != null ? targetNode.getMapId() : portalUsed.getMapId());
 			final DungeonGraphNode finalTargetNode = targetNode;
@@ -353,13 +335,7 @@ public class ServerGameLogic {
 					final Realm generatedRealm = new Realm(true, mapId, resolvedNodeId);
 					generatedRealm.setSourceRealmId(finalCurrentRealm.getRealmId());
 
-					// Phase 4 — dungeon party claim + difficulty bonus. The
-					// entering player's CURRENT party size locks the bonus
-					// at +0.5/member (cap +2.0 = 4-player party). Subsequent
-					// teammate teleport-ins do NOT shift HP/damage mid-run.
-					// The party itself is recorded so the entrance handler
-					// below can reject other parties when this dungeon is
-					// single-party (MapModel.maxPartyCount == 1).
+					// Party-size bonus locked at entry: +0.5/member (cap +2.0); teammate joins later don't shift it.
 					final long enteringPid = mgr.getPartyManager().getPartyId(user.getId());
 					final int  partySize   = (enteringPid != 0L)
 							? mgr.getPartyManager().getPartyMembers(user.getId()).size() : 1;
@@ -414,15 +390,9 @@ public class ServerGameLogic {
 						user.getName(), e.getMessage(), e);
 				}
 			});
-			// Player is removed from current realm but not yet in the new one.
-			// They'll be added on the next tick when processPendingTransitions() runs.
 			return;
 		} else {
-			// Phase 4 — single-party dungeon gate. If this map has
-			// maxPartyCount > 0 (i.e. it's a dungeon, not overworld), only
-			// allow entries from the parties already listed in the realm's
-			// claim set OR (when there's room) the entering player's party.
-			// Solo players use -playerId as a synthetic party-of-one key.
+			// Single-party dungeon gate. Solo players use -playerId as a synthetic key.
 			final MapModel targetMap = GameDataManager.MAPS.get(targetRealm.getMapId());
 			if (targetMap != null && targetMap.getMaxPartyCount() > 0) {
 				final long enteringPid = mgr.getPartyManager().getPartyId(user.getId());
@@ -430,9 +400,6 @@ public class ServerGameLogic {
 				final Set<Long> claims = targetRealm.getDungeonPartyIds();
 				if (!claims.contains(claimKey)) {
 					if (claims.size() >= targetMap.getMaxPartyCount()) {
-						// Bounce the player back to the source realm and tell
-						// them why. Their position is already removed from
-						// currentRealm above; re-add then notify.
 						currentRealm.addPlayer(user);
 						mgr.enqueueServerPacket(user, TextPacket.from(
 								"SYSTEM", user.getName(),
@@ -442,22 +409,18 @@ public class ServerGameLogic {
 					claims.add(claimKey);
 				}
 			}
-			// Target realm already exists — spawn at the dungeon's fixed entry point
 			final Vector2f entryPos = targetRealm.getTileManager().getPlayerSpawnPos();
 			if (entryPos != null) {
-				// Spawn at dungeon entry room with slight random offset to avoid stacking
+				// Small random offset prevents stacking at the dungeon entry tile.
 				user.setPos(entryPos.clone(
 						Realm.RANDOM.nextInt(32) - 16,
 						Realm.RANDOM.nextInt(32) - 16));
 			} else if (targetRealm.getTileManager().getTerrainParams() != null) {
-				// Overworld: spawn in beach zone
 				user.setPos(targetRealm.getTileManager().getSafePosition());
 			} else {
-				// Static map: use spawn points if defined, otherwise safe position
 				user.setPos(targetRealm.getTileManager().getSafePosition());
 			}
 
-			// Dungeon cleanup: remove non-shared realms when last player leaves via portal.
 			if (currentRealm.getPlayers().size() == 0 && !currentRealm.isShared()) {
 				ServerGameLogic.log.info("[SERVER] Removing empty dungeon realm {} (mapId={}, node={})",
 						currentRealm.getRealmId(), currentRealm.getMapId(), currentRealm.getNodeId());
@@ -469,11 +432,7 @@ public class ServerGameLogic {
 		mgr.broadcastTextEffect(EntityType.PLAYER, user, TextEffect.PLAYER_INFO, "Invincible");
 		targetRealm.addPlayer(user);
 		mgr.clearPlayerState(user.getId());
-		// Targeted invalidation — only the transitioning player needs a
-		// full Load snapshot. Existing players in the destination realm
-		// pick up the new arrival through normal viewport-delta diffing.
-		// Wiping every player's ledger here was forcing 150-300 ms tick
-		// stalls when somebody portalled into a busy realm.
+		// Targeted invalidation: only the transitioning player needs a full Load snapshot.
 		mgr.invalidateLoadStateForPlayer(user.getId());
 		sendImmediateLoadMap(mgr, targetRealm, user);
 		onPlayerJoin(mgr, targetRealm, user);
@@ -491,10 +450,9 @@ public class ServerGameLogic {
 			log.warn("[SERVER] Heartbeat from unknown player (srcIp={}). Known addresses: {}", packet.getSrcIp(), mgr.getRemoteAddresses().keySet());
 			return;
 		}
-		// Store SERVER time when heartbeat was received (not client timestamp which may be clock-skewed)
+		// Use server time (client timestamp may be clock-skewed).
 		mgr.getPlayerLastHeartbeatTime().put(player.getId(), Instant.now().toEpochMilli());
-		// Echo heartbeat back with the ORIGINAL client timestamp so the client
-		// can measure true round-trip time (not first-random-packet latency).
+		// Echo with original client timestamp so client can measure true RTT.
 		try {
 			mgr.enqueueServerPacket(player, HeartbeatPacket.from(player.getId(), heartbeatPacket.getTimestamp()));
 		} catch (Exception e) {
@@ -544,12 +502,6 @@ public class ServerGameLogic {
 		ServerGameLogic.log.info("[SERVER] Recieved UseAbility Packet For Player {}", useAbilityPacket.getPlayerId());
 	}
 
-	/**
-	 * Phase 2D — invest one skill point into the ability bound to the
-	 * requested hotbar slot. Server validates the spend, applies it to the
-	 * player, persists the new stats DTO, and pushes a fresh UpdatePacket so
-	 * the client tooltip / orange-box UI reflects the new level.
-	 */
 	@PacketHandlerServer(InvestSkillPointPacket.class)
 	public static void handleInvestSkillPointServer(RealmManagerServer mgr, Packet packet) {
 		final InvestSkillPointPacket pkt = (InvestSkillPointPacket) packet;
@@ -577,7 +529,6 @@ public class ServerGameLogic {
 		ServerGameLogic.log.info("[SKILL-POINTS] player {} invest slot={} abilityId={} -> level={} (pool={})",
 				player.getId(), slot, abilityId, player.getSkillLevel(abilityId),
 				player.getAvailableSkillPoints());
-		// Echo a fresh UpdatePacket so the client UI reflects the new state.
 		try {
 			mgr.enqueueServerPacket(player, UpdatePacket.from(player));
 		} catch (Exception e) {
@@ -585,14 +536,8 @@ public class ServerGameLogic {
 		}
 	}
 
-	// DO NOT add a @PacketHandlerServer(TextPacket.class) stub here.
-	// The dispatch path in RealmManagerServer.processPackets short-circuits
-	// on the FIRST reflection-registered handler list — if a stub is
-	// annotated for TextPacket the real broadcaster (handleTextServer,
-	// explicitly registered via registerPacketCallback) becomes dead code
-	// and chat silently stops reaching other players. The only TextPacket
-	// handler must be ServerGameLogic.handleTextServer, registered via
-	// RealmManagerServer.registerPacketCallbacks().
+	// DO NOT add a @PacketHandlerServer(TextPacket.class) stub here — would shadow the
+	// explicitly-registered handleTextServer and silently break chat broadcasting.
 
 	public static void handlePlayerShootServer(RealmManagerServer mgr, Packet packet) {
 		final PlayerShootPacket shootPacket = (PlayerShootPacket) packet;
@@ -609,15 +554,12 @@ public class ServerGameLogic {
 		boolean canShoot = false;
 		if (realm.getPlayerLastShotTime().get(player.getId()) != null) {
 			double dex = (int) ((6.5 * (player.getComputedStats().getDex() + 17.3)) / 75);
-			// Weapon-archetype fire-rate multiplier. Heavy weapons swing slow,
-			// daggers swing fast — see weapon-archetypes.json. Applies before
-			// status buffs so BERSERK on a hammer still feels hammer-y.
+			// Archetype fire-rate multiplier applied before status buffs.
 			final WeaponArchetypeModel archForRate = archetypeFor(player.getInventory()[0]);
 			if (archForRate != null && archForRate.getAttackSpeedMul() > 0f) {
 				dex = dex * archForRate.getAttackSpeedMul();
 			}
-			// BERSERK = +50% fire rate. SPEEDY no longer affects fire rate
-			// (movement-only). Use BERSERK for any "attack faster" buff.
+			// BERSERK = +50% fire rate; SPEEDY is movement-only.
 			if (player.hasEffect(StatusEffectType.BERSERK)) {
 				dex = dex * 1.5;
 			}else if(player.hasEffect(StatusEffectType.DAZED)) {
@@ -635,13 +577,7 @@ public class ServerGameLogic {
 			canShoot = true;
 		}
 		if (canShoot) {
-			// Belt-and-suspenders against the legacy ability-item exploit
-			// (Necrotic Skull / Penetrating Blast Spell / etc. equipped into
-			// the weapon slot via the old targetSlot=-1 hole). Even though
-			// canEquipInSlot now rejects new equips and reconcileEquipment
-			// relocates old ones on login, refuse the SHOT for any weapon
-			// whose targetSlot doesn't match slot 0. One SYSTEM notice per
-			// 5s so the player understands why nothing's firing.
+			// Reject shots from any weapon-slot item whose targetSlot != 0 (legacy ability-item exploit guard).
 			final GameItem weaponItem = player.getInventory()[0];
 			if (weaponItem != null && weaponItem.getTargetSlot() != 0) {
 				final long now = Instant.now().toEpochMilli();
@@ -653,11 +589,10 @@ public class ServerGameLogic {
 								"Your equipped weapon (" + weaponItem.getName() + ") is no longer "
 								+ "a valid weapon — class abilities replaced the legacy ability "
 								+ "slot. Move it to your inventory and equip a real weapon."));
-					} catch (Exception ignore) { /* swallow — best-effort notice */ }
+					} catch (Exception ignore) { }
 				}
 				return;
 			}
-			// Trigger attack animation so other clients see the firing pose
 			player.triggerAttackAnimation();
 			player.setAimX(shootPacket.getDestX());
 			player.setAimY(shootPacket.getDestY());
@@ -678,8 +613,6 @@ public class ServerGameLogic {
 				weaponGem.modifyShot(ctx, player, weapon);
 				weaponGem.onBasicAttack(player, weapon);
 			}
-			// Lifetime metric — count every bullet leaving the muzzle,
-			// including extra-projectile gear-bonus shots.
 			if (player.getMetrics() != null) {
 				final int bullets = 1 + ctx.getExtraProjectiles();
 				for (int b = 0; b < bullets; b++) {
@@ -687,11 +620,7 @@ public class ServerGameLogic {
 				}
 			}
 
-			// Phase 2D — ON_BASIC_ATTACK passive trigger. Currently scoped to
-			// the Wizard's Arcane Surge ("every Nth basic is empowered"):
-			// N derives from WIS via the EMPOWER_FREQUENCY scaling. On an
-			// empowered shot we broadcast a wizard-burst flare at the player
-			// and apply a 1.5× damage multiplier to that volley.
+			// ON_BASIC_ATTACK passive trigger (Wizard Arcane Surge): every Nth shot is empowered ×1.5.
 			boolean empoweredShot = false;
 			final PassiveAbility classPassive = player.getClassPassive();
 			if (classPassive != null) {
@@ -728,11 +657,8 @@ public class ServerGameLogic {
 				short offset = (short) (player.getSize() / (short) 2);
 				short rolledDamage = player.getInventory()[0].getDamage().getInRange();
 				float shootAngle = angle + Float.parseFloat(proj.getAngle());
-				// Weapon scaling — scale off the weapon's configured stat
-				// (GameItem.scalingStat; default 4=STR preserves legacy behavior).
 				rolledDamage += statByIndex(player.getComputedStats(),
 						player.getInventory()[0].getScalingStat());
-				// Archetype damage multiplier (hammers hit harder, daggers softer).
 				if (arch != null && arch.getDamageMul() != 1.0f) {
 					rolledDamage = (short) Math.min(Short.MAX_VALUE,
 							Math.max(0, (int) (rolledDamage * arch.getDamageMul())));
@@ -741,7 +667,6 @@ public class ServerGameLogic {
 				if (empoweredShot) {
 					rolledDamage = (short) Math.min(Short.MAX_VALUE, (int) (rolledDamage * 1.5f));
 				}
-				// Total bullets = archetype's built-in multi-shot count + gem extras.
 				final int archCount = (arch == null) ? 1 : Math.max(1, arch.getProjectileCount());
 				final int totalBullets = archCount + ctx.getExtraProjectiles();
 				final float SPREAD = ((arch != null && arch.getSpreadRad() > 0f)
@@ -756,9 +681,7 @@ public class ServerGameLogic {
 		}
 	}
 
-	/** Stat lookup by GameItem.scalingStat / Enchantment statId convention:
-	 *  0=VIT 1=WIS 2=HP 3=MP 4=STR 5=DEF 6=SPD 7=DEX. Matches the index
-	 *  used by RealmManagerServer.statByIndex / AbilityScaling.statIndex. */
+	/** Stat lookup: 0=VIT 1=WIS 2=HP 3=MP 4=STR 5=DEF 6=SPD 7=DEX. */
 	private static int statByIndex(Stats s, int idx) {
 		if (s == null) return 0;
 		switch (idx) {
@@ -777,13 +700,11 @@ public class ServerGameLogic {
 	private static void spawnPlayerBullet(RealmManagerServer mgr, long realmId, Player player, int weaponPgId,
 			Projectile proj, Vector2f src, float angle, short damage,
 			ShotContext ctx, WeaponArchetypeModel arch) {
-		// Archetype range multiplier — staves outshoot daggers.
 		float range = proj.getRange();
 		if (arch != null && arch.getRangeMul() != 1.0f) {
 			range = range * arch.getRangeMul();
 		}
-		// Piercing — archetype OR gemstone flag, additive with the projectile's
-		// own flag list (don't double-add).
+		// Piercing flag: archetype OR gemstone, dedup against projectile's existing flags.
 		List<Short> flags = proj.getFlags();
 		final boolean wantPierce = (arch != null && arch.isPiercing()) || ctx.isPiercing();
 		if (wantPierce) {
@@ -805,8 +726,6 @@ public class ServerGameLogic {
 		mergeProjectileEffects(b, proj, ctx);
 	}
 
-	/** Look up the weapon-archetype model for the firing item, or null if
-	 *  the item has no archetype set or the model isn't loaded. */
 	private static WeaponArchetypeModel archetypeFor(GameItem item) {
 		if (item == null) return null;
 		final byte a = item.getArchetypeId();
@@ -816,7 +735,6 @@ public class ServerGameLogic {
 	}
 
 	private static void mergeProjectileEffects(Bullet b, Projectile proj, ShotContext ctx) {
-		// Merge base projectile effects with any gemstone on-hit statuses.
 		final List<ProjectileEffect> merged = new ArrayList<>();
 		if (proj != null && proj.getEffects() != null) merged.addAll(proj.getEffects());
 		if (ctx != null) {
@@ -840,10 +758,7 @@ public class ServerGameLogic {
 					textPacket.getSrcIp());
 			return;
 		}
-		// NOTE: validateCallingPlayer compares the same id to itself for
-		// TextPacket (both derived from srcIp) so it can only fail when
-		// the player isn't in any realm. Skip it for chat — silent drops
-		// here are the #1 cause of "my chat just vanished" reports.
+		// Skip validateCallingPlayer for chat — silent drops cause "my chat vanished" reports.
 		final Player fromPlayer = mgr.searchRealmsForPlayer(fromPlayerId);
 		if (fromPlayer == null) {
 			log.warn("[SERVER] handleTextServer: no player in any realm for id={} (srcIp={}) — dropping",
@@ -896,20 +811,15 @@ public class ServerGameLogic {
 		}
 		try {
 			ServerItemHelper.handleMoveItemPacket(mgr, packet);
-			// Immediately send updated inventory AND container state so the client
-			// sees the change without waiting for the next scheduled tick
+			// Push inventory + container update immediately so client doesn't wait up to 62ms for next tick.
 			final Realm realm = mgr.findPlayerRealm(moveItemPacket.getPlayerId());
 			if (realm != null) {
 				final Player player = realm.getPlayer(moveItemPacket.getPlayerId());
 				if (player != null) {
-					// Send inventory update
 					final UpdatePacket update = realm.getPlayerAsPacket(player.getId());
 					if (update != null) {
 						mgr.enqueueServerPacket(player, update);
 					}
-					// Send container update immediately to all nearby players.
-					// Without this, container changes wait for the next LoadPacket tick
-					// (up to 62ms at 16Hz), causing visible desync.
 					final LootContainer nearLoot = mgr.getClosestLootContainer(
 						realm.getRealmId(), player.getPos(), 32);
 					if (nearLoot != null && nearLoot.getContentsChanged()) {
@@ -919,7 +829,6 @@ public class ServerGameLogic {
 								new NetPlayer[0], new NetEnemy[0], new NetBullet[0],
 								new NetLootContainer[] { netContainer },
 								new NetPortal[0], (byte) 0);
-							// Send to all players near the container, not just the mover
 							for (final Map.Entry<Long, Player> p : realm.getPlayers().entrySet()) {
 								if (p.getValue().isHeadless()) continue;
 								float dx = p.getValue().getPos().x - nearLoot.getPos().x;
@@ -1003,14 +912,9 @@ public class ServerGameLogic {
 
 	}
 
-//	public static void handleLoadMapServer(RealmManagerServer mgr, Packet packet) {
-//		@SuppressWarnings("unused")
-//		final LoadMapPacket loadMapPacket = (LoadMapPacket) packet;
-//	}
-
 	private static void doLogin(RealmManagerServer mgr, LoginRequestMessage request, CommandPacket command) {
 		log.info("[SERVER] Recieved login command {}", request);
-		// Run the slow HTTP authentication on a worker thread so the tick loop isn't blocked
+		// HTTP auth runs on a worker thread so the tick loop isn't blocked.
 		WorkerThread.doAsync(() -> {
 			CommandPacket commandResponse = null;
 			long assignedId = -1l;
@@ -1018,14 +922,12 @@ public class ServerGameLogic {
 			try {
 				SessionTokenDto loginToken;
 				if (request.getToken() != null && !request.getToken().isEmpty()) {
-					// Token-based auth: resolve the token to get account info
 					loginToken = new SessionTokenDto();
 					loginToken.setToken(request.getToken());
 					AccountDto resolved = ServerGameLogic.DATA_SERVICE.executeGetWithToken(
 						"/admin/account/token/resolve", request.getToken(), AccountDto.class);
 					loginToken.setAccountGuid(resolved.getAccountGuid());
 				} else {
-					// Legacy email+password auth
 					loginToken = ServerGameLogic.doLoginRemote(request.getEmail(), request.getPassword());
 				}
 				PlayerAccountDto account = ServerGameLogic.DATA_SERVICE.executeGet(
@@ -1039,8 +941,7 @@ public class ServerGameLogic {
 				}
 
 				final CharacterDto targetCharacter = characterClass.get();
-				// Force disconnect any existing session for this account before proceeding.
-				// This handles ghost players stuck in-game after a dirty disconnect.
+				// Force-disconnect any existing session for this account (handles ghosts from dirty disconnects).
 				final boolean isBotAccount = request.getEmail() != null && request.getEmail().endsWith("@jrealm-bot.local");
 				if (!isBotAccount) {
 					boolean disconnectedExisting = false;
@@ -1055,10 +956,9 @@ public class ServerGameLogic {
 						}
 					}
 					if (disconnectedExisting) {
-						// Brief pause to let realm state settle after force-disconnect
+						// Let realm state settle after force-disconnect.
 						try { Thread.sleep(250); } catch (InterruptedException ignored) {}
-						// Safety net: if the player is STILL in a realm after disconnect
-						// (e.g. disconnectPlayer partially failed), forcibly remove them
+						// Safety net: forcibly remove any player still in a realm.
 						for (Player ghost : mgr.getPlayers()) {
 							if (ghost.getAccountUuid() != null && ghost.getAccountUuid().equals(accountUuid)) {
 								log.warn("[SERVER] Ghost player {} still present after disconnect, forcibly removing", ghost.getName());
@@ -1077,9 +977,7 @@ public class ServerGameLogic {
 				for (final GameItemRefDto item : targetCharacter.getItems()) {
 					loadedEquipment.put(item.getSlotIdx(), GameItem.fromGameItemRef(item));
 				}
-				// Phase 1B: one-shot migration for pre-rework saves (20-slot
-				// inventory, slot 1 = ability item). After this runs once the
-				// player's persisted slotIdx values get rewritten on next save.
+				// One-shot migration for pre-rework 20-slot saves (slot 1 = ability item).
 				loadedEquipment = ServerItemHelper.migrateLegacySlotLayout(loadedEquipment);
 
 				assignedId = Realm.RANDOM.nextLong();
@@ -1103,19 +1001,15 @@ public class ServerGameLogic {
 				player.setAccountUuid(accountUuid);
 				player.setCharacterUuid(targetCharacter.getCharacterUuid());
 				player.equipSlots(loadedEquipment);
-				// Relocate any equipped items that don't actually match their
-				// slot type or class. This cleans up legacy-bad state on
-				// every login so a single-time bug doesn't persist forever.
+				// Relocate items in wrong equip slots — cleans up legacy-bad state on every login.
 				ServerItemHelper.reconcileEquipment(player);
 				player.applyStats(targetCharacter.getStats());
 				player.setName(accountName);
 				player.setHeadless(false);
-				// Cache chat role from auth provisions for name coloring
 				try {
 					AccountDto authAccount = ServerGameLogic.DATA_SERVICE.executeGet(
 						"/admin/account/" + loginToken.getAccountGuid(), null, AccountDto.class);
-					// Order matters: highest-tier provision wins so an account
-					// holding both ADMIN and EDITOR shows the admin badge.
+					// Order matters: highest-tier provision wins (admin > editor, etc.).
 					if (authAccount != null && authAccount.isSysAdmin()) player.setChatRole("sysadmin");
 					else if (authAccount != null && authAccount.isAdmin()) player.setChatRole("admin");
 					else if (authAccount != null && authAccount.isModerator()) player.setChatRole("mod");
@@ -1145,8 +1039,7 @@ public class ServerGameLogic {
 
 				commandResponse = CommandPacket.create(player, CommandType.LOGIN_RESPONSE, message);
 
-				// Defer realm join to the tick thread so addPlayer + invalidateRealmLoadState
-				// run atomically with the LoadPacket delta logic (no race condition).
+				// Defer realm join to tick thread so addPlayer + invalidate run atomically with LoadPacket delta logic.
 				mgr.enqueuePendingJoin(new PendingRealmJoin(
 						targetRealm, player, command.getSrcIp(), userSession, commandResponse));
 				log.info("[SERVER] Player {} login queued for tick-thread processing", player);
@@ -1154,7 +1047,6 @@ public class ServerGameLogic {
 				ServerGameLogic.log.error("Failed to perform Client Login. Reason: {}", e);
 				commandResponse = CommandPacket.createError(assignedId, 503,
 						"Failed to perform Client Login. Reason: " + e.getMessage());
-				// Only send error responses directly — successful logins are sent by processPendingJoins
 				if (player != null && commandResponse != null) {
 					mgr.enqueueServerPacket(player, commandResponse);
 				}
@@ -1169,8 +1061,7 @@ public class ServerGameLogic {
 		return response;
 	}
 
-	// Looks up a player by source IP, which is determined by the server and less likely to be
-	// vulnerable to spoofing assuming someone reverse engineers the packet protocol
+	// Server-derived srcIp is harder to spoof than declared playerId. Reject mismatches.
 	private static boolean validateCallingPlayer(RealmManagerServer mgr, Packet packet, Long declaredPlayerId) {
 		final Long actualPlayerId = mgr.getRemoteAddresses().get(packet.getSrcIp());
 		final Player actualPlayer = mgr.searchRealmsForPlayer(actualPlayerId);

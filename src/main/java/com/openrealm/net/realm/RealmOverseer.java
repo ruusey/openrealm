@@ -19,37 +19,19 @@ import com.openrealm.net.server.packet.TextPacket;
 
 import lombok.extern.slf4j.Slf4j;
 
-/**
- * Overseer AI that manages a realm's ecosystem:
- * - Monitors enemy populations per zone
- * - Spawns replacement enemies when population drops
- * - Tracks quest/boss enemies and announces kills
- * - Spawns event encounters when bosses die
- * - Manages realm events (global boss encounters with terrain + minion waves)
- * - Broadcasts taunts and announcements
- */
+/** Realm ecosystem AI: population top-up, quest-kill announcements, realm events, taunts. */
 @Slf4j
 public class RealmOverseer {
-    // Population top-up cadence. Was 640 ticks (~10s) which made the realm
-    // feel empty after a single sweep — players cleared an area and waited
-    // 10s with nothing to fight. 320 ticks (~5s) gives a noticeable
-    // refresh rate without hammering CPU.
     private static final int CHECK_INTERVAL_TICKS = 320;
     private static final float REPOPULATE_THRESHOLD = 0.5f;
     private static final float OVERPOPULATE_THRESHOLD = 1.5f;
-    /** Hard cap on enemies spawned per population check, so a freshly
-     *  cleared zone doesn't get carpet-bombed in one tick — the refill
-     *  drips in over a few cycles, ~5 enemies/sec sustained. */
+    /** Hard cap per population check; refill drips in over a few cycles. */
     private static final int MAX_REFILL_PER_CHECK = 25;
-    /** Every N ticks (~90s @ 64 TPS) the overseer drops an ambient line
-     *  in chat so players know it's watching. Without this the overseer
-     *  is silent unless a boss/event fires, which can be many minutes. */
     private static final int AMBIENT_INTERVAL_TICKS = 5760;
     private static final double EVENT_SPAWN_CHANCE = 0.25;
 
-    // Realm events
-    private static final int EVENT_CHECK_INTERVAL_TICKS = 6400; // ~100 seconds at 64 TPS
-    private static final double REALM_EVENT_SPAWN_CHANCE = 0.15; // 15% chance per check
+    private static final int EVENT_CHECK_INTERVAL_TICKS = 6400;
+    private static final double REALM_EVENT_SPAWN_CHANCE = 0.15;
     private static final int MAX_CONCURRENT_EVENTS = 1;
 
     private final Realm realm;
@@ -61,7 +43,6 @@ public class RealmOverseer {
     private final Set<Integer> questEnemyIds = new HashSet<>();
     private final Map<Long, Map<Long, Integer>> damageTracker = new ConcurrentHashMap<>();
 
-    // Taunts
     private static final String[] WELCOME_TAUNTS = {
         "Welcome, mortal. You are food for my minions!",
         "Another fool enters my domain...",
@@ -86,8 +67,6 @@ public class RealmOverseer {
         "More servants of the %s pour forth!"
     };
 
-    // Periodic ambient lines so the overseer feels present even during
-    // long stretches between boss events.
     private static final String[] AMBIENT_TAUNTS = {
         "I am always watching, mortal...",
         "My realms hunger for your blood.",
@@ -116,34 +95,26 @@ public class RealmOverseer {
         }
     }
 
-    /**
-     * Called every server tick. Performs periodic ecosystem management.
-     */
+    /** Called every server tick. */
     public void tick() {
         tickCounter++;
 
-        // Process active realm events every tick (minion wave checks, timeout)
         processActiveEvents();
 
         if (tickCounter % CHECK_INTERVAL_TICKS == 0) {
             checkPopulation();
         }
 
-        // Periodically roll for new realm event
         if (tickCounter % EVENT_CHECK_INTERVAL_TICKS == 0) {
             checkRealmEventSpawn();
         }
 
-        // Ambient flavor — only fires when there's at least one human
-        // player in the realm. Ensures the overseer is visibly active in
-        // chat even between major events.
+        // Ambient flavor only fires when at least one human is present.
         if (tickCounter % AMBIENT_INTERVAL_TICKS == 0 && hasHumanPlayer()) {
             broadcastTaunt(randomChoice(AMBIENT_TAUNTS));
         }
     }
 
-    /** Returns true if at least one non-bot, non-headless player is in
-     *  this realm. Skips ambient broadcasts on a realm full of bots. */
     private boolean hasHumanPlayer() {
         for (var p : realm.getPlayers().values()) {
             if (p != null && !p.isHeadless() && !p.isBot()) return true;
@@ -153,11 +124,7 @@ public class RealmOverseer {
 
     private void checkPopulation() {
         if (targetPopulation == 0) {
-            // Snapshot the realm's initial population on the first check.
-            // initialEnemyCount is captured by Realm during spawnRandomEnemies,
-            // so it reflects the post-spawn target rather than whatever the
-            // pop happens to be at the first check (which could already be
-            // depleted by players in the 5s grace window).
+            // Use the post-spawn snapshot — first check may already be depleted.
             final int initial = realm.getInitialEnemyCount();
             if (initial > 0) targetPopulation = initial;
             else targetPopulation = Math.max(100, realm.getEnemies().size());
@@ -170,8 +137,6 @@ public class RealmOverseer {
         if (deficit > 0) {
             final int toSpawn = Math.min(deficit, MAX_REFILL_PER_CHECK);
             final int spawned = spawnReplacements(toSpawn);
-            // Promoted from debug to info — the user reported "no respawn
-            // happening" and the debug logs were invisible in journalctl.
             log.info("[OVERSEER] realm={} top-up: pop {}/{}, spawned {} (requested {})",
                     realm.getRealmId(), currentPop, targetPopulation, spawned, toSpawn);
         }
@@ -233,8 +198,7 @@ public class RealmOverseer {
         EnemyModel model = GameDataManager.ENEMIES.get(enemy.getEnemyId());
         if (model == null) return;
 
-        // Check if this kill completes an active realm event
-        for (Realm.ActiveRealmEvent evt : realm.getActiveRealmEvents()) {
+        for (ActiveRealmEvent evt : realm.getActiveRealmEvents()) {
             if (evt.bossEnemyId == enemy.getId() && !evt.completed) {
                 completeRealmEvent(evt);
                 return;
@@ -277,38 +241,22 @@ public class RealmOverseer {
             eventBoss.getName(), spawnPos.x, spawnPos.y);
     }
 
-    // ========== REALM EVENT SYSTEM ==========
-
-    /**
-     * Periodically roll for a new realm event to spawn.
-     */
     private void checkRealmEventSpawn() {
         if (GameDataManager.REALM_EVENTS == null || GameDataManager.REALM_EVENTS.isEmpty()) return;
         if (realm.getActiveRealmEvents().size() >= MAX_CONCURRENT_EVENTS) return;
         if (Realm.RANDOM.nextDouble() >= REALM_EVENT_SPAWN_CHANCE) return;
 
-        // Pick a random event
         List<RealmEventModel> candidates = new ArrayList<>(GameDataManager.REALM_EVENTS.values());
         RealmEventModel event = candidates.get(Realm.RANDOM.nextInt(candidates.size()));
         spawnRealmEvent(event);
     }
 
-    /**
-     * Spawn a realm event: place setpiece terrain, spawn boss + initial minions, announce.
-     * Random natural-spawn path: searches for an allowed-zone, non-void tile.
-     * Returns true on success, false if no spawn could be placed.
-     */
+    /** Random natural-spawn path for a realm event. Returns false if no spawn fits. */
     public boolean spawnRealmEvent(RealmEventModel event) {
         return spawnRealmEvent(event, null);
     }
 
-    /**
-     * Spawn a realm event at the given world position (e.g. an admin's
-     * /event command should drop the encounter on top of the player). When
-     * atPos is non-null, all zone/safety checks are bypassed — setpieces
-     * are allowed to terraform the map freely; obstacles get overwritten.
-     * When atPos is null, the legacy random search is used.
-     */
+    /** Spawn at atPos (admin /event) bypassing zone/safety checks, or random when null. */
     public boolean spawnRealmEvent(RealmEventModel event, Vector2f atPos) {
         final TerrainGenerationParameters params = getTerrainParams();
         final boolean hasZones = params != null && params.getZones() != null && !params.getZones().isEmpty();
@@ -322,9 +270,6 @@ public class RealmOverseer {
         int spHeight = setPiece != null ? setPiece.getHeight() : 1;
 
         if (atPos != null) {
-            // Forced spawn (admin /event): place the setpiece centered on
-            // the requested point. No zone or void checks — setpieces are
-            // allowed to fully terraform whatever's underneath.
             spawnPos = atPos.clone();
             tileX = (int) (atPos.x / tileSize) - spWidth / 2;
             tileY = (int) (atPos.y / tileSize) - spHeight / 2;
@@ -333,7 +278,6 @@ public class RealmOverseer {
                 Vector2f candidate = realm.getTileManager().getSafePosition();
                 if (candidate == null) continue;
 
-                // Zone check
                 if (hasZones && event.getAllowedZones() != null) {
                     OverworldZone zone = realm.getTileManager().getZoneForPosition(candidate.x, candidate.y);
                     if (zone == null || !event.getAllowedZones().contains(zone.getZoneId())) {
@@ -341,7 +285,6 @@ public class RealmOverseer {
                     }
                 }
 
-                // Check tile isn't void
                 if (realm.getTileManager().isVoidTile(candidate, 0, 0)) continue;
 
                 spawnPos = candidate;
@@ -356,7 +299,6 @@ public class RealmOverseer {
             }
         }
 
-        // Save existing terrain and stamp setpiece
         int[][] savedBase = null;
         int[][] savedColl = null;
         if (setPiece != null) {
@@ -366,7 +308,6 @@ public class RealmOverseer {
             realm.stampSetPiece(setPiece, tileX, tileY, null);
         }
 
-        // Spawn the boss
         EnemyModel bossModel = GameDataManager.ENEMIES.get(event.getBossEnemyId());
         if (bossModel == null) {
             log.error("[REALM_EVENT] Boss enemyId {} not found for event '{}'",
@@ -374,10 +315,7 @@ public class RealmOverseer {
             return false;
         }
 
-        // Setpieces terraform but the boss-spawn point may still land on a
-        // collision tile (e.g. a pillar in the center of the stamped art).
-        // Push to the nearest open tile within a radius covering the whole
-        // setpiece so the boss is never stuck on spawn.
+        // Boss spawn point may be on a stamped collision tile — push to nearest open.
         final int searchRadius = Math.max(spWidth, spHeight) + 2;
         final Vector2f bossSafePos = findOpenSpawnNear(spawnPos, searchRadius);
         if (bossSafePos != null) spawnPos = bossSafePos;
@@ -392,43 +330,30 @@ public class RealmOverseer {
         boss.setPos(spawnPos);
         realm.addEnemy(boss);
 
-        // Create the active event state
         int waveCount = event.getMinionWaves() != null ? event.getMinionWaves().size() : 0;
         long durationMs = event.getDurationSeconds() * 1000L;
-        Realm.ActiveRealmEvent activeEvent = new Realm.ActiveRealmEvent(
+        ActiveRealmEvent activeEvent = new ActiveRealmEvent(
             event.getEventId(), boss.getId(), tileX, tileY,
             savedBase, savedColl, waveCount, durationMs);
         realm.getActiveRealmEvents().add(activeEvent);
 
-        // Announce
         String zoneName = "realm";
         if (hasZones) {
             OverworldZone zone = realm.getTileManager().getZoneForPosition(spawnPos.x, spawnPos.y);
             if (zone != null) zoneName = zone.getDisplayName();
         }
         broadcastTaunt(String.format(event.getAnnounceMessage(), zoneName));
-        // Immediate marker broadcast so the pin appears on the minimap
-        // before the next 3s periodic re-broadcast.
         broadcastEventMarker(activeEvent, boss, event);
         log.info("[REALM_EVENT] Spawned '{}' at tile ({}, {}), boss entityId={}, duration={}s",
             event.getName(), tileX, tileY, boss.getId(), event.getDurationSeconds());
         return true;
     }
 
-    // Re-broadcast event markers every 192 ticks (~3s @ 64 TPS) so the
-    // minimap stays populated even for newly-joined players. Lower than
-    // EVENT_CHECK_INTERVAL_TICKS so markers appear quickly after spawn.
     private static final int EVENT_MARKER_INTERVAL_TICKS = 192;
 
-    /**
-     * Broadcast a marker for one active event so clients can pin it on
-     * the minimap. Sent as a TextPacket with sender "EVENT_MARKER" —
-     * the client filters this from chat and parses the body into an
-     * {eventId, x, y, name} record. REMOVE messages clear the pin.
-     */
-    private void broadcastEventMarker(Realm.ActiveRealmEvent evt, Enemy boss, RealmEventModel eventModel) {
+    /** Send "ADD|eventId|bossId|x|y|name" marker to all human players. */
+    private void broadcastEventMarker(ActiveRealmEvent evt, Enemy boss, RealmEventModel eventModel) {
         if (boss == null || eventModel == null) return;
-        // Format: "ADD|eventId|bossId|x|y|name"
         final float x = boss.getPos().x + boss.getSize() / 2f;
         final float y = boss.getPos().y + boss.getSize() / 2f;
         final String body = String.format("ADD|%d|%d|%.0f|%.0f|%s",
@@ -451,34 +376,25 @@ public class RealmOverseer {
         }
     }
 
-    /**
-     * Process all active realm events each tick:
-     * - Check minion wave HP thresholds
-     * - Check timeout
-     * - Periodically re-broadcast event-marker pins so the minimap UI
-     *   stays in sync (also covers players who joined mid-event).
-     */
     private void processActiveEvents() {
         if (realm.getActiveRealmEvents().isEmpty()) return;
 
         final boolean broadcastMarkers = (tickCounter % EVENT_MARKER_INTERVAL_TICKS == 0);
 
-        final Iterator<Realm.ActiveRealmEvent> it = realm.getActiveRealmEvents().iterator();
+        final Iterator<ActiveRealmEvent> it = realm.getActiveRealmEvents().iterator();
         while (it.hasNext()) {
-            Realm.ActiveRealmEvent evt = it.next();
+            ActiveRealmEvent evt = it.next();
             if (evt.completed) {
                 it.remove();
                 continue;
             }
 
-            // Check timeout
             if (evt.isExpired()) {
                 timeoutRealmEvent(evt);
                 it.remove();
                 continue;
             }
 
-            // Check boss still alive
             Enemy boss = realm.getEnemies().get(evt.bossEnemyId);
             if (boss == null || boss.getDeath()) {
                 completeRealmEvent(evt);
@@ -486,14 +402,11 @@ public class RealmOverseer {
                 continue;
             }
 
-            // Re-broadcast minimap marker every few seconds so the pin
-            // stays present and tracks the boss's current position.
             final RealmEventModel evtModel = GameDataManager.REALM_EVENTS.get(evt.eventId);
             if (broadcastMarkers && evtModel != null) {
                 broadcastEventMarker(evt, boss, evtModel);
             }
 
-            // Check minion wave HP thresholds
             RealmEventModel eventModel = evtModel;
             if (eventModel == null || eventModel.getMinionWaves() == null) continue;
 
@@ -507,7 +420,6 @@ public class RealmOverseer {
                 }
             }
 
-            // Clean up dead minions from tracking set
             evt.minionIds.removeIf(id -> {
                 Enemy m = realm.getEnemies().get(id);
                 return m == null || m.getDeath();
@@ -515,16 +427,7 @@ public class RealmOverseer {
         }
     }
 
-    /**
-     * Spawn a wave of minions around the boss.
-     */
-    /**
-     * Return the nearest tile-center inside {@code radiusTiles} of
-     * {@code target} that is neither a collision tile nor a void tile.
-     * Searches in expanding rings (Chebyshev distance) so the closest
-     * candidate wins. Returns the original target if it's already open,
-     * or null if no open tile exists within the search radius.
-     */
+    /** Nearest open tile-center within radiusTiles (Chebyshev-ring search). Null if none. */
     private Vector2f findOpenSpawnNear(Vector2f target, int radiusTiles) {
         if (target == null) return null;
         final var tm = realm.getTileManager();
@@ -534,8 +437,6 @@ public class RealmOverseer {
         for (int r = 0; r <= radiusTiles; r++) {
             for (int dy = -r; dy <= r; dy++) {
                 for (int dx = -r; dx <= r; dx++) {
-                    // Only the ring at distance r — skip interior cells
-                    // already tested in earlier passes.
                     if (Math.max(Math.abs(dx), Math.abs(dy)) != r) continue;
                     final float cx = (baseTx + dx) * tileSize + tileSize * 0.5f;
                     final float cy = (baseTy + dy) * tileSize + tileSize * 0.5f;
@@ -549,7 +450,7 @@ public class RealmOverseer {
         return null;
     }
 
-    private void spawnMinionWave(Realm.ActiveRealmEvent evt, Enemy boss, MinionWave wave, String eventName) {
+    private void spawnMinionWave(ActiveRealmEvent evt, Enemy boss, MinionWave wave, String eventName) {
         EnemyModel minionModel = GameDataManager.ENEMIES.get(wave.getEnemyId());
         if (minionModel == null) return;
 
@@ -560,9 +461,6 @@ public class RealmOverseer {
             float oy = (float) Math.sin(angle) * wave.getOffset();
             Vector2f minionPos = new Vector2f(boss.getPos().x + ox, boss.getPos().y + oy);
 
-            // Push out of collision tiles so a minion never spawns wedged
-            // inside a wall / pillar / decoration. Search radius is small —
-            // we just need the nearest free neighbor.
             Vector2f safePos = findOpenSpawnNear(minionPos, 4);
             if (safePos != null) minionPos = safePos;
 
@@ -582,15 +480,11 @@ public class RealmOverseer {
             wave.getCount(), minionModel.getName(), eventName);
     }
 
-    /**
-     * Complete a realm event (boss killed): restore terrain, cleanup minions, announce.
-     */
-    private void completeRealmEvent(Realm.ActiveRealmEvent evt) {
+    private void completeRealmEvent(ActiveRealmEvent evt) {
         evt.completed = true;
         broadcastEventMarkerRemove(evt.bossEnemyId);
         RealmEventModel eventModel = GameDataManager.REALM_EVENTS.get(evt.eventId);
 
-        // Remove surviving minions
         for (long minionId : evt.minionIds) {
             Enemy minion = realm.getEnemies().get(minionId);
             if (minion != null && !minion.getDeath()) {
@@ -599,7 +493,6 @@ public class RealmOverseer {
             }
         }
 
-        // Restore terrain
         if (evt.savedBase != null && evt.savedCollision != null) {
             realm.restoreTerrainAt(evt.tileX, evt.tileY, evt.savedBase, evt.savedCollision);
         }
@@ -610,22 +503,17 @@ public class RealmOverseer {
         log.info("[REALM_EVENT] Completed event id={}", evt.eventId);
     }
 
-    /**
-     * Timeout a realm event: despawn boss + minions, restore terrain, announce.
-     */
-    private void timeoutRealmEvent(Realm.ActiveRealmEvent evt) {
+    private void timeoutRealmEvent(ActiveRealmEvent evt) {
         evt.completed = true;
         broadcastEventMarkerRemove(evt.bossEnemyId);
         RealmEventModel eventModel = GameDataManager.REALM_EVENTS.get(evt.eventId);
 
-        // Remove boss
         Enemy boss = realm.getEnemies().get(evt.bossEnemyId);
         if (boss != null && !boss.getDeath()) {
             realm.getExpiredEnemies().add(evt.bossEnemyId);
             realm.removeEnemy(boss);
         }
 
-        // Remove minions
         for (long minionId : evt.minionIds) {
             Enemy minion = realm.getEnemies().get(minionId);
             if (minion != null && !minion.getDeath()) {
@@ -634,7 +522,6 @@ public class RealmOverseer {
             }
         }
 
-        // Restore terrain
         if (evt.savedBase != null && evt.savedCollision != null) {
             realm.restoreTerrainAt(evt.tileX, evt.tileY, evt.savedBase, evt.savedCollision);
         }
@@ -644,8 +531,6 @@ public class RealmOverseer {
         }
         log.info("[REALM_EVENT] Timed out event id={}", evt.eventId);
     }
-
-    // ========== DAMAGE TRACKING ==========
 
     public void trackDamage(long enemyId, long playerId, int damage) {
         damageTracker.computeIfAbsent(enemyId, k -> new ConcurrentHashMap<>())
@@ -670,11 +555,7 @@ public class RealmOverseer {
         return (float) playerDmg / totalDmg >= GlobalConstants.SOULBOUND_DAMAGE_THRESHOLD;
     }
 
-    /**
-     * Returns a list of all player IDs who dealt at least the soulbound damage
-     * threshold percentage to this enemy. Used to determine which players
-     * qualify for soulbound loot drops.
-     */
+    /** Player IDs whose damage share meets SOULBOUND_DAMAGE_THRESHOLD on this enemy. */
     public List<Long> getQualifyingPlayers(long enemyId) {
         List<Long> qualifyingPlayers = new ArrayList<>();
         Map<Long, Integer> dmgMap = damageTracker.get(enemyId);
@@ -694,9 +575,6 @@ public class RealmOverseer {
         return qualifyingPlayers;
     }
 
-    /**
-     * Returns the damage map for an enemy, used for loot roll calculations.
-     */
     public Map<Long, Integer> getDamageMap(long enemyId) {
         return damageTracker.get(enemyId);
     }
@@ -704,8 +582,6 @@ public class RealmOverseer {
     public void clearDamageTracking(long enemyId) {
         damageTracker.remove(enemyId);
     }
-
-    // ========== MESSAGING ==========
 
     public void welcomePlayer(Player player) {
         String taunt = randomChoice(WELCOME_TAUNTS);
@@ -718,11 +594,7 @@ public class RealmOverseer {
     }
 
     private void broadcastTaunt(String message) {
-        // 750ms throttle (was 3s) — protects against bursts of identical
-        // taunts from rapid-fire boss kills, but no longer eats every
-        // overseer message after a single boss-down event for several
-        // seconds. Player-visible messages were going missing because
-        // multiple events fired within the old 3s window.
+        // 750ms throttle protects against bursts without swallowing distinct events.
         long now = Instant.now().toEpochMilli();
         if (now - lastAnnouncement < 750) return;
         lastAnnouncement = now;
@@ -745,8 +617,6 @@ public class RealmOverseer {
                     realm.getRealmId());
         }
     }
-
-    // ========== UTILITIES ==========
 
     private String getPlayerName(long playerId) {
         var player = realm.getPlayers().get(playerId);

@@ -25,45 +25,25 @@ import lombok.extern.slf4j.Slf4j;
 public class ServerItemHelper {
 
     /**
-     * One-shot migration from pre-Phase-1B saves (4 equip slots + 16 backpack,
-     * order: weapon/ability/armor/ring) to the current layout (5 equip slots:
-     * weapon/armor/gauntlets/boots/ring + 16 backpack).
-     *
-     * Idempotent — if the input already looks new-format (slot-1 holds an
-     * armor item with targetSlot=1, or no item at slot 1), returns the input
-     * unchanged. Otherwise:
-     *  - slot 0 (weapon)       stays at 0
-     *  - slot 1 (legacy ability) is pushed to the first empty backpack slot;
-     *                             if none, dropped (logged).
-     *  - slot 2 (armor)        moves to slot 1
-     *  - slot 3 (ring)         moves to slot 4
-     *  - slots 4..19 (backpack) shift to 5..20
-     *
-     * The new gauntlet (slot 2) and boots (slot 3) start empty.
+     * One-shot migration from pre-Phase-1B saves (4 equip slots) to current 5-slot layout.
+     * Idempotent — returns input unchanged if already new-format.
      */
     public static Map<Integer, GameItem> migrateLegacySlotLayout(Map<Integer, GameItem> loaded) {
         if (loaded == null || loaded.isEmpty()) return loaded;
         final GameItem atSlot1 = loaded.get(1);
         final GameItem atSlot4 = loaded.get(4);
         final boolean slot1LooksNew = (atSlot1 == null) || (atSlot1.getTargetSlot() == 1);
-        // Phase 1B: if slot 4 holds a properly-placed ring (targetSlot==4),
-        // this character is already on the new layout and slot 4 is the ring
-        // equipment slot — NOT a legacy backpack slot. The old heuristic
-        // counted slot 4 as `anyOldBackpack` and forced migration on every
-        // new-layout login, scrambling armor/gauntlets/boots/ring into the
-        // backpack each time the player relogged with an empty bag.
+        // Slot 4 holding targetSlot==4 means new-layout ring slot, NOT legacy backpack.
         final boolean slot4LooksNew = (atSlot4 == null) || (atSlot4.getTargetSlot() == 4);
         if (slot1LooksNew && slot4LooksNew) {
             return loaded;
         }
         final boolean anyOldBackpack = loaded.keySet().stream().anyMatch(k -> k != null && k >= 5 && k <= 19);
         final boolean anyNewBackpack = loaded.keySet().stream().anyMatch(k -> k != null && k >= 5 && k <= 20);
-        // Secondary fallback for the empty-equipment edge case.
         if (slot1LooksNew && (!anyOldBackpack || anyNewBackpack)) {
             return loaded;
         }
         final Map<Integer, GameItem> migrated = new HashMap<>();
-        // Pass 1: deterministic remaps for slots we know.
         if (loaded.get(0) != null) migrated.put(0, loaded.get(0));
         if (loaded.get(2) != null) migrated.put(1, loaded.get(2)); // armor 2 -> 1
         if (loaded.get(3) != null) migrated.put(4, loaded.get(3)); // ring 3 -> 4
@@ -71,9 +51,6 @@ public class ServerItemHelper {
             final GameItem it = loaded.get(oldSlot);
             if (it != null) migrated.put(oldSlot + 1, it);
         }
-        // Pass 2: place the legacy ability item into the first empty backpack
-        // slot (5..20). Slots claimed by the backpack shift in pass 1 are
-        // already in `migrated`; we pick the lowest unclaimed index.
         final GameItem legacyAbility = loaded.get(1);
         if (legacyAbility != null) {
             int placed = -1;
@@ -94,17 +71,7 @@ public class ServerItemHelper {
     }
 
 
-    /**
-     * Returns true if {@code item} is allowed to occupy equipment slot
-     * {@code slotIdx} (0..{@link Player#EQUIPMENT_SLOT_COUNT}-1) for
-     * {@code player}'s class. Mirrors the gating logic used in
-     * {@link #handleMoveItemPacket}: targetSlot match, class compatibility,
-     * and rejects consumables/stackables.
-     *
-     * Used as a single source of truth so we can validate equips on the
-     * move path AND on character load (otherwise items saved to wrong slots
-     * by an older bug stay there forever).
-     */
+    /** Single source of truth for equip validity — used by move path AND character load. */
     public static boolean canEquipInSlot(Player player, GameItem item, int slotIdx) {
         if (item == null) return false;
         if (slotIdx < 0 || slotIdx >= Player.EQUIPMENT_SLOT_COUNT) {
@@ -116,11 +83,7 @@ public class ServerItemHelper {
                     item.getName(), slotIdx, item.isConsumable(), item.isStackable());
             return false;
         }
-        // Strict slot match. Legacy ability items (now class-baked into the
-        // character) carry targetSlot=-1, which the old `>= 0` guard treated
-        // as "any slot" — that let players drop a Necrotic Skull into the
-        // weapon slot and machine-gun enemies with paralysis. Require an
-        // exact match so -1 (no valid slot) is rejected from every slot.
+        // Strict slot match — targetSlot==-1 (legacy ability items) must be rejected from every slot.
         if (item.getTargetSlot() != slotIdx) {
             log.warn("[canEquipInSlot] reject {} into slot {} — targetSlot={} (expected {})",
                     item.getName(), slotIdx, item.getTargetSlot(), slotIdx);
@@ -134,15 +97,7 @@ public class ServerItemHelper {
         return classOk;
     }
 
-    /**
-     * Sanity-pass after equipping items from saved character data: scan
-     * equipment slots and relocate any mismatched item into the first
-     * empty inventory slot. Without this, a character that historically got
-     * a wrong item into an equipment slot (via any past bug) keeps it forever
-     * because equipSlots() doesn't validate.
-     *
-     * Returns the number of relocations performed.
-     */
+    /** Scan equipment slots after load and relocate any mismatched items. Returns relocation count. */
     public static int reconcileEquipment(Player player) {
         if (player == null) return 0;
         final GameItem[] inv = player.getInventory();
@@ -152,7 +107,6 @@ public class ServerItemHelper {
             final GameItem cur = inv[slot];
             if (cur == null) continue;
             if (canEquipInSlot(player, cur, slot)) continue;
-            // Mismatch: move to first empty inv slot (4-19). If none, drop.
             final int empty = player.firstEmptyInvSlot();
             if (empty >= 0) {
                 inv[empty] = cur;
@@ -170,17 +124,6 @@ public class ServerItemHelper {
         return relocated;
     }
 
-    /**
-     * Shift+right-click stack split: source slot keeps ceil(N/2), the
-     * floor(N/2) remainder is placed into the first empty backpack slot.
-     * Server rejects when:
-     *   - source isn't in backpack slots (backpack only — equipment is non-stackable)
-     *   - source isn't stackable, or stackCount < 2
-     *   - no empty backpack slot is available (so we never silently lose the split)
-     *
-     * On success the player's inventory is mutated and a fresh UpdatePacket
-     * is queued so the client renders the two stacks immediately.
-     */
     public static void handleSplitStackPacket(RealmManagerServer mgr, Packet packet) {
         try {
             final SplitStackPacket p = (SplitStackPacket) packet;
@@ -198,7 +141,6 @@ public class ServerItemHelper {
                 log.info("[SplitStack] Player {} slot {} is not a splittable stack", player.getId(), fromSlot);
                 return;
             }
-            // First empty backpack slot.
             int empty = -1;
             for (int i = Player.EQUIPMENT_SLOT_COUNT; i < player.getInventory().length; i++) {
                 if (player.getInventory()[i] == null) { empty = i; break; }
@@ -209,10 +151,9 @@ public class ServerItemHelper {
                 return;
             }
             // ceil(N/2) stays at source, floor(N/2) goes to empty.
-            // For odd counts the source keeps the larger half (e.g. 7 -> 4 + 3).
             final int total = src.getStackCount();
-            final int splitCount = total / 2;             // floor
-            final int sourceCount = total - splitCount;   // ceil
+            final int splitCount = total / 2;
+            final int sourceCount = total - splitCount;
             src.setStackCount(sourceCount);
             final GameItem split = src.clone();
             split.setUid(UUID.randomUUID().toString());
@@ -230,17 +171,14 @@ public class ServerItemHelper {
     }
 
     /**
-     * Try to deposit `incoming` into the player's inventory. If `incoming` is a
-     * stackable item, top-up any existing stacks of the same itemId before
-     * spilling into a free slot. Returns true if any portion was deposited.
-     * The `incoming` item's stackCount is mutated to reflect the leftover.
+     * Deposit {@code incoming} stackable into inventory, topping up existing stacks first.
+     * Mutates {@code incoming.stackCount} to the leftover. Returns true if any portion was deposited.
      */
     public static boolean tryDepositStackable(Player player, GameItem incoming) {
         if (incoming == null) return false;
         final int originalCount = incoming.getStackCount();
         final GameItem[] inv = player.getInventory();
         if (incoming.isStackable()) {
-            // Top up existing stacks of the same itemId
             for (int i = Player.EQUIPMENT_SLOT_COUNT; i < inv.length; i++) {
                 final GameItem existing = inv[i];
                 if (existing == null) continue;
@@ -254,13 +192,8 @@ public class ServerItemHelper {
                 if (incoming.getStackCount() <= 0) break;
             }
         }
-        // Spill any remainder into the first empty slot. CRITICAL: park a
-        // CLONE of `incoming` in the inventory and zero out `incoming`'s
-        // stack count. The caller reads incoming.getStackCount() afterward
-        // to decide how much to leave in the loot bag — without the zero,
-        // the just-deposited stack stayed in both the bag and the inventory
-        // (a full duplicate of every stackable pickup when no existing
-        // stack was available to top up).
+        // CRITICAL: park a CLONE in inventory and zero out incoming.stackCount —
+        // caller reads incoming.getStackCount() to decide loot-bag remainder.
         if (incoming.getStackCount() > 0) {
             final int empty = player.firstEmptyInvSlot();
             if (empty >= 0) {
@@ -268,10 +201,6 @@ public class ServerItemHelper {
                 incoming.setStackCount(0);
             }
         }
-        // Return true if ANY portion was deposited — the top-up loop may
-        // have moved some units even when the spill slot is unavailable.
-        // The caller then sets the loot bag's stack count to the unmoved
-        // remainder so partial pickups don't duplicate the topped-up units.
         return incoming.getStackCount() < originalCount;
     }
 
@@ -283,13 +212,6 @@ public class ServerItemHelper {
 
         final int fromIdx = moveItemPacket.getFromSlotIndex();
         final int targetIdx = moveItemPacket.getTargetSlotIndex();
-        // One-line log of the entire intent so the native-client loot
-        // pickup race is diagnosable from server-side too: shows from
-        // -> target, drop / consume flags, and the player's current
-        // pos at the time of the packet (we use this to debug the
-        // 'pickup radius' rejection — if the position is far from
-        // a loot container the in-realm getClosestLootContainer
-        // will return null and pickup silently no-ops).
         ServerItemHelper.log.info("[ItemMove] player={} from={} target={} drop={} consume={} pos=({}, {})",
                 moveItemPacket.getPlayerId(), fromIdx, targetIdx,
                 moveItemPacket.isDrop(), moveItemPacket.isConsume(),
@@ -305,13 +227,10 @@ public class ServerItemHelper {
             if (moveItemPacket.isConsume()) {
                 if (isHp) player.consumeHpPotion();
                 else player.consumeMpPotion();
-                // Lifetime metric — only records on consume (drop branch
-                // would double-count and isn't actually drinking).
                 if (player.getMetrics() != null) {
                     player.getMetrics().recordPotion(isHp);
                 }
             } else {
-                // Drop one potion to ground as a loot item
                 final int itemId = isHp ? Player.HP_POTION_ITEM_ID : Player.MP_POTION_ITEM_ID;
                 final GameItem potionItem = GameDataManager.GAME_ITEMS.get(itemId);
                 if (potionItem == null) return;
@@ -331,19 +250,16 @@ public class ServerItemHelper {
         final boolean fromIsGroundLoot = MoveItemPacket.isGroundLoot(fromIdx);
         final boolean fromIsInventory = MoveItemPacket.isInventory(fromIdx) || MoveItemPacket.isEquipment(fromIdx);
 
-        // Reject any fromSlot that isn't a known valid range
         if (!fromIsInventory && !fromIsGroundLoot) {
             ServerItemHelper.log.warn("Player {} sent invalid from slot index {}", player.getId(), fromIdx);
             return;
         }
 
-        // Reject any targetSlot that isn't -1 (drop) or a valid inventory/equipment slot
         if (targetIdx != -1 && !MoveItemPacket.isEquipment(targetIdx) && !MoveItemPacket.isInventory(targetIdx)) {
             ServerItemHelper.log.warn("Player {} sent invalid target slot index {}", player.getId(), targetIdx);
             return;
         }
 
-        // Check for consumable item scripts (inventory only, not ground loot)
         if (moveItemPacket.isConsume() && fromIsInventory) {
             GameItem targetItem = player.getInventory()[fromIdx];
             if (targetItem == null) return;
@@ -355,7 +271,6 @@ public class ServerItemHelper {
             }
         }
 
-        // Resolve source item
         final GameItem currentEquip = targetIdx == -1 ? null
                 : player.getInventory()[targetIdx];
         GameItem from = null;
@@ -371,7 +286,6 @@ public class ServerItemHelper {
             }
         }
 
-        // Drop item from inventory/equipment to ground (ground loot items are already on the ground)
         if ((from != null) && moveItemPacket.isDrop() && fromIsInventory) {
             final LootContainer nearLoot = mgr.getClosestLootContainer(realm.getRealmId(), player.getPos(), 32, player.getId());
             if (nearLoot == null) {
@@ -382,9 +296,6 @@ public class ServerItemHelper {
                 player.getInventory()[fromIdx] = null;
             }
 
-        // Consume item (potions, food). Stackable consumables (HP/MP potions,
-        // food rations) only decrement by one — never wipe the whole stack.
-        // Non-stackable consumables clear the slot as before.
         } else if ((from != null) && from.isConsumable() && moveItemPacket.isConsume() && player.canConsume(from)
                 && !MoveItemPacket.isGroundLoot(fromIdx)) {
             final Stats newStats = player.getStats().concat(from.getStats());
@@ -400,7 +311,6 @@ public class ServerItemHelper {
                 player.getInventory()[fromIdx] = null;
             }
 
-        // Equip: backpack -> equipment slot
         } else if (MoveItemPacket.isInventory(fromIdx)
                 && MoveItemPacket.isEquipment(targetIdx) && (from != null)) {
             if (!canEquipInSlot(player, from, targetIdx)) {
@@ -409,9 +319,6 @@ public class ServerItemHelper {
                         player.getId(), from.getName(), from.getTargetSlot(), from.getTargetClass(), targetIdx);
                 return;
             }
-            // If we're swapping with the equipped item, the displaced item
-            // also has to fit somewhere — it's going to fromIdx (a regular
-            // inv slot), which is unrestricted, so always safe.
             if (currentEquip != null) {
                 player.getInventory()[fromIdx] = currentEquip.clone();
             } else {
@@ -419,10 +326,9 @@ public class ServerItemHelper {
             }
             player.getInventory()[targetIdx] = from.clone();
 
-        // Equip -> equip swap (e.g. dragging from slot 0 to slot 3 directly).
-        // Both endpoints must validate against the destination slot.
         } else if (MoveItemPacket.isEquipment(fromIdx)
                 && MoveItemPacket.isEquipment(targetIdx) && (from != null)) {
+            // Equip-swap: both endpoints must validate against the destination slot.
             if (!canEquipInSlot(player, from, targetIdx)) {
                 ServerItemHelper.log.warn(
                         "Player {} rejected equip-swap of {} into slot {} (mismatch)",
@@ -435,7 +341,6 @@ public class ServerItemHelper {
                         player.getId(), currentEquip.getName(), fromIdx);
                 return;
             }
-            // Pure swap.
             if (currentEquip != null) {
                 player.getInventory()[fromIdx] = currentEquip.clone();
             } else {
@@ -443,7 +348,6 @@ public class ServerItemHelper {
             }
             player.getInventory()[targetIdx] = from.clone();
 
-        // Swap within backpack (including cross-bag)
         } else if (MoveItemPacket.isInventory(fromIdx)
                 && MoveItemPacket.isInventory(targetIdx)) {
             GameItem to = player.getInventory()[targetIdx];
@@ -453,7 +357,6 @@ public class ServerItemHelper {
             } else if (from.isStackable() && to.isStackable()
                     && from.getItemId() == to.getItemId()
                     && to.getStackCount() < to.getMaxStack()) {
-                // Merge same-itemId stacks. Move as much as fits, leave remainder in source.
                 final int room = to.getMaxStack() - to.getStackCount();
                 final int move = Math.min(room, from.getStackCount());
                 to.setStackCount(to.getStackCount() + move);
@@ -469,14 +372,9 @@ public class ServerItemHelper {
                 player.getInventory()[targetIdx] = fromClone;
             }
 
-        // Unequip: equipment -> backpack. When the destination
-        // slot already holds an item, this becomes a swap: that item moves
-        // INTO the equip slot. It must therefore pass the same equip-slot
-        // validation as a normal equip — otherwise a client could put any
-        // item (e.g. a bow on a wizard) into an equip slot just by dragging
-        // the equipped item onto an incompatible inventory item.
         } else if (MoveItemPacket.isEquipment(fromIdx)
                 && MoveItemPacket.isInventory(targetIdx) && (from != null)) {
+            // Unequip-with-swap: the displaced inv item enters an equip slot — must validate.
             if (currentEquip != null && !canEquipInSlot(player, currentEquip, fromIdx)) {
                 ServerItemHelper.log.warn(
                         "Player {} rejected unequip-swap: incoming item {} doesn't fit equip slot {}",
@@ -490,16 +388,7 @@ public class ServerItemHelper {
             }
             player.getInventory()[targetIdx] = from.clone();
 
-        // Ground loot pickup (fromSlot maps to MoveItemPacket.GROUND_LOOT_IDX)
         } else if (MoveItemPacket.isGroundLoot(fromIdx)) {
-            // Pickup radius — was player.getSize()*0.75 (~24px) which was
-            // too tight: vault chests sit near spawn so the player is
-            // always within range, but world-drop loot bags fall a few
-            // pixels outside that radius depending on where they spawned
-            // and reject pickup silently. Match the 'show this bag's
-            // items in the UI' radius the client uses to display the
-            // bag (player.getSize() + 24, ≈48-56px) so pickup is
-            // available for any bag whose items the player can see.
             final int pickupRadius = player.getSize() + 24;
             final LootContainer nearLoot = mgr.getClosestLootContainer(realm.getRealmId(), player.getPos(),
                     pickupRadius, player.getId());
@@ -516,7 +405,7 @@ public class ServerItemHelper {
             final GameItem lootItem = nearLoot.getItems()[lootIdx];
             if (lootItem == null) return;
 
-            // Intercept consumable HP/MP potions — route to potion storage, not inventory
+            // HP/MP potions route to potion storage, not inventory.
             if (lootItem.getItemId() == Player.HP_POTION_ITEM_ID) {
                 if (!player.addHpPotion()) {
                     ServerItemHelper.log.info("Player {} HP potion storage full (max {})", player.getId(), Player.MAX_CONSUMABLE_POTIONS);
@@ -538,7 +427,6 @@ public class ServerItemHelper {
                 return;
             }
 
-            // Stackable pickup: top up existing stacks first, leave remainder on the ground.
             if (lootItem.isStackable()) {
                 final GameItem incoming = lootItem.clone();
                 final boolean deposited = tryDepositStackable(player, incoming);
@@ -547,7 +435,6 @@ public class ServerItemHelper {
                     return;
                 }
                 if (incoming.getStackCount() > 0) {
-                    // Partial pickup: leave remainder in the loot container
                     lootItem.setStackCount(incoming.getStackCount());
                     nearLoot.setContentsChanged(true);
                 } else {
@@ -566,9 +453,7 @@ public class ServerItemHelper {
 
             player.getInventory()[emptySlot] = lootItem.clone();
             nearLoot.setItem(lootIdx, null);
-            // Re-pack items to fill the gap left by the picked-up item
             nearLoot.repackItems();
-            // Flag container as changed so the next LoadPacket broadcasts the update
             nearLoot.setContentsChanged(true);
         }
     }

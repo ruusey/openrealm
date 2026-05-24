@@ -4,6 +4,7 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -65,24 +66,19 @@ import lombok.extern.slf4j.Slf4j;
 @AllArgsConstructor
 @Slf4j
 public class Realm {
-    // Shared Secure Random instance for generating Ids and other random data
     public static final transient SecureRandom RANDOM = new SecureRandom();
     private long realmId;
     private int mapId;
     private String nodeId;
-    // For non-shared dungeon instances, the realmId of the parent (overworld / nexus)
-    // realm the player came from. Used by the cowardice portal and the boss-drop exit
-    // portal so both know where to return the player. 0 = no source (shared realm).
+    // realmId of the overworld/nexus a non-shared dungeon was entered from. 0 = none.
     private long sourceRealmId;
-    // The enemyId of this dungeon's designated boss. Set at realm creation time when
-    // the boss is spawned. When this enemy dies, an exit portal is dropped regardless
-    // of whether the boss has a loot table. 0 = no designated boss.
+    // Designated dungeon boss enemyId — drops the exit portal even with no loot table.
     private int dungeonBossEnemyId;
     private Map<Long, Player> players;
     private Map<Long, Bullet> bullets;
     private Map<Long, List<Long>> bulletHits;
     private Map<Long, Enemy> enemies;
-    private int initialEnemyCount; // Snapshot of enemy count after initial spawn, used for respawn threshold
+    private int initialEnemyCount;
     private Map<Long, LootContainer> loot;
     private Map<Long, Portal> portals;
 
@@ -91,261 +87,39 @@ public class Realm {
     private List<Long> expiredPlayers;
     private Map<Long, Long> playerLastShotTime;
     private TileManager tileManager;
-    // Compact short ID allocator for bandwidth-efficient movement packets
     private ShortIdAllocator shortIdAllocator = new ShortIdAllocator();
     private final ReentrantLock playerLock = new ReentrantLock();
 
-    // Per-player potion-storage containers loaded alongside vault chests in
-    // setupChests(). Only populated on vault realms (mapId == 1). v1 only
-    // uses index 0 of each list; the list shape leaves room for expansion
-    // without a packet/persistence schema change.
+    // Only populated on vault realms (mapId == 1); list[0] is the only index v1 uses.
     private final Map<Long, List<PotionStorage>> playerPotionStorage = new ConcurrentHashMap<>();
 
-    // Phase 4 — party-claimed dungeon instances. Each entry is a partyId
-    // currently occupying this realm; the dungeon entrance handler reads
-    // .size() against MapModel.maxPartyCount to decide whether to accept
-    // new parties. Overworld realms (maxPartyCount <= 0) ignore this set
-    // entirely. Concurrent set so the dungeon-entry packet handler can
-    // safely test+claim from any worker thread without further locking.
+    // partyIds currently occupying this dungeon; checked against MapModel.maxPartyCount.
     private final Set<Long> dungeonPartyIds = ConcurrentHashMap.newKeySet();
-    // Party-difficulty bonus baked at FIRST-party entry — captured once
-    // from the entering party's size so subsequent member arrivals don't
-    // shift mob HP/damage mid-run. +0.5 difficulty per member, capped
-    // at +2.0 (i.e. a full 4-player party caps the bonus). 0 = no bonus.
+    // Baked at FIRST-party entry so later joiners can't shift mob HP/damage mid-run.
     private float partyDifficultyBonus = 0f;
     public Set<Long> getDungeonPartyIds() { return this.dungeonPartyIds; }
     public float getPartyDifficultyBonus() { return this.partyDifficultyBonus; }
     public void   setPartyDifficultyBonus(float v) { this.partyDifficultyBonus = v; }
 
-    // Spatial hash grid for O(1) neighbor lookups (cell size = viewport radius)
     private transient SpatialHashGrid spatialGrid;
-    // Per-tick cache of NetObjectMovement instances keyed by entity id. Lets
-    // multiple viewers in the same realm share a single allocation per entity
-    // per tick instead of building a fresh instance each. Cleared at the
-    // start of each enqueueGameData() pass via clearTickMovementCache().
-    // Critical for two scenarios:
-    //   1. ~40 players clustered in nexus — without sharing, each of 40
-    //      viewers built its own NetObjectMovement[] of the other ~39
-    //      players + N enemies; with the cache each entity is built ONCE.
-    //   2. ~10K total enemies with sparse viewers — the spatial query
-    //      already filters off-screen enemies; cache only ever holds the
-    //      few that are actually in someone's viewport.
     private transient Map<Long, NetObjectMovement> tickMovementCache;
-    // Per-tick cache of stripped (no-inventory) UpdatePacket instances for
-    // other-player broadcast at 8 Hz. Each viewer's broadcast loop iterates
-    // up to 20 nearby players and previously built each one's stripped
-    // UpdatePacket from scratch — 40 viewers × 20 nearby × 8 Hz = 6400
-    // builds/sec, each doing 20 inventory ModelMapper.map() calls before
-    // throwing the inventory away. With the cache, each player is built
-    // ONCE per 8-Hz tick total. ~50× CPU win on the other-player broadcast
-    // path during 40-player nexus scenarios.
     private transient Map<Long, UpdatePacket> tickStrippedUpdateCache;
 
-    // Overseer AI for ecosystem management (enemy population, events, taunts)
     private transient RealmOverseer overseer;
 
-    // Poison damage-over-time tracking. Each entry ticks independently (poisons stack).
     private final List<PoisonDotState> activePoisonDots = new ArrayList<>();
     private static final long POISON_TICK_INTERVAL_MS = 200;
 
-    // Pending poison throws — tracked per tick instead of blocking a thread pool thread.
     private final List<PoisonThrowState> pendingPoisonThrows = new ArrayList<>();
-
-    // Active traps — Huntress trap zones that trigger when enemies walk into them.
     private final List<TrapState> activeTraps = new ArrayList<>();
-
-    // Active decoys — lightweight tick-driven entities for Trickster prism ability.
     private final List<DecoyState> activeDecoys = new ArrayList<>();
 
-    // Active Ninja "Kage Bunshin" clones — headless Player entities spawned by
-    // the Ninja class passive (11013). Tracked separately from decoys because
-    // they ARE real Player instances (same sprite/class as the source ninja)
-    // and therefore live in this.players, not this.enemies.
+    // Ninja Kage Bunshin clones — real Player instances (same sprite/class as source).
     private final List<CloneState> activeClones = new ArrayList<>();
-
-    // Active realm events — globally announced boss encounters with terrain + minion waves.
     private final List<ActiveRealmEvent> activeRealmEvents = new ArrayList<>();
-
-    static class ActiveRealmEvent {
-        final int eventId;
-        final long bossEnemyId;
-        final long spawnTime;
-        final long durationMs;
-        final int tileX, tileY;
-        final int[][] savedBase;
-        final int[][] savedCollision;
-        final Set<Long> minionIds = new HashSet<>();
-        final boolean[] wavesTriggered;
-        boolean completed;
-
-        ActiveRealmEvent(int eventId, long bossEnemyId, int tileX, int tileY,
-                         int[][] savedBase, int[][] savedCollision, int waveCount, long durationMs) {
-            this.eventId = eventId;
-            this.bossEnemyId = bossEnemyId;
-            this.spawnTime = Instant.now().toEpochMilli();
-            this.durationMs = durationMs;
-            this.tileX = tileX;
-            this.tileY = tileY;
-            this.savedBase = savedBase;
-            this.savedCollision = savedCollision;
-            this.wavesTriggered = new boolean[waveCount];
-            this.completed = false;
-        }
-
-        boolean isExpired() {
-            return Instant.now().toEpochMilli() - spawnTime >= durationMs;
-        }
-    }
 
     public List<ActiveRealmEvent> getActiveRealmEvents() {
         return this.activeRealmEvents;
-    }
-
-    static class PoisonThrowState {
-        final long landTime;
-        final long sourcePlayerId;
-        final float landX;
-        final float landY;
-        final float radius;
-        final int totalDamage;
-        final long poisonDuration;
-        final byte tier;
-
-        PoisonThrowState(long delayMs, long sourcePlayerId, float landX, float landY,
-                         float radius, int totalDamage, long poisonDuration, byte tier) {
-            this.landTime = Instant.now().toEpochMilli() + delayMs;
-            this.sourcePlayerId = sourcePlayerId;
-            this.landX = landX;
-            this.landY = landY;
-            this.radius = radius;
-            this.totalDamage = totalDamage;
-            this.poisonDuration = poisonDuration;
-            this.tier = tier;
-        }
-
-        boolean hasLanded() {
-            return Instant.now().toEpochMilli() >= landTime;
-        }
-    }
-
-    static class TrapState {
-        /** Time between landing and the trap becoming dangerous. Without
-         *  this gap, an enemy already standing where the throw lands would
-         *  arm + trigger the trap on the same tick — the player saw enemies
-         *  vanish without ever seeing the placed-trap or trigger visuals.
-         *  500ms gives both visuals time to display and matches the
-         *  expected "huntress sets trap, lures enemy in" gameplay loop. */
-        static final long ARM_TIME_MS = 500;
-
-        final long placeTime;   // when the trap was placed (after throw lands)
-        final long armReadyTime;// when the trap becomes dangerous (placeTime + ARM_TIME_MS)
-        final long expireTime;  // when the trap disappears if not triggered
-        final long sourcePlayerId;
-        final float x, y;
-        final float triggerRadius; // enemies within this radius trigger the trap
-        final short effectId;     // effect to apply (e.g., PARALYZED=2)
-        final long effectDuration;
-        final int damage;
-        final byte tier;          // ability item tier — drives client tint
-        boolean armed = false;    // becomes armed after throw lands
-        boolean triggered = false;
-
-        TrapState(long throwDelayMs, long sourcePlayerId, float x, float y,
-                  float triggerRadius, short effectId, long effectDuration, int damage,
-                  long lifetimeMs, byte tier) {
-            this.placeTime = Instant.now().toEpochMilli() + throwDelayMs;
-            this.armReadyTime = this.placeTime + ARM_TIME_MS;
-            this.expireTime = this.placeTime + lifetimeMs;
-            this.sourcePlayerId = sourcePlayerId;
-            this.x = x;
-            this.y = y;
-            this.triggerRadius = triggerRadius;
-            this.effectId = effectId;
-            this.effectDuration = effectDuration;
-            this.damage = damage;
-            this.tier = tier;
-        }
-
-        boolean hasLanded() { return Instant.now().toEpochMilli() >= placeTime; }
-        boolean isArmed()   { return Instant.now().toEpochMilli() >= armReadyTime; }
-        boolean isExpired() { return Instant.now().toEpochMilli() >= expireTime; }
-    }
-
-    static class PoisonDotState {
-        final long enemyId;
-        final int totalDamage;
-        final long duration;
-        final long startTime;
-        final long sourcePlayerId;
-        int damageApplied;
-        long lastTickTime;
-
-        PoisonDotState(long enemyId, int totalDamage, long duration, long sourcePlayerId) {
-            this.enemyId = enemyId;
-            this.totalDamage = totalDamage;
-            this.duration = duration;
-            this.startTime = Instant.now().toEpochMilli();
-            this.sourcePlayerId = sourcePlayerId;
-            this.damageApplied = 0;
-            this.lastTickTime = this.startTime;
-        }
-
-        boolean isExpired() {
-            return Instant.now().toEpochMilli() - startTime >= duration;
-        }
-    }
-
-    static class CloneState {
-        final long clonePlayerId;
-        final long sourcePlayerId;
-        final long spawnTime;
-        final long durationMs;
-        final float dx;
-        final float dy;
-
-        CloneState(long clonePlayerId, long sourcePlayerId, float dx, float dy, long durationMs) {
-            this.clonePlayerId = clonePlayerId;
-            this.sourcePlayerId = sourcePlayerId;
-            this.spawnTime = Instant.now().toEpochMilli();
-            this.durationMs = durationMs;
-            this.dx = dx;
-            this.dy = dy;
-        }
-
-        boolean isExpired() {
-            return Instant.now().toEpochMilli() - spawnTime >= durationMs;
-        }
-    }
-
-    static class DecoyState {
-        final long enemyId;
-        final long sourcePlayerId;
-        final long spawnTime;
-        final long durationMs;
-        final float dx;
-        final float dy;
-        final float maxTravelDistSq;
-        final float originX;
-        final float originY;
-        boolean stopped;
-
-        DecoyState(long enemyId, long sourcePlayerId, float originX, float originY,
-                   float dx, float dy, float maxTravelDist, long durationMs) {
-            this.enemyId = enemyId;
-            this.sourcePlayerId = sourcePlayerId;
-            this.spawnTime = Instant.now().toEpochMilli();
-            this.durationMs = durationMs;
-            this.dx = dx;
-            this.dy = dy;
-            this.maxTravelDistSq = maxTravelDist * maxTravelDist;
-            this.originX = originX;
-            this.originY = originY;
-            this.stopped = false;
-        }
-
-        boolean isExpired() {
-            return Instant.now().toEpochMilli() - spawnTime >= durationMs;
-        }
     }
 
     private boolean isServer;
@@ -371,10 +145,6 @@ public class Realm {
         this.nodeId = nodeId;
     }
 
-    /**
-     * Returns true if this realm is a shared/persistent realm (e.g., overworld, nexus).
-     * Non-shared realms are dungeon instances that get cleaned up when empty.
-     */
     public boolean isShared() {
         if (this.nodeId != null && GameDataManager.DUNGEON_GRAPH != null) {
             DungeonGraphNode node = GameDataManager.DUNGEON_GRAPH.get(this.nodeId);
@@ -383,20 +153,10 @@ public class Realm {
         return false;
     }
 
-    /**
-     * Returns true if this realm was created as a dungeon instance via a portal
-     * transition (handleUsePortalServer sets sourceRealmId to the parent realm).
-     * Used by the difficulty-based damage scaler: dungeon enemies start scaling
-     * one difficulty level earlier than overworld-zone enemies of the same number.
-     */
     public boolean isDungeonInstance() {
         return this.sourceRealmId != 0L;
     }
 
-    /**
-     * Returns true if this realm is the overworld entry point (the top-level shared realm
-     * where enemies respawn). Replaces the old depth == 0 checks.
-     */
     public boolean isOverworld() {
         if (this.nodeId != null && GameDataManager.DUNGEON_GRAPH != null) {
             DungeonGraphNode node = GameDataManager.DUNGEON_GRAPH.get(this.nodeId);
@@ -413,62 +173,45 @@ public class Realm {
     	return this.players.values().stream().filter(p->p.getId()!=playerId).collect(Collectors.toSet());
     }
 
-    /** Set true at end of setupChests once vault chests have been spawned
-     *  into the loot map. serializeChests() refuses to return a chest list
-     *  before this flips, so a save-and-clear race (disconnect / portal-out
-     *  fired during vault-realm setup) can't write an empty list and wipe
-     *  the player's persisted chests. */
+    // Flip to true ONLY after vault chests have been spawned, so serializeChestsForSave
+    // can refuse to wipe persisted chests if a save races with setup.
     private volatile boolean chestsLoaded = false;
 
     public void setupChests(final Player player) {
         try {
             final PlayerAccountDto account = ServerGameLogic.DATA_SERVICE
                     .executeGet("/data/account/" + player.getAccountUuid(), null, PlayerAccountDto.class);
-            // Load potion-storage alongside vault chests. Empty/missing list
-            // is normal for new accounts; we lazily create container[0] on
-            // first interaction in ServerPotionStorageHelper.
             this.loadPotionStorage(player, account);
             final List<ChestDto> vaultChests = account.getPlayerVault();
             final int count = vaultChests.size();
             if (count == 0) {
-                // Empty vault is a valid state — mark loaded so a subsequent
-                // save (e.g., player adds chests in this session) can persist.
                 this.chestsLoaded = true;
                 return;
             }
 
-            // Layout: 2-column grid centered in the vault room
-            // Vault map is 32x32 tiles (32px each). Inner room roughly tiles 10-22 x 8-24.
-            // Center of room: tile (16, 16) = pixel (512, 512)
             final int cols = 2;
             final int rows = (int) Math.ceil(count / (double) cols);
-            final int spacingX = 64;  // horizontal gap between columns
-            final int spacingY = 48;  // vertical gap between rows
-            final float centerX = 16 * 32;  // map center X
-            final float startY = 16 * 32 - (rows * spacingY) / 2f + spacingY / 2f; // vertically centered
+            final int spacingX = 64;
+            final int spacingY = 48;
+            final float centerX = 16 * 32;
+            final float startY = 16 * 32 - (rows * spacingY) / 2f + spacingY / 2f;
             final float leftColX = centerX - spacingX;
             final float rightColX = centerX + spacingX;
 
             for (int i = 0; i < count; i++) {
                 final ChestDto chest = vaultChests.get(i);
-                final int col = i % cols;
-                final int row = i / cols;
-                final float x = col == 0 ? leftColX : rightColX;
-                final float y = startY + row * spacingY;
-
+                final float x = (i % cols) == 0 ? leftColX : rightColX;
+                final float y = startY + (i / cols) * spacingY;
                 final List<GameItem> itemsInChest = chest.getItems().stream()
                         .map(GameItem::fromGameItemRef).collect(Collectors.toList());
-                final Chest toSpawn = new Chest(new Vector2f(x, y),
-                        itemsInChest.toArray(new GameItem[8]));
-                // Vault chests are soulbound to the owning player
+                final Chest toSpawn = new Chest(new Vector2f(x, y), itemsInChest.toArray(new GameItem[8]));
                 toSpawn.setSoulboundPlayerId(player.getId());
                 this.addLootContainer(toSpawn);
             }
             this.chestsLoaded = true;
         } catch (Exception e) {
+            // Leave chestsLoaded=false so a subsequent save can't wipe persisted chests.
             Realm.log.error("Failed to get player account for chests. Reason: {}", e);
-            // Do NOT set chestsLoaded=true on failure — a subsequent save
-            // would otherwise write an empty list and wipe the vault.
         }
     }
 
@@ -491,24 +234,14 @@ public class Realm {
                 result.add(chest);
             }
         }
-        // After the for-loop runs, mark loaded if it produced anything.
-        // Callers should null-check before persisting (see chestsLoaded
-        // doc and the four save sites in ServerGameLogic /
-        // RealmManagerServer).
         if (!result.isEmpty()) {
             this.chestsLoaded = true;
         }
         return result;
     }
 
-    /**
-     * Safe variant of serializeChests: returns null when the realm has not
-     * yet finished spawning chests via setupChests, OR when the realm is a
-     * non-vault realm where serializing makes no sense. Use this in any
-     * code path that POSTs to /account/{uuid}/chest, since that endpoint
-     * BULK-REPLACES the vault — a serialize-too-early race would write an
-     * empty list and wipe the player's persisted chests.
-     */
+    // Returns null when chest spawn hasn't completed; the chest endpoint bulk-replaces
+    // the vault, so a serialize-too-early race would wipe persisted chests.
     public List<ChestDto> serializeChestsForSave() {
         if (!this.chestsLoaded) {
             Realm.log.warn("[REALM] Refusing to serialize chests before setupChests has completed (realmId={}, mapId={}). Skipping save to avoid wipe.",
@@ -518,12 +251,6 @@ public class Realm {
         return this.serializeChests();
     }
 
-    /**
-     * Hydrate this realm's per-player potion-storage map from the player's
-     * account DTO. Items are reconstructed by slotIdx so sparse persistence
-     * (with gaps in the slot list) round-trips correctly into the 32-slot
-     * GameItem array.
-     */
     private void loadPotionStorage(final Player player, final PlayerAccountDto account) {
         final List<ChestDto> persisted = account.getPlayerPotionStorage();
         final List<PotionStorage> hydrated = new ArrayList<>();
@@ -547,12 +274,6 @@ public class Realm {
         this.playerPotionStorage.put(player.getId(), hydrated);
     }
 
-    /**
-     * Serialize the calling player's potion storage for persistence. Returns
-     * an empty list when the player has nothing or has not loaded yet —
-     * empty is a valid persisted state. Distinguish from the gated forSave
-     * variant which returns null to skip the save entirely.
-     */
     public List<ChestDto> serializePotionStorage(final long playerId) {
         final List<PotionStorage> list = this.playerPotionStorage.get(playerId);
         final List<ChestDto> result = new ArrayList<>();
@@ -805,18 +526,8 @@ public class Realm {
         return this.enemies.get(enemyId);
     }
 
-    /**
-     * Spatial-grid query helper for the enemy-tick path. Returns enemy ids
-     * within {@code radius} of (x, y). Filters out players / bullets / loot
-     * (also stored in the grid) so callers don't have to.
-     *
-     * Used by RealmManagerServer.update to narrow the candidate set before
-     * the per-enemy distance-classification loop runs — anything outside the
-     * query is guaranteed dormant (no player's chase range can reach that
-     * far) so we skip it entirely instead of paying for the dist check.
-     */
     public List<Long> queryEnemiesNear(float x, float y, float radius) {
-        if (this.spatialGrid == null) return java.util.Collections.emptyList();
+        if (this.spatialGrid == null) return Collections.emptyList();
         final List<Long> raw = this.spatialGrid.queryRadius(x, y, radius);
         if (raw.isEmpty()) return raw;
         final List<Long> out = new ArrayList<>(raw.size());
@@ -833,33 +544,20 @@ public class Realm {
             this.spatialGrid.remove(enemy.getId());
         }
         this.shortIdAllocator.release(enemy.getId());
-        // Reap in-flight bullets owned by this enemy. Without this, bullets
-        // outlive their source for up to 10s (MAX_LIFETIME_TICKS = 640) —
-        // under heavy spawn-then-cull load the realm sits near the
-        // MAX_ENEMY_BULLETS_PER_REALM cap for the full lifetime window,
-        // streaming ghost bullets to clients long after the shooter is gone.
         reapBulletsFromEnemy(enemy.getId());
         return e != null;
     }
 
-    /**
-     * Drop every enemy bullet whose srcEntityId matches the given enemy.
-     * Called from removeEnemy so dead enemies stop leaking visual ammo.
-     * Player bullets (srcEntityId == player.id) are never affected because
-     * the check is name-scoped to enemy ids only via the caller.
-     */
+    // Without this sweep, enemy bullets outlive their source up to 10s and stream as ghosts.
     private void reapBulletsFromEnemy(long srcEnemyId) {
         if (srcEnemyId == 0L || this.bullets == null || this.bullets.isEmpty()) return;
         int reaped = 0;
-        final java.util.Iterator<java.util.Map.Entry<Long, Bullet>> it = this.bullets.entrySet().iterator();
+        final Iterator<Map.Entry<Long, Bullet>> it = this.bullets.entrySet().iterator();
         while (it.hasNext()) {
-            final java.util.Map.Entry<Long, Bullet> entry = it.next();
+            final Map.Entry<Long, Bullet> entry = it.next();
             final Bullet b = entry.getValue();
-            if (b == null) continue;
-            if (b.getSrcEntityId() != srcEnemyId) continue;
-            if (this.spatialGrid != null) {
-                this.spatialGrid.remove(entry.getKey());
-            }
+            if (b == null || b.getSrcEntityId() != srcEnemyId) continue;
+            if (this.spatialGrid != null) this.spatialGrid.remove(entry.getKey());
             this.shortIdAllocator.release(entry.getKey());
             it.remove();
             reaped++;
@@ -909,10 +607,6 @@ public class Realm {
         return objs;
     }
 
-    /**
-     * Updates the spatial grid positions for all moving entities.
-     * Call once per tick from the server update loop.
-     */
     public void updateSpatialGrid() {
         if (this.spatialGrid == null) return;
         for (final Player p : this.players.values()) {
@@ -926,31 +620,20 @@ public class Realm {
         }
     }
 
-    /**
-     * Returns players near a point. Iterates the players map directly —
-     * the spatial grid holds enemies + bullets too, so at high enemy
-     * density a grid query returns thousands of irrelevant candidates per
-     * call. Player counts are bounded (~40), so the flat scan is strictly
-     * cheaper than any grid filter here.
-     */
+    // Flat scan beats a grid query here — player count is bounded (~40)
+    // while the grid is dominated by enemies/bullets.
     public Player[] getPlayersInRadiusFast(Vector2f center, float radius) {
         final float radiusSq = radius * radius;
         final List<Player> objs = new ArrayList<>();
         for (final Player p : this.players.values()) {
-            // /hide: hidden admins aren't enemy targets and don't take AOEs.
             if (p.isHiddenFromOthers()) continue;
             float dx = p.getPos().x - center.x;
             float dy = p.getPos().y - center.y;
-            if (dx * dx + dy * dy <= radiusSq) {
-                objs.add(p);
-            }
+            if (dx * dx + dy * dy <= radiusSq) objs.add(p);
         }
         return objs.toArray(new Player[0]);
     }
 
-    /** Lightweight records used to sort candidates by distance before applying
-     *  the per-LoadPacket cap. Plain classes (not records) for compatibility
-     *  with the Java target this project compiles against. */
     private static final class EnemyDist {
         final Enemy enemy;
         final float distSq;
@@ -962,42 +645,21 @@ public class Realm {
         BulletDist(Bullet b, float d) { this.bullet = b; this.distSq = d; }
     }
 
-    /**
-     * Grid-accelerated circular LoadPacket construction.
-     *
-     * Caps are intentionally generous so dense-enemy stress tests (500+
-     * enemies in viewport) don't trigger flicker artifacts from arbitrary
-     * truncation. When the cap IS hit, we keep the closest entities first
-     * (sorted before truncation) so what's visible to the player is at
-     * least deterministic rather than wobbling with HashSet iteration order.
-     */
+    // Cap is hit only under stress; we sort by distance first so truncation
+    // is deterministic and doesn't flicker with HashSet iteration order.
     private static final int MAX_BULLETS_PER_LOAD = 1000;
     private static final int MAX_ENEMIES_PER_LOAD = 500;
 
-    /**
-     * Legacy overload without soulbound filtering. Defaults to showing all loot.
-     */
     public LoadPacket getLoadPacketCircularFast(Vector2f center, float radius) {
         return getLoadPacketCircularFast(center, radius, -1);
     }
 
-    /**
-     * Returns a LoadPacket containing all entities within the specified radius,
-     * filtering loot containers based on soulbound visibility.
-     * 
-     * @param center The center position to query from
-     * @param radius The query radius
-     * @param requestingPlayerId The player ID requesting this packet; soulbound loot
-     *        not belonging to this player will be filtered out. Use -1 to show all.
-     */
     public LoadPacket getLoadPacketCircularFast(Vector2f center, float radius, long requestingPlayerId) {
         if (this.spatialGrid == null) {
             return getLoadPacketCircular(center, radius, requestingPlayerId);
         }
         final float radiusSq = radius * radius;
-        // Bullets use a wider radius so projectiles fired by enemies beyond the
-        // viewport edge are still sent to the client. Done as a SEPARATE query
-        // so the bullet cap doesn't compete with the enemy cap.
+        // Wider bullet radius keeps long-range projectiles visible past the viewport.
         final float bulletRadius = radius * 2f;
         final float bulletRadiusSq = bulletRadius * bulletRadius;
         LoadPacket load = null;
@@ -1006,11 +668,6 @@ public class Realm {
             final List<Player> playersToLoadList = new ArrayList<>();
             final List<LootContainer> containersToLoad = new ArrayList<>();
             final List<Portal> portalsToLoad = new ArrayList<>();
-            // Collect candidates with their squared distance so we can sort
-            // before applying the cap. Without this, which N entities are
-            // chosen flickers tick-to-tick (HashSet iteration), making the
-            // server emit UnloadPackets for entities that are still alive
-            // and producing the visible "enemies disappear/reappear" bug.
             final List<EnemyDist> enemyCandidates = new ArrayList<>();
             final List<BulletDist> bulletCandidatesInner = new ArrayList<>();
 
@@ -1018,8 +675,6 @@ public class Realm {
                 final long id = candidates.get(i);
                 Player p = this.players.get(id);
                 if (p != null) {
-                    // /hide: hidden admins are filtered out of every other
-                    // viewer's LoadPacket. Self always sees self.
                     if (p.isHiddenFromOthers() && p.getId() != requestingPlayerId) continue;
                     float dx = p.getPos().x - center.x;
                     float dy = p.getPos().y - center.y;
@@ -1053,14 +708,12 @@ public class Realm {
                 if (lc != null) {
                     float dx = lc.getPos().x - center.x;
                     float dy = lc.getPos().y - center.y;
-                    // Check soulbound visibility: only include if public or belongs to requesting player
                     if (dx * dx + dy * dy <= radiusSq && lc.isVisibleToPlayer(requestingPlayerId)) {
                         containersToLoad.add(lc);
                     }
                 }
             }
 
-            // Sort by distance and truncate to the cap. Closest stays loaded.
             if (enemyCandidates.size() > MAX_ENEMIES_PER_LOAD) {
                 enemyCandidates.sort((a, b1) -> Float.compare(a.distSq, b1.distSq));
             }
@@ -1069,11 +722,7 @@ public class Realm {
             for (int i = 0, n = Math.min(enemyCandidates.size(), MAX_ENEMIES_PER_LOAD); i < n; i++) {
                 enemiesToLoad.add(enemyCandidates.get(i).enemy);
             }
-            // Bullet cap: player-fired bullets are always loaded first so a
-            // player's own ability/projectile is never culled by 1000+ enemy
-            // bullets crowding the cap. Without this, under heavy load the
-            // player sees enemies firing but their own attacks don't render.
-            // Remaining cap slots go to enemy bullets sorted by distance.
+            // Player-fired bullets always fit first; enemy-bullet spam can't starve them.
             final List<Bullet> bulletsToLoad = new ArrayList<>(MAX_BULLETS_PER_LOAD);
             for (int i = 0; i < bulletCandidatesInner.size() && bulletsToLoad.size() < MAX_BULLETS_PER_LOAD; i++) {
                 final Bullet b = bulletCandidatesInner.get(i).bullet;
@@ -1089,13 +738,8 @@ public class Realm {
                 }
             }
 
-            // Second pass: query the wider bullet radius for bullets only.
-            // This catches projectiles fired by enemies just beyond the viewport
-            // (e.g. enemies whose attack range exceeds the load radius). Same
-            // player-bullet priority as the inner pass — player abilities in
-            // the outer ring (e.g. long-range shots) are kept under cap pressure.
+            // Outer-ring bullet pass catches projectiles fired just beyond the viewport.
             final List<Long> bulletCandidates = this.spatialGrid.queryRadius(center.x, center.y, bulletRadius);
-            // Pass 2a: player bullets in the outer ring
             for (int i = 0; i < bulletCandidates.size(); i++) {
                 if (bulletsToLoad.size() >= MAX_BULLETS_PER_LOAD) break;
                 final long id = bulletCandidates.get(i);
@@ -1104,10 +748,9 @@ public class Realm {
                 float dx = b.getPos().x - center.x;
                 float dy = b.getPos().y - center.y;
                 float dsq = dx * dx + dy * dy;
-                if (dsq <= radiusSq) continue; // already added above
+                if (dsq <= radiusSq) continue;
                 if (dsq <= bulletRadiusSq) bulletsToLoad.add(b);
             }
-            // Pass 2b: enemy bullets in the outer ring (only if cap has slack)
             for (int i = 0; i < bulletCandidates.size(); i++) {
                 if (bulletsToLoad.size() >= MAX_BULLETS_PER_LOAD) break;
                 final long id = bulletCandidates.get(i);
@@ -1116,7 +759,7 @@ public class Realm {
                 float dx = b.getPos().x - center.x;
                 float dy = b.getPos().y - center.y;
                 float dsq = dx * dx + dy * dy;
-                if (dsq <= radiusSq) continue; // already added above
+                if (dsq <= radiusSq) continue;
                 if (dsq <= bulletRadiusSq) bulletsToLoad.add(b);
             }
             load = LoadPacket.from(playersToLoadList.toArray(new Player[0]),
@@ -1130,15 +773,7 @@ public class Realm {
         return load;
     }
 
-    /**
-     * Lightweight per-viewer visibility snapshot: returns just the entity
-     * IDs visible from {@code center} within {@code radius}, with the
-     * same soulbound filter, hidden-admin filter, and wider bullet radius
-     * as {@link #getLoadPacketCircularFast(Vector2f, float, long)} — but
-     * NO cap, NO payload hydration. Used by RealmManagerServer's
-     * ledger-based load/unload sync: the ledger diff against this set
-     * is the authoritative "what to load / what to unload" decision.
-     */
+    // No cap, no payload hydration — RealmManagerServer's ledger diff applies caps later.
     public VisibleIds getVisibleIdsCircularFast(Vector2f center, float radius, long requestingPlayerId) {
         final VisibleIds out = new VisibleIds();
         if (this.spatialGrid == null) return out;
@@ -1186,9 +821,6 @@ public class Realm {
                 }
             }
         }
-        // Outer-ring bullets (radius..2×radius) — same wider envelope
-        // getLoadPacketCircularFast uses so long-range projectiles fired
-        // by enemies just beyond the viewport remain visible.
         final List<Long> outerBulletCandidates = this.spatialGrid.queryRadius(center.x, center.y, bulletRadius);
         for (int i = 0; i < outerBulletCandidates.size(); i++) {
             final long id = outerBulletCandidates.get(i);
@@ -1204,12 +836,8 @@ public class Realm {
         return out;
     }
 
-    /**
-     * Hydrate the given ID sets into a LoadPacket. IDs that no longer
-     * resolve to a live entity are silently dropped (the caller's ledger
-     * will reflect only what actually shipped). Difficulty is computed
-     * from {@code originForDifficulty} when non-null.
-     */
+    // IDs that no longer resolve to a live entity are silently dropped — the
+    // caller's ledger updates from what actually shipped.
     public LoadPacket buildLoadPacketForIds(Collection<Long> playerIds,
                                             Collection<Long> enemyIds,
                                             Collection<Long> bulletIds,
@@ -1259,35 +887,28 @@ public class Realm {
         }
     }
 
-    /**
-     * Lightweight per-viewer visibility snapshot. Sets are mutable so the
-     * caller can apply caps / mark contents-changed re-sends without
-     * allocating new collections.
-     */
-    /**
-     * Reset the per-tick NetObjectMovement cache. Called by RealmManagerServer
-     * once per realm at the top of enqueueGameData() so subsequent
-     * getGameObjectsAsPacketsCircularFast() calls (one per viewer) share
-     * NetObjectMovement instances instead of each allocating a fresh copy.
-     */
     public void clearTickMovementCache() {
         if (this.tickMovementCache != null) {
             this.tickMovementCache.clear();
         }
     }
 
-    /** Reset the per-tick stripped-UpdatePacket cache. */
     public void clearTickStrippedUpdateCache() {
         if (this.tickStrippedUpdateCache != null) {
             this.tickStrippedUpdateCache.clear();
         }
     }
 
-    /**
-     * Get-or-build a stripped (no-inventory) UpdatePacket for this player,
-     * cached for the duration of the current tick so all viewers share one
-     * instance instead of each rebuilding from scratch.
-     */
+    private float bulletScaleThisTick = 1.0f;
+
+    public void setBulletScaleThisTick(float scale) {
+        this.bulletScaleThisTick = scale;
+    }
+
+    public float getBulletScaleThisTick() {
+        return this.bulletScaleThisTick;
+    }
+
     public UpdatePacket getOrBuildStrippedUpdate(Player p) {
         if (p == null) return null;
         if (this.tickStrippedUpdateCache == null) {
@@ -1301,10 +922,8 @@ public class Realm {
         return u;
     }
 
-    /** Get-or-build a NetObjectMovement for this entity for the current tick. */
     private NetObjectMovement getOrBuildMovement(GameObject obj) {
         if (this.tickMovementCache == null) {
-            // Sized for typical nexus density; HashMap auto-grows if needed.
             this.tickMovementCache = new HashMap<>(64);
         }
         NetObjectMovement m = this.tickMovementCache.get(obj.getId());
@@ -1315,12 +934,6 @@ public class Realm {
         return m;
     }
 
-    /**
-     * Grid-accelerated ObjectMovePacket construction (players + enemies only).
-     * Uses the per-tick movement cache so 40 viewers in nexus only allocate
-     * ~50 NetObjectMovement instances per tick total (one per visible
-     * entity), not 40×50 = 2000.
-     */
     public ObjectMovePacket getGameObjectsAsPacketsCircularFast(Vector2f center, float radius) throws Exception {
         if (this.spatialGrid == null) {
             return getGameObjectsAsPacketsCircular(center, radius);
@@ -1346,17 +959,12 @@ public class Realm {
                 if (e.getTeleported()) e.setTeleported(false);
                 continue;
             }
-            // Skip bullets — clients predict their positions locally using
-            // initial velocity from LoadPacket. Saves enormous bandwidth.
+            // Bullets skipped — clients predict from initial velocity in LoadPacket.
         }
         if (mvts.isEmpty()) return null;
         return ObjectMovePacket.from(mvts.toArray(new NetObjectMovement[0]));
     }
 
-    /**
-     * Returns the spatial grid cell key for a world position.
-     * Players in the same cell see approximately the same entities.
-     */
     public long getSpatialCellKey(float x, float y) {
         if (this.spatialGrid == null) return 0;
         return this.spatialGrid.getCellKey(x, y);
@@ -1496,11 +1104,7 @@ public class Realm {
         return objs.toArray(new GameObject[0]);
     }
 
-    /**
-     * Returns only players and enemies for ObjectMovePacket.
-     * Bullets are excluded because they follow deterministic trajectories
-     * and the client simulates them locally from the initial LoadPacket data.
-     */
+    // Bullets are excluded; clients simulate them from initial LoadPacket velocity.
     public GameObject[] getMovableGameObjects() {
         final List<GameObject> objs = new ArrayList<>();
         for (final Player p : this.players.values()) {
@@ -1604,22 +1208,10 @@ public class Realm {
         return load;
     }
 
-    /**
-     * Legacy overload without soulbound filtering. Defaults to showing all loot.
-     */
     public LoadPacket getLoadPacketCircular(Vector2f center, float radius) {
         return getLoadPacketCircular(center, radius, -1);
     }
 
-    /**
-     * Returns a LoadPacket containing all entities within the specified radius,
-     * filtering loot containers based on soulbound visibility.
-     * 
-     * @param center The center position to query from
-     * @param radius The query radius
-     * @param requestingPlayerId The player ID requesting this packet; soulbound loot
-     *        not belonging to this player will be filtered out. Use -1 to show all.
-     */
     public LoadPacket getLoadPacketCircular(Vector2f center, float radius, long requestingPlayerId) {
         final float radiusSq = radius * radius;
         final float bulletRadiusSq = (radius * 2f) * (radius * 2f);
@@ -1635,7 +1227,6 @@ public class Realm {
             for (LootContainer c : this.loot.values()) {
                 float dx = c.getPos().x - center.x;
                 float dy = c.getPos().y - center.y;
-                // Check soulbound visibility: only include if public or belongs to requesting player
                 if (dx * dx + dy * dy <= radiusSq && c.isVisibleToPlayer(requestingPlayerId)) {
                     containersToLoad.add(c);
                 }
@@ -1806,18 +1397,10 @@ public class Realm {
             }
         }
 
-        // Note: spawnStaticEnemies is invoked exclusively from
-        // RealmManagerServer.addRealm now. Calling it here too caused every
-        // map's static spawns to be doubled (e.g. two Inferno Demons in the
-        // admin arena) since both code paths fire for a fresh realm.
+        // spawnStaticEnemies is the caller's responsibility (RealmManagerServer.addRealm).
         this.initialEnemyCount = this.enemies.size();
     }
 
-    /**
-     * Respawn enemies in the overworld realm to replenish killed mobs.
-     * Only runs on terrain-based realms with zones.
-     * Spawns a batch of enemies in random positions away from players.
-     */
     public void respawnEnemies(int batchSize) {
         final TerrainGenerationParameters params = this.tileManager.getTerrainParams();
         if (params == null) return;
@@ -1908,24 +1491,14 @@ public class Realm {
         }
     }
 
-    /**
-     * Register a poison DoT on an enemy in this realm. Poisons stack.
-     */
     public void registerPoisonDot(long enemyId, int totalDamage, long duration, long sourcePlayerId) {
         this.activePoisonDots.add(new PoisonDotState(enemyId, totalDamage, duration, sourcePlayerId));
     }
 
-    /**
-     * Remove all poison DoTs sourced by a specific player (called on disconnect).
-     */
     public void removePlayerPoisonDots(long playerId) {
         this.activePoisonDots.removeIf(dot -> dot.sourcePlayerId == playerId);
     }
 
-    /**
-     * Process all active poison DoTs for this realm. Called every server tick.
-     * @param mgr the server manager, used for enemyDeath and broadcastTextEffect callbacks
-     */
     public void processPoisonDots(RealmManagerServer mgr) {
         if (this.activePoisonDots.isEmpty()) return;
         final long now = Instant.now().toEpochMilli();
@@ -1961,10 +1534,6 @@ public class Realm {
         }
     }
 
-    /**
-     * Register a pending poison throw. The landing effect will be applied after the delay
-     * elapses, checked each tick — no threads are blocked.
-     */
     public void registerPoisonThrow(long delayMs, long sourcePlayerId, float landX, float landY,
                                      float radius, int totalDamage, long poisonDuration) {
         registerPoisonThrow(delayMs, sourcePlayerId, landX, landY, radius, totalDamage, poisonDuration, (byte) 0);
@@ -1997,10 +1566,7 @@ public class Realm {
             if (!trap.hasLanded()) continue;
             if (!trap.armed) {
                 trap.armed = true;
-                // Broadcast armed trap visual ONLY to players within sight
-                // (10 tile radius — same as TextEffectPacket convention).
-                // Previously sent to every player in the realm regardless
-                // of whether the trap was on-screen for them.
+                // 10-tile sight radius mirrors TextEffectPacket convention.
                 final float armSightR = 10 * GlobalConstants.BASE_TILE_SIZE;
                 final float armSightSq = armSightR * armSightR;
                 final CreateEffectPacket armPkt =
@@ -2017,11 +1583,6 @@ public class Realm {
                     }
                 }
             }
-            // Don't allow the trap to trigger until its arm window has
-            // elapsed. Without this, an enemy already standing on the
-            // landing spot would arm + trigger the trap in the same tick
-            // and the placed-trap visual would never be visible — players
-            // saw enemies vanish without ever seeing a snare.
             if (!trap.isArmed()) continue;
             boolean triggered = false;
             final float triggerSq = trap.triggerRadius * trap.triggerRadius;
@@ -2095,12 +1656,7 @@ public class Realm {
             if (!t.hasLanded()) continue;
             it.remove();
 
-            // Broadcast splash AoE on landing — scope to THIS realm only.
-            // The single-arg enqueueServerPacket() pushes to a global queue
-            // that fans out to every connected client across every realm,
-            // which was bloating CreateEffectPacket bandwidth on busy
-            // servers. enqueueServerPacketToRealm restricts to nearby
-            // players who can actually see the effect.
+            // Per-realm broadcast — the global enqueue would fan out to every connected client.
             mgr.enqueueServerPacketToRealm(this,
                     CreateEffectPacket.aoeEffect(
                         CreateEffectPacket.EFFECT_POISON_SPLASH,
@@ -2123,18 +1679,11 @@ public class Realm {
         }
     }
 
-    /**
-     * Remove pending poison throws from a disconnecting player.
-     */
     public void removePlayerPoisonThrows(long playerId) {
         this.pendingPoisonThrows.removeIf(t -> t.sourcePlayerId == playerId);
     }
 
-    /**
-     * Return a proxy Player positioned at the closest active decoy if it is
-     * nearer than {@code currentBestDist}. Used by enemy targeting so decoys
-     * draw aggro the same way real players do.
-     */
+    // Enemy targeting treats decoys as real players via this proxy.
     public Player getClosestDecoyTarget(final Vector2f pos, float currentBestDist) {
         Player best = null;
         for (final DecoyState d : this.activeDecoys) {
@@ -2150,20 +1699,12 @@ public class Realm {
         return best;
     }
 
-    /**
-     * Register a decoy entity. The decoy walks in the given direction until it
-     * covers maxTravelDist pixels, then stands still until durationMs expires.
-     */
     public void registerDecoy(long enemyId, long sourcePlayerId, float originX, float originY,
                                float dx, float dy, float maxTravelDist, long durationMs) {
         this.activeDecoys.add(new DecoyState(enemyId, sourcePlayerId, originX, originY,
                 dx, dy, maxTravelDist, durationMs));
     }
 
-    /**
-     * Process active decoys: move them each tick, stop after travel distance,
-     * remove after duration expires. Called every server tick.
-     */
     public void processDecoys(RealmManagerServer mgr) {
         if (this.activeDecoys.isEmpty()) return;
         final Iterator<DecoyState> it = this.activeDecoys.iterator();
@@ -2171,13 +1712,11 @@ public class Realm {
             final DecoyState d = it.next();
             final Enemy decoy = this.enemies.get(d.enemyId);
 
-            // Decoy was killed or realm cleaned up
             if (decoy == null || decoy.getDeath()) {
                 it.remove();
                 continue;
             }
 
-            // Duration expired — remove decoy
             if (d.isExpired()) {
                 it.remove();
                 this.expiredEnemies.add(d.enemyId);
@@ -2185,13 +1724,12 @@ public class Realm {
                 continue;
             }
 
-            // Move decoy if it hasn't reached travel distance
             if (!d.stopped) {
                 float traveled_x = decoy.getPos().x - d.originX;
                 float traveled_y = decoy.getPos().y - d.originY;
                 if (traveled_x * traveled_x + traveled_y * traveled_y >= d.maxTravelDistSq) {
                     d.stopped = true;
-                    // Stop movement and clear direction flags so walk animation stops
+                    // Clear direction flags so the walk animation stops.
                     decoy.setDx(0);
                     decoy.setDy(0);
                     decoy.setUp(false);
@@ -2206,22 +1744,11 @@ public class Realm {
         }
     }
 
-    /**
-     * Register a Ninja shadow clone. The clone walks in the given (dx, dy)
-     * direction (px/tick, toward the attacker) until durationMs elapses,
-     * then despawns with a smoke FX broadcast by {@link #processClones}.
-     */
     public void registerClone(long clonePlayerId, long sourcePlayerId,
                               float dx, float dy, long durationMs) {
         this.activeClones.add(new CloneState(clonePlayerId, sourcePlayerId, dx, dy, durationMs));
     }
 
-    /**
-     * Per-tick: advance each Ninja clone along its travel vector and despawn
-     * + smoke-poof any that have expired. Mirrors {@link #processDecoys} but
-     * operates on the realm's Player map (clones are headless Player entities
-     * so other enemies can target them via the normal closest-player path).
-     */
     public void processClones(RealmManagerServer mgr) {
         if (this.activeClones.isEmpty()) return;
         final Iterator<CloneState> it = this.activeClones.iterator();
@@ -2233,7 +1760,6 @@ public class Realm {
                 continue;
             }
             if (c.isExpired()) {
-                // Smoke poof at clone's last position so the despawn reads.
                 final float cx = clone.getPos().x + clone.getSize() / 2f;
                 final float cy = clone.getPos().y + clone.getSize() / 2f;
                 mgr.enqueueServerPacketToRealm(this,
@@ -2244,13 +1770,11 @@ public class Realm {
                 it.remove();
                 continue;
             }
-            // Advance position. dx/dy already pre-scaled to px/tick.
             clone.getPos().x += c.dx;
             clone.getPos().y += c.dy;
         }
     }
 
-    /** Remove all active clones owned by a disconnecting/teleporting player. */
     public void removePlayerClones(long sourcePlayerId) {
         final Iterator<CloneState> it = this.activeClones.iterator();
         while (it.hasNext()) {
@@ -2262,9 +1786,6 @@ public class Realm {
         }
     }
 
-    /**
-     * Remove decoys spawned by a disconnecting player.
-     */
     public void removePlayerDecoys(long playerId) {
         final Iterator<DecoyState> it = this.activeDecoys.iterator();
         while (it.hasNext()) {
@@ -2280,9 +1801,6 @@ public class Realm {
         }
     }
 
-    /**
-     * Called automatically when a realm is added, regardless of whether a decorator exists.
-     */
     public void spawnStaticEnemies(int mapId) {
         final MapModel mapModel = GameDataManager.MAPS.get(mapId);
         if (mapModel == null || mapModel.getStaticSpawns() == null) return;
@@ -2307,11 +1825,6 @@ public class Realm {
         }
     }
 
-    /**
-     * Place set piece structures on the terrain (ruins, graveyards, watchtowers, etc.)
-     * Each set piece has a base floor tile and a collision layout that stamps tiles onto the map.
-     * Placement uses collision avoidance to prevent overlapping.
-     */
     public void placeSetPieces(TerrainGenerationParameters params) {
         if (params.getSetPieces() == null || params.getSetPieces().isEmpty()) return;
         final boolean hasZones = params.getZones() != null && !params.getZones().isEmpty();
@@ -2406,10 +1919,7 @@ public class Realm {
         }
     }
 
-    /**
-     * Save the existing tiles at a location (both layers) so they can be restored later.
-     * Returns [savedBase[h][w], savedCollision[h][w]].
-     */
+    // Returns [savedBase[h][w], savedCollision[h][w]].
     public int[][][] saveTerrainAt(int px, int py, int width, int height) {
         int[][] savedBase = new int[height][width];
         int[][] savedColl = new int[height][width];
@@ -2430,9 +1940,6 @@ public class Realm {
         return new int[][][] { savedBase, savedColl };
     }
 
-    /**
-     * Restore previously saved terrain tiles at a location.
-     */
     public void restoreTerrainAt(int px, int py, int[][] savedBase, int[][] savedColl) {
         for (int dy = 0; dy < savedBase.length; dy++) {
             for (int dx = 0; dx < savedBase[dy].length; dx++) {
@@ -2471,13 +1978,8 @@ public class Realm {
         this.addEnemy(enemy);
     }
 
-    /**
-     * Resolves the base difficulty for this realm from terrain or map data.
-     * Resolution order: terrain difficulty > map difficulty > dungeon-graph > default 1.0
-     * Note: for zone-based terrains, use getZoneDifficulty() instead for positional resolution.
-     */
+    // Resolution order: terrain > map > dungeon-graph node > 1.0.
     public float getDifficulty() {
-        // Try terrain-level difficulty
         MapModel map = GameDataManager.MAPS.get(this.mapId);
         if (map != null && map.getTerrainId() >= 0) {
             TerrainGenerationParameters terrain = GameDataManager.TERRAINS.get(map.getTerrainId());
@@ -2485,11 +1987,9 @@ public class Realm {
                 return terrain.getDifficulty();
             }
         }
-        // Try map-level difficulty (for static maps)
         if (map != null && map.getDifficulty() > 0f) {
             return map.getDifficulty();
         }
-        // Fallback to dungeon graph node difficulty
         if (this.nodeId != null && GameDataManager.DUNGEON_GRAPH != null) {
             DungeonGraphNode node = GameDataManager.DUNGEON_GRAPH.get(this.nodeId);
             if (node != null) return Math.max(1.0f, node.getDifficulty());
@@ -2497,10 +1997,6 @@ public class Realm {
         return 1.0f;
     }
 
-    /**
-     * Resolves difficulty for a specific position, checking zone first.
-     * For zone-based terrains, returns zone difficulty; otherwise falls back to getDifficulty().
-     */
     public float getZoneDifficulty(float x, float y) {
         if (this.tileManager != null) {
             OverworldZone zone = this.tileManager.getZoneForPosition(x, y);

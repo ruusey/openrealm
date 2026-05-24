@@ -47,9 +47,7 @@ import lombok.extern.slf4j.Slf4j;
 public class Player extends Entity {
 	private GameItem[] inventory;
 	private long lastStatsTime;
-	// Wall-clock ms of the last time this player took damage. Drives the Ninja
-	// "Light On Your Feet" (12010) 30-second dodge: if 30s have passed without
-	// taking a hit, the next incoming projectile is dodged and SPEEDY is granted.
+	/** Wall-clock ms of the last damage taken; drives Ninja "Light On Your Feet" dodge. */
 	private long lastDamageTakenMs;
 	private LootContainer currentLootContainer;
 	private int classId;
@@ -62,18 +60,8 @@ public class Player extends Entity {
 	private boolean bot = false;
 	@Builder.Default
 	private String chatRole = "";
-	// /admin toggle. Defaults true on login for any account. When false, the
-	// command-dispatch gate rejects @AdminRestrictedCommand calls regardless
-	// of provisions, godmode is cleared, and chatRole is masked. Not persisted.
-	// No @Builder.Default — the explicit all-args constructor below would
-	// need updating (and none of its callers care about this transient flag).
 	private transient boolean adminModeEnabled = true;
-	// Stash original chatRole when /admin toggles off so we can restore it
-	// without re-fetching the account from the data service.
 	private transient String storedChatRole = null;
-	// /hide flag — when true the LoadPacket builder filters this player out
-	// of every OTHER viewer's packet, leaving the admin invisible to
-	// regular players. Self always sees self. Not persisted.
 	private transient boolean hiddenFromOthers = false;
 	@Builder.Default
 	private int lastInputSeq = 0;
@@ -90,19 +78,11 @@ public class Player extends Entity {
 	public static final int HP_POTION_ITEM_ID = 296;
 	public static final int MP_POTION_ITEM_ID = 297;
 
-	// Equipment slot layout (Phase 1B combat rework):
-	//   0 = weapon
-	//   1 = armor
-	//   2 = gauntlets
-	//   3 = boots
-	//   4 = ring
-	// Backpack occupies indices [EQUIPMENT_SLOT_COUNT .. inventory.length-1].
-	// The legacy ability-item slot is gone; abilities now come from the
-	// player's CharacterClass (see getAbility()). MoveItemPacket slot
-	// constants must stay in sync with this layout.
+	// Equipment slots: 0=weapon, 1=armor, 2=gauntlets, 3=boots, 4=ring.
+	// MoveItemPacket slot constants must stay in sync.
 	public static final int EQUIPMENT_SLOT_COUNT = 5;
 	public static final int BACKPACK_SIZE = 16;
-	public static final int INVENTORY_SIZE = EQUIPMENT_SLOT_COUNT + BACKPACK_SIZE; // 21
+	public static final int INVENTORY_SIZE = EQUIPMENT_SLOT_COUNT + BACKPACK_SIZE;
 	@Builder.Default
 	private int hpPotions = 0;
 	@Builder.Default
@@ -114,37 +94,17 @@ public class Player extends Entity {
 	@Builder.Default
 	private transient long cachedAccountFame = 0L;
 
-	// Phase 2A runtime state.
-	//   abilityCooldowns: per-hotbar-slot end-of-cd timestamps (epoch millis).
-	//   currentCast:      non-null only while a cast is in progress.
-	//   hotbarBindings:   the 4 ability ids currently bound to keys 1..4.
-	//                     Initialized from CharacterClassModel.abilityTree
-	//                     .defaultHotbar at character spawn; mutated by
-	//                     HotbarSwapPacket (Shift+N) at runtime. Currently
-	//                     transient — reverts to class default on every
-	//                     login. Persistence lands in Phase 2B alongside
-	//                     CharacterStatsDto.hotbarBindings.
 	@Builder.Default
 	private transient long[] abilityCooldowns = new long[4];
 	@Builder.Default
 	private transient CastState currentCast = null;
-	/** Lifetime-metrics in-memory counter. See PlayerMetrics + the design
-	 *  doc at docs/player-metrics-design.md. Transient because deltas are
-	 *  flushed to the data service every persistence tick; the absolute
-	 *  totals live in Mongo, not on the player object. */
 	@Builder.Default
 	private transient PlayerMetrics metrics = new PlayerMetrics();
 	@Builder.Default
 	private transient int[] hotbarBindings = new int[]{0, 0, 0, 0};
-	// Phase 2D: counter for on-basic-attack passives (e.g. Wizard's Arcane
-	// Surge — every Nth basic is empowered).
 	@Builder.Default
 	private transient int basicAttackCounter = 0;
 
-	// Phase 2D — skill-point pool + per-ability investment. Earned 1 per 2
-	// levels from L2 to L20 (10 total). Caps per ability come from
-	// Ability.maxSkillPoints (5 for non-ults, 3 for ults). Persisted via
-	// CharacterStatsDto.
 	@Builder.Default
 	private int availableSkillPoints = 0;
 	@Builder.Default
@@ -189,8 +149,6 @@ public class Player extends Entity {
 		this.mpPotions = mpPotions;
 		this.dyeId = dyeId;
 		this.cachedAccountFame = cachedAccountFame;
-		// Phase 2A — nullsafe so existing Builder callers that don't set these
-		// still get a usable Player (matches the field initializers).
 		this.abilityCooldowns = abilityCooldowns != null ? abilityCooldowns : new long[4];
 		this.currentCast = currentCast;
 		this.metrics = metrics != null ? metrics : new PlayerMetrics();
@@ -198,12 +156,7 @@ public class Player extends Entity {
 		this.basicAttackCounter = basicAttackCounter;
 		this.availableSkillPoints = availableSkillPoints;
 		this.abilitySkillPoints = abilitySkillPoints != null ? abilitySkillPoints : new HashMap<>();
-		// Re-seed hotbar bindings from the class's defaultHotbar whenever the
-		// loaded array is empty (all zeros). hotbarBindings is `transient` so
-		// it never makes it back from the DB — every login this ctor runs with
-		// the default [0,0,0,0]. Without this, Player.getActiveAbility(slot)
-		// returns null for every slot and useAbility silently falls back to the
-		// legacy ability-item path (same Wooden Shield for every Knight key).
+		// Re-seed hotbar bindings from class default when transient state is empty (post-login).
 		boolean hotbarEmpty = true;
 		for (int v : this.hotbarBindings) { if (v != 0) { hotbarEmpty = false; break; } }
 		if (hotbarEmpty) {
@@ -234,9 +187,7 @@ public class Player extends Entity {
 		this.mana = classModel.getBaseStats().getMp();
 
 		this.stats = classModel.getBaseStats().clone();
-		// Phase 2A: seed hotbar from class default. Lombok's @Builder.Default
-		// strips the inline initializer from this ctor path (same trick that
-		// bit renderX/Y), so guard with an explicit allocation here.
+		// Lombok @Builder.Default strips inline init in this ctor path — allocate explicitly.
 		if (this.hotbarBindings == null) this.hotbarBindings = new int[]{0, 0, 0, 0};
 		if (this.abilityCooldowns == null) this.abilityCooldowns = new long[4];
 		if (classModel.getAbilityTree() != null && classModel.getAbilityTree().getDefaultHotbar() != null) {
@@ -265,16 +216,11 @@ public class Player extends Entity {
 		if (stats.getHpPotions() != null) this.hpPotions = stats.getHpPotions();
 		if (stats.getMpPotions() != null) this.mpPotions = stats.getMpPotions();
 		if (stats.getDyeId() != null) this.dyeId = stats.getDyeId();
-		// Phase 2D — restore skill-point pool + investment map.
 		this.availableSkillPoints = stats.getAvailableSkillPoints() != null
 				? stats.getAvailableSkillPoints() : 0;
 		this.abilitySkillPoints = stats.getAbilitySkillPoints() != null
 				? new HashMap<>(stats.getAbilitySkillPoints()) : new HashMap<>();
-		// Phase 2D — one-shot backfill for characters that levelled past 2 before
-		// the SP system existed. earned = 1 per even level capped at 20 (so 10
-		// total at L20+). If pool + invested < earned, top up the pool so the
-		// player has the points they should have earned. Never decreases the
-		// pool — only repairs missing grants.
+		// One-shot backfill for chars that levelled past 2 before SP existed.
 		final int currentLevel = GameDataManager.EXPERIENCE_LVLS == null
 				? 0 : GameDataManager.EXPERIENCE_LVLS.getLevel(this.experience);
 		int earnedSoFar = 0;
@@ -313,8 +259,6 @@ public class Player extends Entity {
 				.build();
 	}
 
-	// ===== Phase 2D — skill point helpers =====================================
-
 	/** Invested level for the given abilityId (0 if none invested). */
 	public int getSkillLevel(int abilityId) {
 		if (this.abilitySkillPoints == null) return 0;
@@ -322,11 +266,7 @@ public class Player extends Entity {
 		return v == null ? 0 : v;
 	}
 
-	/**
-	 * Try to invest one skill point into {@code abilityId}. Returns true on
-	 * success. Fails if no points available, the ability id is unknown, or
-	 * the per-ability cap is already met.
-	 */
+	/** Invest one skill point into abilityId. False if no points, unknown id, or cap reached. */
 	public boolean investSkillPoint(int abilityId) {
 		if (this.availableSkillPoints <= 0) return false;
 		final Ability ab = GameDataManager.ABILITIES == null ? null
@@ -341,15 +281,11 @@ public class Player extends Entity {
 		return true;
 	}
 
-	/**
-	 * Award skill points earned by reaching levels in (prevLevel, newLevel].
-	 * Rule: 1 point per even level from L2 through L20. Caps total earnable
-	 * at 10. Returns the number of points actually granted.
-	 */
+	/** Award 1 SP per even level in (prevLevel, newLevel], capped at L20. Returns count granted. */
 	public int awardSkillPointsForLevels(int prevLevel, int newLevel) {
 		int granted = 0;
 		for (int lvl = Math.max(prevLevel + 1, 2); lvl <= newLevel && lvl <= 20; lvl++) {
-			if ((lvl & 1) == 0) {  // even level
+			if ((lvl & 1) == 0) {
 				this.availableSkillPoints++;
 				granted++;
 			}
@@ -411,11 +347,7 @@ public class Player extends Entity {
 		return weapon == null ? -1 : weapon.getDamage().getProjectileGroupId();
 	}
 
-	/**
-	 * Phase 1B bridge — returns the legacy GameItem template that the
-	 * RealmManagerServer.useAbility() path still consumes. Phase 2B replaces
-	 * the call sites with {@link #getActiveAbility(int)} and deletes this.
-	 */
+	/** Legacy bridge — returns the GameItem template used by RealmManagerServer.useAbility(). */
 	public GameItem getAbility() {
 		final CharacterClassModel cls = GameDataManager.CHARACTER_CLASSES.get(this.classId);
 		if (cls == null) return null;
@@ -424,22 +356,12 @@ public class Player extends Entity {
 		return GameDataManager.GAME_ITEMS.get(abilityId);
 	}
 
-	/**
-	 * Phase 2A: look up the {@link Ability} bound to a hotbar slot (0..3).
-	 * Returns null if the slot is empty, holds a passive (use
-	 * {@link #getSlottedPassive(int)}), or the referenced ability isn't loaded.
-	 */
+	/** Ability bound to hotbar slot (0..3). Null if empty, passive, or unloaded. */
 	public Ability getActiveAbility(int slot) {
 		int id = this.getHotbarId(slot);
 		if (id <= 0) {
-			// hotbarBindings can be stale or all-zero when the Player object was
-			// reconstructed via the no-arg ctor (e.g., NetPlayer.toPlayer() or
-			// some realm-transition reload path). Without this fallback,
-			// getActiveAbility() returns null for every slot and the server
-			// silently runs the LEGACY ability-item path — which for Knight
-			// fires Wooden Shield projectiles on every key, looking like the
-			// same animation 4 times. Resolve to the class's defaultHotbar
-			// directly so the cast always finds the right Ability.
+			// Fallback to class defaultHotbar when bindings are stale/all-zero
+			// (e.g., reconstructed via no-arg ctor on realm transition).
 			if (slot >= 0 && slot < 4) {
 				final CharacterClassModel cls = GameDataManager.CHARACTER_CLASSES.get(this.classId);
 				if (cls != null && cls.getAbilityTree() != null
@@ -453,21 +375,14 @@ public class Player extends Entity {
 		return GameDataManager.ABILITIES.get(id);
 	}
 
-	/**
-	 * Returns the passive bound to a hotbar slot if any (since slots can hold
-	 * passives — they're "always-on while bound"). Distinct from the class's
-	 * always-on passive (see {@link #getClassPassive()}).
-	 */
+	/** Passive bound to a hotbar slot, if any. Distinct from {@link #getClassPassive()}. */
 	public PassiveAbility getSlottedPassive(int slot) {
 		final int id = this.getHotbarId(slot);
 		if (id <= 0 || GameDataManager.PASSIVES == null) return null;
 		return GameDataManager.PASSIVES.get(id);
 	}
 
-	/**
-	 * The class's always-on passive (not bindable, separate from the hotbar).
-	 * Returns null until the class has been ported in Phase 2B.
-	 */
+	/** The class's always-on passive (not bindable). */
 	public PassiveAbility getClassPassive() {
 		final CharacterClassModel cls = GameDataManager.CHARACTER_CLASSES.get(this.classId);
 		if (cls == null || cls.getAbilityTree() == null) return null;
@@ -513,14 +428,9 @@ public class Player extends Entity {
 				int targetHealth = this.getHealth() - stats.getHp();
 				this.setHealth(this.getHealth() - targetHealth);
 			}
-			// MANA_FOUNT mirrors HEALING for mana — same flat regen but
-			// doubled for the duration of the buff.
 			float mpMult = 1.0f;
 			if (this.hasEffect(StatusEffectType.MANA_FOUNT)) mpMult = 2.0f;
-			// "Muscle for Brains" — passive 11016 (legacy Heavy DPS) and 12000
-			// (Barbarian, 2026-05-18 class rewrite) both swap the regen driver
-			// from WIS to STR so heavy-armor classes get MP back from their
-			// physical stat. Any other class regens off WIS as before.
+			// Passive "Muscle for Brains" (11016, 12000) regens MP from STR instead of WIS.
 			final PassiveAbility classPassive = this.getClassPassive();
 			final int passiveId = classPassive != null ? classPassive.getId() : -1;
 			final boolean strRegen = passiveId == 11016 || passiveId == 12000;
@@ -566,16 +476,9 @@ public class Player extends Entity {
 		else if (this.hasEffect(StatusEffectType.BRACED)) {
 			stats.setDef((short) Math.min(Short.MAX_VALUE, (int)(stats.getDef() * 1.5f)));
 		}
-		// Priest Protective Aura — +5 VIT to every ally inside the aura.
 		if (this.hasEffect(StatusEffectType.PROTECTED)) {
 			stats.setVit((short) Math.min(Short.MAX_VALUE, stats.getVit() + 5));
 		}
-		// Heavy Buffer Guiding Light — split into two parallel statuses
-		// (EMPOWERED_STR, EMPOWERED_DEX) so the UI can stack two distinct
-		// icons over the player's head. The aura tick always applies both
-		// with the same magnitude (caster.WIS / divisor), but reading
-		// them separately means future kits can grant only one half if
-		// the design ever wants it.
 		if (this.hasEffect(StatusEffectType.EMPOWERED_STR)) {
 			final short bonus = this.getEffectMagnitude(StatusEffectType.EMPOWERED_STR);
 			if (bonus > 0) stats.setStr((short) Math.min(Short.MAX_VALUE, stats.getStr() + bonus));
@@ -584,25 +487,21 @@ public class Player extends Entity {
 			final short bonus = this.getEffectMagnitude(StatusEffectType.EMPOWERED_DEX);
 			if (bonus > 0) stats.setDex((short) Math.min(Short.MAX_VALUE, stats.getDex() + bonus));
 		}
-		// Class-passive stat hooks — passives with no `triggers` array in the
-		// data are implemented here for stat-modifying effects so getComputedStats
-		// is the single source of truth for derived stats.
+		// Class-passive stat hooks (passives without trigger arrays).
 		final PassiveAbility _passive = this.getClassPassive();
 		if (_passive != null) {
 			switch (_passive.getId()) {
-				case 12009: { // Knight "Thick Skin" — +(VIT/5) flat DEF.
+				case 12009: { // Knight "Thick Skin": +(VIT/5) DEF
 					final int bonus = stats.getVit() / 5;
 					if (bonus > 0) stats.setDef((short) Math.min(Short.MAX_VALUE, stats.getDef() + bonus));
 					break;
 				}
-				case 12007: { // Druid "Will of Nature" — +(DEX/10) WIS.
+				case 12007: { // Druid "Will of Nature": +(DEX/10) WIS
 					final int bonus = stats.getDex() / 10;
 					if (bonus > 0) stats.setWis((short) Math.min(Short.MAX_VALUE, stats.getWis() + bonus));
 					break;
 				}
-				case 12002: { // Wizard "Uncontestable Knowledge" — +1 WIS per
-					// every 20 points of MP above the class base. Reads
-					// equipment-bonus MP only (excludes the base value).
+				case 12002: { // Wizard "Uncontestable Knowledge": +1 WIS per 20 MP above class base
 					final int baseMp = this.stats.getMp();
 					final int bonusMp = Math.max(0, stats.getMp() - baseMp);
 					final int bonus = bonusMp / 20;
@@ -810,7 +709,6 @@ public class Player extends Entity {
 			}
 			this.setHealth(this.stats.getHp());
 			this.setMana(this.stats.getMp());
-			// Phase 2D — award skill points for any even levels crossed.
 			final int granted = this.awardSkillPointsForLevels(currentLevel, newLevel);
 			if (granted > 0) {
 				log.info("[SKILL-POINTS] player {} crossed L{}->{} earned {} SP (pool={})",
@@ -835,7 +733,6 @@ public class Player extends Entity {
 	}
 
 	public GameItem[] selectGameItems(Boolean[] selectedIdx) {
-		// "Primary bag" view = first 8 backpack slots.
 		GameItem[] inv = this.getSlots(EQUIPMENT_SLOT_COUNT, EQUIPMENT_SLOT_COUNT + 8);
 		if (selectedIdx.length != inv.length) {
 			System.err.println("SELECT GAME ITEM IDX SIZES NOT EQUAL");

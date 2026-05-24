@@ -173,182 +173,63 @@ public class RealmManagerServer implements Runnable {
 	private Map<Long, Realm> realms = new ConcurrentHashMap<>();
 	private Map<String, Long> remoteAddresses = new ConcurrentHashMap<>();
 
-	// Thread-safe queue for pending realm joins. Worker threads (async login) push
-	// here instead of mutating realm state directly, and the tick thread drains it
-	// at the start of each tick to avoid race conditions with enqueueGameData().
+	// Worker threads enqueue here; the tick thread drains at the top of each
+	// tick so realm mutation stays single-threaded.
 	private final ConcurrentLinkedQueue<PendingRealmJoin> pendingRealmJoins = new ConcurrentLinkedQueue<>();
-	// Thread-safe queue for async realm generation completions. Worker threads generate
-	// the realm (heavy CPU), then enqueue here for tick-thread integration.
 	private final ConcurrentLinkedQueue<PendingRealmTransition> pendingRealmTransitions = new ConcurrentLinkedQueue<>();
-	// Delta cache for other-player UpdatePackets (keyed by viewerPlayerId -> targetPlayerId -> packet)
+
 	private Map<Long, Map<Long, UpdatePacket>> otherPlayerUpdateState = new ConcurrentHashMap<>();
-	
 	private Map<Long, Long> playerAbilityState = new ConcurrentHashMap<>();
-	// Per-player authoritative ledger of which entity IDs the client has
-	// loaded right now (replaces the old "last LoadPacket sent" snapshot).
-	// Drives load/unload deltas: load = desired ∖ ledger, unload = ledger ∖
-	// desired. Updated every tick by exactly what was enqueued, so a
-	// cap-trimmed entity is simply "not yet loaded" — no spurious unloads,
-	// no ghost entities. See PlayerLoadLedger for the full motivation.
 	private Map<Long, PlayerLoadLedger> playerLoadLedger = new ConcurrentHashMap<>();
-	// Phase 4 — party state (membership + pending invites). Exposed via
-	// getPartyManager() so chat-command handlers and packet handlers can mutate.
 	private final PartyManager partyManager = new PartyManager();
 
-	// ─── Class passive tuning constants ───────────────────────────────────
-	// Guiding Light's WIS divisor moved to ServerPassiveTickHelper alongside
-	// the aura refresh block that consumes it.
-	// Precision Striker tuning moved to ServerCombatHelper alongside the
-	// processEnemyHit body that consumes it.
-
-	// TODO(persistent-effects): the deprecated 2026-05-18 class rewrite stripped
-	// out three bespoke persistent-effect primitives that used to live here —
-	// `SoulHarvestField` (Necromancer ult: vortex that drained HP and healed
-	// allies over time), `BladeOrbitState` (Ninja Blade Storm: visual-only
-	// orbiting shurikens that followed the caster), and `BladeBlenderField`
-	// (Ninja Death Blossom: 5s spiraling armor-piercing DoT at a cursor point).
-	// Each was a per-cast struct held in a List<> on RealmManagerServer with a
-	// dedicated tick loop in update().
-	//
-	// The new class roster doesn't use any of them today, but the design space
-	// they covered — "ability spawns a ground-anchored or caster-anchored
-	// region that periodically applies damage/heal/status and emits visuals
-	// until it expires" — is the same shape we'll need for Ninja Caltrops
-	// (lingering ground hazard, see 13031) and any future kits with stick-
-	// around effects. When we build that, do it as ONE generic primitive:
-	//
-	//   class PersistentEffect {
-	//       long realmId, casterId, expiresAtMs, lastTickMs;
-	//       Vector2f anchor;              // fixed point on ground, OR
-	//       Long followEntityId;          // entity to track (for orbit-style)
-	//       float radius;
-	//       short visualEffectId;         // CreateEffectPacket.EFFECT_*
-	//       short visualDurationMs;
-	//       byte  visualTier;
-	//       int   visualRefreshTicks;     // re-emit the visual every N ticks
-	//       int   tickPeriodMs;           // gameplay tick cadence
-	//       PersistentEffectPayload payload;  // damage/heal/status/etc.
-	//   }
-	//
-	// Drive the cadence and visual refresh from the tick loop the way the old
-	// systems did, but with a single list<PersistentEffect> instead of three.
-	// JSON authoring lives on Ability as a new AbilityEffect type
-	// "SPAWN_PERSISTENT_FIELD" with the parameters above.
-	//
-	// Caltrops (13031) is the first user — currently uses SKILL_POINTS scaling
-	// on the SLOWED debuff duration as a stand-in for the lingering hazard.
-	// Per-realm last-tick wall-clock used to compute bulletScale ONCE per
-	// realm per tick instead of per-bullet — eliminates ~12K nanoTime
-	// syscalls/sec when 200 bullets are in flight.
 	private Map<Long, Long> lastBulletUpdateNanos = new ConcurrentHashMap<>();
-	// Last wall-clock time we forced a full LoadPacket snapshot to the player.
-	// Used to periodically refresh players/enemies/portals so a dropped
-	// delta packet self-heals. WebSocket TCP makes drops rare so we don't
-	// need a tight interval — 10s balances recovery time against the
-	// per-cycle cost of repeatedly shipping the full N-player snapshot.
 	private Map<Long, Long> playerLastFullSnapshotMs = new ConcurrentHashMap<>();
-	/** Last time we force-cleared this viewer's per-other-player UpdatePacket
-	 *  delta cache. Every {@link #VIEWER_UPDATE_REFRESH_MS} we wipe the map so
-	 *  the next broadcast tick unconditionally re-sends the stripped
-	 *  UpdatePacket for every nearby player. Self-heals the race where a
-	 *  freshly-loaded viewer's first UpdatePacket landed before its
-	 *  matching LoadPacket added the player (so getPlayer(id) returned null
-	 *  and the update was silently dropped). Mirrors the periodic full
-	 *  LoadPacket snapshot at {@link #FULL_SNAPSHOT_INTERVAL_MS}. */
 	private Map<Long, Long> lastViewerUpdateRefreshMs = new ConcurrentHashMap<>();
 	private static final long VIEWER_UPDATE_REFRESH_MS = 2000L;
-	// Was 10s — bumped down to 2s so a freshly-joined client whose first
-	// LoadPacket missed an entity (race against the per-viewer entitySetSame
-	// delta gate) recovers within one cycle instead of staring at a blank
-	// world for 10 full seconds. The webclient never noticed because it
-	// receives entities via tile-stream chunks during LoadMap; the native
-	// client's tile path is finished before LoadPacket starts streaming so
-	// any delta gap is visible.
 	private static final long FULL_SNAPSHOT_INTERVAL_MS = 2000L;
+
 	private Map<Long, UpdatePacket> playerUpdateState = new ConcurrentHashMap<>();
 	private Map<Long, PlayerStatePacket> playerStateState = new ConcurrentHashMap<>();
-	/** Invalidate the cached PlayerStatePacket for one player so the next state
-	 *  broadcast picks up post-damage HP/MP. Public so combat-side helpers can
-	 *  poke it without exposing the whole map. */
+
 	public void invalidatePlayerStateCache(long playerId) {
 		this.playerStateState.remove(playerId);
 	}
+
 	private Map<Long, UpdatePacket> enemyUpdateState = new ConcurrentHashMap<>();
 	private Map<Long, UnloadPacket> playerUnloadState = new ConcurrentHashMap<>();
 	private Map<Long, LoadMapPacket> playerLoadMapState = new ConcurrentHashMap<>();
 	private Map<Long, ObjectMovePacket> playerObjectMoveState = new ConcurrentHashMap<>();
-	// Dead reckoning state: outer map = playerId, inner map = entityId -> motion state.
-	// Tracks what each client believes each entity's position to be, so we only send
-	// corrections when the server's actual state diverges beyond a threshold.
 	private Map<Long, Map<Long, EntityMotionState>> playerDeadReckonState = new ConcurrentHashMap<>();
 	private Map<Long, Long> playerGroundDamageState = new ConcurrentHashMap<>();
 	private Map<Long, Long> playerLastHeartbeatTime = new ConcurrentHashMap<>();
-	// Last sent global player positions per realm (for delta detection)
 	private Map<Long, NetPlayerPosition[]> lastGlobalPositions = new ConcurrentHashMap<>();
 
-	// Poison damage-over-time tracking
 	private UnloadPacket lastUnload;
-	// Potentially accessed by many threads many times a second.
-	// marked volatile to make sure each time this queue is accessed
-	// we are not looking at a cached version. Make a PR if my assumption is wrong :)
 	private volatile Queue<Packet> outboundPacketQueue = new ConcurrentLinkedQueue<>();
-	private volatile Map<Long, ConcurrentLinkedQueue<Packet>> playerOutboundPacketQueue = new ConcurrentHashMap<Long, ConcurrentLinkedQueue<Packet>>();
+	private volatile Map<Long, ConcurrentLinkedQueue<Packet>> playerOutboundPacketQueue = new ConcurrentHashMap<>();
 	private List<RealmDecoratorBase> realmDecorators = new ArrayList<>();
 	private List<EnemyScriptBase> enemyScripts = new ArrayList<>();
 	private List<UseableItemScriptBase> itemScripts = new ArrayList<>();
-	// Note: realmLock is currently unnecessary — all realm access happens on the single tick thread.
-	// Kept as a ReentrantLock for safety if threading model changes in the future.
 	private final ReentrantLock realmLock = new ReentrantLock();
 	private int currentTickCount = 0;
 	private long tickSampleTime = 0;
-	// Running sum of tick durations (nanos) over the current 1-second sample
-	// window. Divided by currentTickCount at the per-second log to report the
-	// average tick time. Reset alongside currentTickCount.
 	private long tickTimeAccumNanos = 0L;
-
-	// Tiered update rate tick counter (increments every tick, wraps at 64)
 	private int tickCounter = 0;
 
-	// Tick rate divisors for tiered packet transmission (at 64 ticks/sec):
-	// Dead reckoning: clients extrapolate using velocity, server only sends corrections
-	// when actual position diverges from predicted. This allows much lower check rates
-	// while maintaining visual fidelity via client-side interpolation.
-	// LoadPacket: 16Hz - entity spawns/despawns aren't time-critical
-	// UpdatePacket: 8Hz - stats/inventory/effects change slowly
-	// LoadMapPacket: 4Hz - terrain barely changes
-	// EnemyUpdatePacket: 8Hz - enemy health bars
-	private static final int MOVE_TICK_DIVISOR = 2;       // Inner zone dead reckoning check at 32Hz
-	private static final int MOVE_FULL_TICK_DIVISOR = 4;  // Full viewport dead reckoning check at 16Hz
-	private static final int LOAD_TICK_DIVISOR = 2;       // Entity spawn/despawn at 32Hz — bullets need low latency to avoid burst effect
-	private static final int UPDATE_TICK_DIVISOR = 8;     // Stats/inventory at 8Hz (was 16Hz — stats change slowly)
-	private static final int LOADMAP_TICK_DIVISOR = 12; // 64Hz / 12 ≈ 5.3Hz — was 16 (4Hz). Faster tile reveal as the player walks.
-	private static final int ENEMY_UPDATE_TICK_DIVISOR = 4; // Enemy health bars at 16Hz — tightens hit-feedback latency (HP bar reacts within 1 frame of damage text). Profiled budget: ~1.2ms/tick at 500 enemies + 1500 bullets, plenty of room.
-	// Enemy AI tick divisor — staggered so 1/N of enemies get updated each
-	// tick. MUST be a power of 2 (used as a bitmask). Value 2 gives each
-	// enemy a 32 Hz effective AI rate; value 4 -> 16 Hz. 32 Hz is plenty
-	// for chase/attack AI and halves the per-tick cost at 10K enemies.
+	// Power-of-2 divisors used as bitmasks against tickCounter. Changing one
+	// must preserve the (n & (DIVISOR - 1)) idiom in the consumers below.
+	private static final int MOVE_TICK_DIVISOR = 2;
+	private static final int MOVE_FULL_TICK_DIVISOR = 4;
+	private static final int LOAD_TICK_DIVISOR = 2;
+	private static final int UPDATE_TICK_DIVISOR = 8;
+	private static final int LOADMAP_TICK_DIVISOR = 12;
+	private static final int ENEMY_UPDATE_TICK_DIVISOR = 4;
 	private static final int ENEMY_AI_TICK_DIVISOR = 2;
-	// Movement stagger for awake-but-off-screen enemies. If no player has
-	// the enemy in viewport, run tickMove every Nth tick. Visible enemies
-	// still move every tick to avoid stutter. Power of 2 (bitmask).
 	private static final int ENEMY_MOVE_FAR_DIVISOR = 4;
-	// Viewport radius squared (10 tiles). Mirror the constant used by
-	// LoadPacket / movement broadcast in RealmManagerServer.enqueueGameData
-	// so the "is anyone watching this enemy?" check matches the visibility
-	// the client actually sees.
 	private static final float VIEWPORT_RADIUS_SQ =
-		(10f * GlobalConstants.BASE_TILE_SIZE)
-			* (10f * GlobalConstants.BASE_TILE_SIZE);
+		(10f * GlobalConstants.BASE_TILE_SIZE) * (10f * GlobalConstants.BASE_TILE_SIZE);
 
-	// Hard cap on concurrent ENEMY bullets per realm. The 1000-enemy stress
-	// test produced 15K live bullets (1.5 bullets/sec/enemy × ~10s lifetime)
-	// — bullet.update() and bullet->player collision iterate the full bullet
-	// map every tick, so 15K live bullets dominate CPU and crater TPS. With
-	// the cap, excess enemy attacks fail-fast at addProjectile (return null,
-	// no spatial-grid insert, no LoadPacket entry, no per-tick update). At
-	// the cap, attacks distribute across enemies fairly via the natural
-	// arrival ordering. PLAYER bullets always succeed regardless of cap so
-	// player attack feel is preserved.
 	private static final int MAX_ENEMY_BULLETS_PER_REALM = 10000;
 
 	private boolean  isSetup = false;
@@ -362,45 +243,22 @@ public class RealmManagerServer implements Runnable {
 	private final AtomicLong bytesRead = new AtomicLong(0);
 	private final ConcurrentHashMap<String, AtomicLong> bytesReadByPacketType = new ConcurrentHashMap<>();
 	
-	public RealmManagerServer() {
-		// Probably dont want to auto start the server so migrating
-		// this to be invoked from somewhere else (GameLauncher.class)
-//		this.doRunServer();
-	}
-	
+	public RealmManagerServer() { }
+
 	public void doRunServer() {
-		// TODO: Make the trade manager a class variable so we dont
-		// have to do this whacky static assignment
 		ServerTradeManager.mgr = this;
-		
-		// Spawn initial realm and add the global
-		// save player shutdown hook to the Runtime
 		this.doSetup();
-		
-		// Two core threads, the inbound connection listener
-		// and the actual realm manager thread to handle game processing
 		WorkerThread.submitAndForkRun(this.server);
 		WorkerThread.submitAndForkRun(this);
 	}
 	
 	private void doSetup() {
-		if(this.isSetup) {
+		if (this.isSetup) {
 			log.warn("[SERVER] Server is already setup, ignoring extra call");
 			return;
 		}
-		// Start listening for connections
 		this.server = new NioServer(2222);
-
-		// Start WebSocket server for browser-based clients
-		try {
-			final WebSocketGameServer wsServer =
-				new WebSocketGameServer(2223, this.server);
-			wsServer.start();
-			log.info("[SERVER] WebSocket server started on port 2223");
-		} catch (Exception e) {
-			log.error("[SERVER] Failed to start WebSocket server: {}", e.getMessage());
-		}
-
+		this.startWebSocketServer();
 		this.registerRealmDecorators();
 		this.registerEnemyScripts();
 		this.registerPacketCallbacks();
@@ -408,53 +266,55 @@ public class RealmManagerServer implements Runnable {
 		this.registerItemScripts();
 		this.registerCommandHandlersReflection();
 		this.beginPlayerSync();
-		
-		Realm realm = null;
+
+		final Realm realm = this.createEntryRealm();
+		realm.spawnRandomEnemies(realm.getMapId());
+		this.placeSetPiecesIfTerrainMap(realm);
+		this.addRealm(realm);
+		Runtime.getRuntime().addShutdownHook(this.shutdownHook());
+		this.isSetup = true;
+	}
+
+	private void startWebSocketServer() {
+		try {
+			final WebSocketGameServer wsServer = new WebSocketGameServer(2223, this.server);
+			wsServer.start();
+			log.info("[SERVER] WebSocket server started on port 2223");
+		} catch (Exception e) {
+			log.error("[SERVER] Failed to start WebSocket server: {}", e.getMessage());
+		}
+	}
+
+	private Realm createEntryRealm() {
 		final DungeonGraphNode entryNode = GameDataManager.getEntryNode();
 		try {
 			if (entryNode != null) {
 				log.info("[SERVER] Creating realm for entry node: {} (mapId={})", entryNode.getNodeId(), entryNode.getMapId());
-				realm = new Realm(true, entryNode.getMapId(), entryNode.getNodeId());
-				log.info("[SERVER] Realm created successfully for node: {}", entryNode.getNodeId());
-			} else {
-				log.warn("[SERVER] No dungeon graph entry node found, falling back to mapId=2");
-				realm = new Realm(true, 2);
+				return new Realm(true, entryNode.getMapId(), entryNode.getNodeId());
 			}
+			log.warn("[SERVER] No dungeon graph entry node found, falling back to mapId=2");
+			return new Realm(true, 2);
 		} catch (Exception e) {
 			log.error("[SERVER] Failed to create entry realm (mapId={}). Falling back to mapId=2. Reason: {}",
 					entryNode != null ? entryNode.getMapId() : "null", e.getMessage(), e);
-			realm = new Realm(true, 2);
+			return new Realm(true, 2);
 		}
-		final var entryMapModel = GameDataManager.MAPS.get(realm.getMapId());
-		final boolean isStaticMap = entryMapModel != null && entryMapModel.getTerrainId() < 0;
-
-		realm.spawnRandomEnemies(realm.getMapId());
-
-		// Overseer attachment is handled centrally in addRealm() based on
-		// mapId, so no need to attach here.
-
-		// Place set piece structures only for terrain-generated maps
-		if (entryMapModel != null && entryMapModel.getTerrainId() >= 0 && GameDataManager.TERRAINS != null) {
-			TerrainGenerationParameters terrainParams = GameDataManager.TERRAINS.get(entryMapModel.getTerrainId());
-			if (terrainParams == null) {
-				terrainParams = GameDataManager.TERRAINS.get(0);
-			}
-			if (terrainParams != null && terrainParams.getSetPieces() != null) {
-				log.info("[SERVER] Placing set pieces for terrain '{}' ({} types defined)",
-					terrainParams.getName(), terrainParams.getSetPieces().size());
-				realm.placeSetPieces(terrainParams);
-			}
-		} else {
-			log.info("[SERVER] Static map (mapId={}), skipping set piece placement", realm.getMapId());
-		}
-		this.addRealm(realm);
-		
-		Runtime.getRuntime().addShutdownHook(this.shutdownHook());
-		
-		this.isSetup = true;
 	}
 
-	// Adds a specified amount of random headless players
+	private void placeSetPiecesIfTerrainMap(final Realm realm) {
+		final var entryMapModel = GameDataManager.MAPS.get(realm.getMapId());
+		if (entryMapModel == null || entryMapModel.getTerrainId() < 0 || GameDataManager.TERRAINS == null) {
+			log.info("[SERVER] Static map (mapId={}), skipping set piece placement", realm.getMapId());
+			return;
+		}
+		TerrainGenerationParameters terrainParams = GameDataManager.TERRAINS.get(entryMapModel.getTerrainId());
+		if (terrainParams == null) terrainParams = GameDataManager.TERRAINS.get(0);
+		if (terrainParams == null || terrainParams.getSetPieces() == null) return;
+		log.info("[SERVER] Placing set pieces for terrain '{}' ({} types defined)",
+				terrainParams.getName(), terrainParams.getSetPieces().size());
+		realm.placeSetPieces(terrainParams);
+	}
+
 	public void spawnTestPlayers(final long realmId, final int count, final Vector2f pos) {
 		final Realm targetRealm = this.realms.get(realmId);
 		final Runnable spawnTestPlayers = () -> {
@@ -473,56 +333,29 @@ public class RealmManagerServer implements Runnable {
 					player.setCharacterUuid(UUID.randomUUID().toString());
 					player.setAccountUuid(UUID.randomUUID().toString());
 
-					final boolean up = random.nextBoolean();
-					final boolean right = random.nextBoolean();
-
-					if (up) {
-						// player.setUp(true);
-						player.setDy(-random.nextFloat());
-					} else {
-						// player.setDown(true);
-						player.setDy(random.nextFloat());
-					}
-					if (right) {
-						// player.setRight(true);
-						player.setDx(random.nextFloat());
-					} else {
-						// player.setLeft(true);
-						player.setDx(-random.nextFloat());
-					}
+					player.setDy(random.nextBoolean() ? -random.nextFloat() : random.nextFloat());
+					player.setDx(random.nextBoolean() ? random.nextFloat() : -random.nextFloat());
 					Thread.sleep(100);
 					player.setHeadless(true);
-
-					final long newId = targetRealm.addPlayer(player);
+					targetRealm.addPlayer(player);
 				} catch (Exception e) {
-					RealmManagerServer.log.error("Failed to spawn test character of class type {}. Reason: {}",
-							classToSpawn, e);
+					log.error("Failed to spawn test character of class type {}. Reason: {}", classToSpawn, e);
 				}
 			}
 		};
-		// Run this in a completely separate thread
 		WorkerThread.submitAndForkRun(spawnTestPlayers);
 	}
 
 	@Override
 	public void run() {
-		RealmManagerServer.log.info("[SERVER] Starting OpenRealm Server");
-		final Runnable tick = () -> {
-			this.tick();
-		};
-		
-		final TimedWorkerThread workerThread = new TimedWorkerThread(tick, 64);
+		log.info("[SERVER] Starting OpenRealm Server");
+		final TimedWorkerThread workerThread = new TimedWorkerThread(this::tick, 64);
 		WorkerThread.submitAndForkRun(workerThread);
-		RealmManagerServer.log.info("[SERVER] RealmManagerServer exiting run().");
+		log.info("[SERVER] RealmManagerServer exiting run().");
 	}
 
-	// Tick-budget log: when one whole tick exceeds the 16ms budget (1 tick at
-	// 64 Hz), emit a single line breaking down where the time went. Throttled
-	// to once per second so a sustained slow-tick storm doesn't flood logs.
-	private static final long TICK_BUDGET_NANOS = 16_000_000L; // 16ms
+	private static final long TICK_BUDGET_NANOS = 16_000_000L;
 	private long lastSlowTickLogMs = 0L;
-	// Sub-phase counters inside update() — populated per tick so the slow-tick
-	// log can break "update=Xms" into player vs enemy vs bullet vs tail cost.
 	private long updPlayersNanos = 0L;
 	private long updEnemiesNanos = 0L;
 	private long updBulletsNanos = 0L;
@@ -544,10 +377,8 @@ public class RealmManagerServer implements Runnable {
 			this.processServerPackets();
 			tPackets = System.nanoTime() - t0;
 
-			// update() runs BEFORE enqueueGameData so that enemy bullets spawned
-			// during Enemy.update() are in the spatial grid when LoadPacket is built.
-			// Previously, enqueueGameData ran first and missed same-tick enemy bullets,
-			// causing them to appear 1-2 ticks late on the client.
+			// update() MUST run before enqueueGameData() so enemy bullets spawned
+			// in Enemy.update() land in the spatial grid before LoadPacket is built.
 			t0 = System.nanoTime();
 			this.update(0);
 			tUpdate = System.nanoTime() - t0;
@@ -560,34 +391,22 @@ public class RealmManagerServer implements Runnable {
 			this.sendGameData();
 			tSend = System.nanoTime() - t0;
 
-			// Tick all realm overseers (ecosystem management)
 			t0 = System.nanoTime();
-			for (Realm realm : this.realms.values()) {
-				if (realm.getOverseer() != null) {
-					realm.getOverseer().tick();
-				}
+			for (final Realm realm : this.realms.values()) {
+				if (realm.getOverseer() != null) realm.getOverseer().tick();
 			}
 			tOverseer = System.nanoTime() - t0;
 		} catch (Exception e) {
-			// Throwable passed as the LAST arg with no {} placeholder so SLF4J
-			// prints the full stack trace. Previous form ("Reason: {}", e) just
-			// printed e.toString() → "ArrayIndexOutOfBoundsException: null"
-			// with no clue what line threw.
-			RealmManagerServer.log.error("Failed to process server tick", e);
+			log.error("Failed to process server tick", e);
 		}
 		final long tickTotal = System.nanoTime() - tickStart;
 		this.currentTickCount++;
 		this.tickTimeAccumNanos += tickTotal;
-		// Per-second log. Advance the sample window by EXACTLY 1000ms each
-		// cycle (was `= Instant.now()`, which slipped 1–2ms every cycle and
-		// occasionally caught a 65th tick inside a 1001–1002ms window —
-		// hence the "65 ticks this second" log noise). Single now() capture
-		// to avoid the second-syscall drift the previous code also had.
+		// Sample window advances by exactly 1000ms — using Instant.now() here
+		// slips 1-2ms/cycle and produces phantom "65 ticks this second" logs.
 		final long nowMs = Instant.now().toEpochMilli();
 		if (nowMs - this.tickSampleTime >= 1000) {
 			this.tickSampleTime += 1000;
-			// Hard catch-up: if the loop stalled long enough that we're past
-			// the next boundary, snap forward instead of spamming logs.
 			if (nowMs - this.tickSampleTime >= 1000) {
 				this.tickSampleTime = nowMs;
 			}
@@ -624,97 +443,109 @@ public class RealmManagerServer implements Runnable {
 
 
 	private void sendGameData() {
-		long startNanos = System.nanoTime();
-		final List<Packet> packetsToBroadcast = new ArrayList<>();
-		// TODO: Possibly rework this queue as we dont usually send stuff globally
-		while (!this.outboundPacketQueue.isEmpty()) {
-			packetsToBroadcast.add(this.outboundPacketQueue.remove());
-		}
+		final long startNanos = System.nanoTime();
+		final List<Packet> packetsToBroadcast = this.drainBroadcastQueue();
+		this.reapStaleSessions();
+		this.deliverPacketsToSessions(packetsToBroadcast);
+		this.logBandwidthIfDue();
+		final long nanosDiff = System.nanoTime() - startNanos;
+		log.debug("Game data broadcast in {} nanos ({}ms}", nanosDiff, ((double) nanosDiff / 1_000_000.0));
+	}
 
-		// Detect stale sessions
-		final List<Map.Entry<String, ClientSession>> staleSessions = new ArrayList<>();
+	private List<Packet> drainBroadcastQueue() {
+		final List<Packet> packets = new ArrayList<>();
+		while (!this.outboundPacketQueue.isEmpty()) {
+			packets.add(this.outboundPacketQueue.remove());
+		}
+		return packets;
+	}
+
+	private void reapStaleSessions() {
+		final List<Map.Entry<String, ClientSession>> stale = new ArrayList<>();
 		for (final Map.Entry<String, ClientSession> client : this.server.getClients().entrySet()) {
 			if (!client.getValue().isConnected() || client.getValue().isShutdownProcessing()) {
-				staleSessions.add(client);
+				stale.add(client);
 			}
 		}
-		staleSessions.forEach(entry -> {
+		for (final Map.Entry<String, ClientSession> entry : stale) {
 			try {
-				final boolean wasConnected = entry.getValue().isConnected();
-				final boolean wasShutdown = entry.getValue().isShutdownProcessing();
-				final String staleReason = !wasConnected ? "connection lost (isConnected=false)" : "shutdownProcessing flag already set";
-				entry.getValue().setShutdownProcessing(true);
-				// Remove the player from the realm before removing the client session
-				final Long dcPlayerId = this.remoteAddresses.get(entry.getKey());
-				if (dcPlayerId != null) {
-					final Realm playerRealm = this.findPlayerRealm(dcPlayerId);
-					if (playerRealm != null) {
-						final Player dcPlayer = playerRealm.getPlayer(dcPlayerId);
-						if (dcPlayer != null) {
-							log.info("[SERVER] Cleaning up stale session for player {} — reason: {}", dcPlayer.getName(), staleReason);
-							// Save vault chests if player is in vault
-							if (playerRealm.getMapId() == 1) {
-								try {
-									final List<ChestDto> chestsToSave = playerRealm.serializeChestsForSave();
-									if (chestsToSave != null) {
-										final String acctUuid = dcPlayer.getAccountUuid();
-										final String dcName = dcPlayer.getName();
-										ServerGameLogic.DATA_SERVICE
-												.executePostAsync("/data/account/" + acctUuid + "/chest",
-														chestsToSave, PlayerAccountDto.class)
-												.thenAccept(resp -> log.info("[SERVER] Saved vault chests for DC'd player {}", dcName))
-												.exceptionally(ex -> {
-													log.error("[SERVER] Failed to save vault on DC for {}. Reason: {}",
-															dcName, ex.getMessage());
-													return null;
-												});
-									}
-									final List<ChestDto> storageToSave = playerRealm.serializePotionStorageForSave(dcPlayer.getId());
-									if (storageToSave != null) {
-										final String acctUuid = dcPlayer.getAccountUuid();
-										final String dcName = dcPlayer.getName();
-										ServerGameLogic.DATA_SERVICE
-												.executePostAsync("/data/account/" + acctUuid + "/potion-storage",
-														storageToSave, PlayerAccountDto.class)
-												.thenAccept(resp -> log.info("[SERVER] Saved potion storage for DC'd player {}", dcName))
-												.exceptionally(ex -> {
-													log.error("[SERVER] Failed to save potion storage on DC for {}. Reason: {}",
-															dcName, ex.getMessage());
-													return null;
-												});
-									}
-								} catch (Exception e) {
-									log.error("[SERVER] Failed to save vault on DC for {}. Reason: {}",
-											dcPlayer.getName(), e.getMessage());
-								}
-								playerRealm.setShutdown(true);
-								this.realms.remove(playerRealm.getRealmId());
-							}
-							this.persistPlayerAsync(dcPlayer);
-							playerRealm.getExpiredPlayers().add(dcPlayerId);
-							playerRealm.removePlayer(dcPlayer);
-						}
-					} else {
-						log.info("[SERVER] Cleaning up stale session {} (no player in realm) — reason: {}", entry.getKey(), staleReason);
-					}
-					this.clearPlayerState(dcPlayerId);
-					this.cleanupPartyOnDisconnect(dcPlayerId);
-					this.remoteAddresses.remove(entry.getKey());
-				} else {
-					log.info("[SERVER] Cleaning up stale session {} (no mapped player) — reason: {}", entry.getKey(), staleReason);
-				}
-				entry.getValue().close();
-				this.server.getClients().remove(entry.getKey());
+				this.reapStaleSession(entry);
 			} catch (Exception e) {
-				log.error("[SERVER] Failed to remove stale session. Reason:  {}", e);
+				log.error("[SERVER] Failed to remove stale session. Reason: {}", e);
 			}
-		});
+		}
+	}
 
+	private void reapStaleSession(final Map.Entry<String, ClientSession> entry) {
+		final ClientSession session = entry.getValue();
+		final String staleReason = !session.isConnected()
+				? "connection lost (isConnected=false)"
+				: "shutdownProcessing flag already set";
+		session.setShutdownProcessing(true);
+
+		final Long dcPlayerId = this.remoteAddresses.get(entry.getKey());
+		if (dcPlayerId == null) {
+			log.info("[SERVER] Cleaning up stale session {} (no mapped player) — reason: {}", entry.getKey(), staleReason);
+		} else {
+			final Realm playerRealm = this.findPlayerRealm(dcPlayerId);
+			if (playerRealm != null) {
+				final Player dcPlayer = playerRealm.getPlayer(dcPlayerId);
+				if (dcPlayer != null) {
+					log.info("[SERVER] Cleaning up stale session for player {} — reason: {}", dcPlayer.getName(), staleReason);
+					this.saveVaultAndStorageOnDisconnect(playerRealm, dcPlayer);
+					if (playerRealm.getMapId() == 1) {
+						playerRealm.setShutdown(true);
+						this.realms.remove(playerRealm.getRealmId());
+					}
+					this.persistPlayerAsync(dcPlayer);
+					playerRealm.getExpiredPlayers().add(dcPlayerId);
+					playerRealm.removePlayer(dcPlayer);
+				}
+			} else {
+				log.info("[SERVER] Cleaning up stale session {} (no player in realm) — reason: {}", entry.getKey(), staleReason);
+			}
+			this.clearPlayerState(dcPlayerId);
+			this.cleanupPartyOnDisconnect(dcPlayerId);
+			this.remoteAddresses.remove(entry.getKey());
+		}
+		session.close();
+		this.server.getClients().remove(entry.getKey());
+	}
+
+	private void saveVaultAndStorageOnDisconnect(final Realm playerRealm, final Player dcPlayer) {
+		if (playerRealm.getMapId() != 1) return;
+		try {
+			final String acctUuid = dcPlayer.getAccountUuid();
+			final String dcName = dcPlayer.getName();
+			final List<ChestDto> chestsToSave = playerRealm.serializeChestsForSave();
+			if (chestsToSave != null) {
+				ServerGameLogic.DATA_SERVICE
+						.executePostAsync("/data/account/" + acctUuid + "/chest", chestsToSave, PlayerAccountDto.class)
+						.thenAccept(resp -> log.info("[SERVER] Saved vault chests for DC'd player {}", dcName))
+						.exceptionally(ex -> {
+							log.error("[SERVER] Failed to save vault on DC for {}. Reason: {}", dcName, ex.getMessage());
+							return null;
+						});
+			}
+			final List<ChestDto> storageToSave = playerRealm.serializePotionStorageForSave(dcPlayer.getId());
+			if (storageToSave != null) {
+				ServerGameLogic.DATA_SERVICE
+						.executePostAsync("/data/account/" + acctUuid + "/potion-storage", storageToSave, PlayerAccountDto.class)
+						.thenAccept(resp -> log.info("[SERVER] Saved potion storage for DC'd player {}", dcName))
+						.exceptionally(ex -> {
+							log.error("[SERVER] Failed to save potion storage on DC for {}. Reason: {}", dcName, ex.getMessage());
+							return null;
+						});
+			}
+		} catch (Exception e) {
+			log.error("[SERVER] Failed to save vault on DC for {}. Reason: {}", dcPlayer.getName(), e.getMessage());
+		}
+	}
+
+	private void deliverPacketsToSessions(final List<Packet> packetsToBroadcast) {
 		for (final Map.Entry<String, ClientSession> client : this.server.getClients().entrySet()) {
 			try {
 				final ClientSession session = client.getValue();
-				// Inject bandwidth counters so write thread can track stats.
-				// All four counters track POST-COMPRESSION (true wire) bytes.
 				if (session.getSharedBytesWritten() == null) {
 					session.setSharedBytesWritten(this.bytesWritten);
 					session.setSharedBytesPerType(this.bytesWrittenByPacketType);
@@ -722,499 +553,404 @@ public class RealmManagerServer implements Runnable {
 					session.setSharedBytesReadPerType(this.bytesReadByPacketType);
 				}
 				final Player player = this.getPlayerByRemoteAddress(client.getKey());
-				if (player == null) {
-					continue;
-				}
-
-				// Enqueue broadcast packets for deferred serialization on write thread
+				if (player == null) continue;
 				for (final Packet packet : packetsToBroadcast) {
 					session.enqueuePacket(packet);
 				}
-
-				// Enqueue player-specific packets for deferred serialization on write thread
-				final ConcurrentLinkedQueue<Packet> playerPacketsToSend = this.playerOutboundPacketQueue
-						.get(player.getId());
-				if (playerPacketsToSend != null) {
+				final ConcurrentLinkedQueue<Packet> queued = this.playerOutboundPacketQueue.get(player.getId());
+				if (queued != null) {
 					Packet packet;
-					while ((packet = playerPacketsToSend.poll()) != null) {
+					while ((packet = queued.poll()) != null) {
 						session.enqueuePacket(packet);
 					}
 				}
 			} catch (Exception e) {
-				//RealmManagerServer.log.error("[SERVER] Failed to enqueue data to Client. Reason: {}", e);
+				// swallow — connection-state churn races are normal here
 			}
 		}
+	}
 
-		// Print server write + read rates (kbit/s) — both report TRUE
-		// on-the-wire bytes (post-compression for write; raw inbound bytes
-		// for read, which arrive already-compressed if the client used the
-		// compression flag). Sampled once per second by draining the
-		// AtomicLong counters.
-		if (Instant.now().toEpochMilli() - this.lastWriteSampleTime > 1000) {
-			this.lastWriteSampleTime = Instant.now().toEpochMilli();
-			final long written = this.bytesWritten.getAndSet(0);
-			final long read = this.bytesRead.getAndSet(0);
-			RealmManagerServer.log.info("[SERVER] current write rate = {} kbit/s (wire), read rate = {} kbit/s (wire)",
-					(float) (written / 1024.0f) * 8.0f,
-					(float) (read / 1024.0f) * 8.0f);
-			final StringBuilder sb = new StringBuilder("[SERVER] Outbound by packet type: ");
-			for (var entry : this.bytesWrittenByPacketType.entrySet()) {
-				final long typeBytes = entry.getValue().getAndSet(0);
-				if (typeBytes > 0) {
-					sb.append(entry.getKey()).append("=")
-					  .append(String.format("%.1f", (typeBytes / 1024.0f) * 8.0f))
-					  .append("kbit/s ");
-				}
+	private void logBandwidthIfDue() {
+		if (Instant.now().toEpochMilli() - this.lastWriteSampleTime <= 1000) return;
+		this.lastWriteSampleTime = Instant.now().toEpochMilli();
+		final long written = this.bytesWritten.getAndSet(0);
+		final long read = this.bytesRead.getAndSet(0);
+		log.info("[SERVER] current write rate = {} kbit/s (wire), read rate = {} kbit/s (wire)",
+				(float) (written / 1024.0f) * 8.0f,
+				(float) (read / 1024.0f) * 8.0f);
+		log.info(formatPerTypeRates("[SERVER] Outbound by packet type: ", this.bytesWrittenByPacketType));
+		log.info(formatPerTypeRates("[SERVER] Inbound by packet type:  ", this.bytesReadByPacketType));
+	}
+
+	private static String formatPerTypeRates(final String prefix,
+			final ConcurrentHashMap<String, AtomicLong> counters) {
+		final StringBuilder sb = new StringBuilder(prefix);
+		for (final var entry : counters.entrySet()) {
+			final long typeBytes = entry.getValue().getAndSet(0);
+			if (typeBytes > 0) {
+				sb.append(entry.getKey()).append("=")
+				  .append(String.format("%.1f", (typeBytes / 1024.0f) * 8.0f))
+				  .append("kbit/s ");
 			}
-			RealmManagerServer.log.info(sb.toString());
-			final StringBuilder sbR = new StringBuilder("[SERVER] Inbound by packet type:  ");
-			for (var entry : this.bytesReadByPacketType.entrySet()) {
-				final long typeBytes = entry.getValue().getAndSet(0);
-				if (typeBytes > 0) {
-					sbR.append(entry.getKey()).append("=")
-					   .append(String.format("%.1f", (typeBytes / 1024.0f) * 8.0f))
-					   .append("kbit/s ");
-				}
-			}
-			RealmManagerServer.log.info(sbR.toString());
 		}
-		long nanosDiff = System.nanoTime() - startNanos;
-		log.debug("Game data broadcast in {} nanos ({}ms}", nanosDiff, ((double) nanosDiff / (double) 1000000l));
+		return sb.toString();
 	}
 
 	// Enqueues outbound game packets every tick using:
 	// - Spatial hash grid for O(1) neighbor lookups
 	// - Tiered update rates (movement=64Hz, load=32Hz, update=16Hz, map=4Hz)
+	// Tick scheduling flags resolved once per enqueueGameData() call and
+	// passed down to per-player helpers so each helper makes the same gating
+	// decision the original inline loop did.
+	private static final class TickSchedule {
+		final boolean doMovement;
+		final boolean doFullMovement;
+		final boolean doLoad;
+		final boolean doUpdate;
+		final boolean doLoadMap;
+		final boolean doEnemyUpdate;
+		TickSchedule(int tc) {
+			this.doMovement     = (tc % MOVE_TICK_DIVISOR) == 0;
+			this.doFullMovement = (tc % MOVE_FULL_TICK_DIVISOR) == 0;
+			this.doLoad         = (tc % LOAD_TICK_DIVISOR) == 0;
+			this.doUpdate       = (tc % UPDATE_TICK_DIVISOR) == 0;
+			this.doLoadMap      = (tc % LOADMAP_TICK_DIVISOR) == 0;
+			this.doEnemyUpdate  = (tc % ENEMY_UPDATE_TICK_DIVISOR) == 0;
+		}
+	}
+
 	public void enqueueGameData() {
-		long startNanos = System.nanoTime();
-		// CRITICAL: acquire must be outside the try and release MUST be in a
-		// finally — previously the acquire/release were both inside the try
-		// block, so any exception in the tick work leaked the lock and
-		// deadlocked every subsequent acquire (including the next tick).
+		final long startNanos = System.nanoTime();
 		this.acquireRealmLock();
 		try {
 			this.tickCounter++;
-
-			final boolean doMovement = (this.tickCounter % MOVE_TICK_DIVISOR) == 0;
-			final boolean doFullMovement = (this.tickCounter % MOVE_FULL_TICK_DIVISOR) == 0;
-			final boolean doLoad = (this.tickCounter % LOAD_TICK_DIVISOR) == 0;
-			final boolean doUpdate = (this.tickCounter % UPDATE_TICK_DIVISOR) == 0;
-			final boolean doLoadMap = (this.tickCounter % LOADMAP_TICK_DIVISOR) == 0;
-			final boolean doEnemyUpdate = (this.tickCounter % ENEMY_UPDATE_TICK_DIVISOR) == 0;
-
-			for (final Map.Entry<Long, Realm> realmEntry : this.realms.entrySet()) {
-				Realm realm = realmEntry.getValue();
-
-				// Update spatial grid positions once per tick for this realm
-				realm.updateSpatialGrid();
-				// Reset per-tick caches so the first viewer in this realm
-				// builds the shared instances and subsequent viewers reuse
-				// them. Major win for nexus (40 players seeing each other
-				// -> 40× fewer allocations per shared entity per tick).
-				realm.clearTickMovementCache();
-				realm.clearTickStrippedUpdateCache();
-
-				final Map<Player, String> toRemoveReasons = new LinkedHashMap<>();
-				final float viewportRadius = 10 * GlobalConstants.BASE_TILE_SIZE;
-
-				// Snapshot teleport flags before packet building clears them
-				final Set<Long> teleportedPlayers = new HashSet<>();
-				for (final Player tp : realm.getPlayers().values()) {
-					if (tp.getTeleported()) teleportedPlayers.add(tp.getId());
-				}
-
-				for (final Map.Entry<Long, Player> player : realm.getPlayers().entrySet()) {
-					if (player.getValue().isHeadless()) {
-						continue;
-					}
-					try {
-						realm = this.findPlayerRealm(player.getKey());
-						if (realm == null) continue; // player disappeared between snapshot and processing
-						final Vector2f playerCenter = player.getValue().getPos();
-
-						// --- LoadMapPacket (4 Hz) ---
-						if (doLoadMap) {
-							final NetTile[] netTilesForPlayer = realm.getTileManager().getLoadMapTiles(player.getValue());
-							final LoadMapPacket newLoadMapPacket = LoadMapPacket.from(realm.getRealmId(),
-									(short) realm.getMapId(), realm.getTileManager().getMapWidth(),
-									realm.getTileManager().getMapHeight(), netTilesForPlayer);
-							if (this.playerLoadMapState.get(player.getKey()) == null) {
-								this.playerLoadMapState.put(player.getKey(), newLoadMapPacket);
-								this.enqueueServerPacket(player.getValue(), newLoadMapPacket);
-							} else {
-								final LoadMapPacket oldLoadMapPacket = this.playerLoadMapState.get(player.getKey());
-								if (!oldLoadMapPacket.equals(newLoadMapPacket)) {
-									final LoadMapPacket loadMapDiff = oldLoadMapPacket.difference(newLoadMapPacket);
-									this.playerLoadMapState.put(player.getKey(), newLoadMapPacket);
-									if (loadMapDiff != null) {
-										this.enqueueServerPacket(player.getValue(), loadMapDiff);
-									}
-								}
-							}
-						}
-
-						// --- Self UpdatePacket (heavy: inventory/stats/XP/name) ---
-						// Only sent when inventory, stats, XP, or name actually change.
-						if (doUpdate) {
-							final UpdatePacket updatePacket = realm.getPlayerAsPacket(player.getValue().getId());
-							final UpdatePacket oldSelfUpdate = this.playerUpdateState.get(player.getKey());
-							if (oldSelfUpdate == null) {
-								this.playerUpdateState.put(player.getKey(), updatePacket);
-								this.enqueueServerPacket(player.getValue(), updatePacket);
-							} else if (!oldSelfUpdate.equals(updatePacket, false)) {
-								this.playerUpdateState.put(player.getKey(), updatePacket);
-								this.enqueueServerPacket(player.getValue(), updatePacket);
-							}
-
-							// Nearby other players — send their updates TO this player (only when changed).
-							// Use the realm's per-tick stripped-UpdatePacket cache so 40 viewers
-							// in nexus all reuse a single allocation per other-player. Without
-							// the cache this loop ran ~6400 reflection-heavy inventory builds
-							// per second at 40 players, dwarfing the rest of the tick budget.
-							//
-							// Self-heal: every VIEWER_UPDATE_REFRESH_MS we WIPE this viewer's
-							// per-other-player delta cache so the next iteration unconditionally
-							// re-sends every nearby UpdatePacket. Without this, a freshly-loaded
-							// viewer who races a peer's first UpdatePacket (UPDATE arrived before
-							// LOAD added the peer to the realm map → handleUpdate dropped it)
-							// stayed permanently blank for that peer. The cache wipe forces a
-							// fresh send within ~2s and the client's pending-update buffer
-							// applies it correctly.
-							final long nowMsForRefresh = System.currentTimeMillis();
-							final Long lastRefresh = this.lastViewerUpdateRefreshMs.get(player.getKey());
-							if (lastRefresh == null || (nowMsForRefresh - lastRefresh) >= VIEWER_UPDATE_REFRESH_MS) {
-								final Map<Long, UpdatePacket> existingCache = this.otherPlayerUpdateState.get(player.getKey());
-								if (existingCache != null) existingCache.clear();
-								this.lastViewerUpdateRefreshMs.put(player.getKey(), nowMsForRefresh);
-							}
-
-							final Player[] otherPlayers = realm.getPlayersInRadiusFast(playerCenter, viewportRadius);
-							final int maxOtherUpdates = Math.min(otherPlayers.length, 20);
-							for (int opi = 0; opi < maxOtherUpdates; opi++) {
-								final Player other = otherPlayers[opi];
-								if (other.getId() == player.getKey()) continue;
-								try {
-									final UpdatePacket stripped = realm.getOrBuildStrippedUpdate(other);
-									if (stripped == null) continue;
-									// Delta check: only send if this player's view of the other player changed
-									final Map<Long, UpdatePacket> viewerCache = this.otherPlayerUpdateState
-										.computeIfAbsent(player.getKey(), k -> new ConcurrentHashMap<>());
-									final UpdatePacket oldOtherUpdate = viewerCache.get(other.getId());
-									if (oldOtherUpdate == null || !oldOtherUpdate.equals(stripped, false)) {
-										viewerCache.put(other.getId(), stripped);
-										this.enqueueServerPacket(player.getValue(), stripped);
-									}
-								} catch (Exception ex) {
-									log.error("[SERVER] Failed to build other player UpdatePacket. Reason: {}", ex);
-								}
-							}
-						}
-
-						// --- Self PlayerStatePacket (HP/MP/effects) ---
-						// Check for effect changes every tick (must be immediate for movement sync).
-						// HP/MP-only changes throttled to 8Hz via doUpdate.
-						{
-							final PlayerStatePacket statePacket =
-								PlayerStatePacket.from(player.getValue());
-							final PlayerStatePacket oldState =
-								this.playerStateState.get(player.getKey());
-							if (oldState == null) {
-								this.playerStateState.put(player.getKey(), statePacket);
-								this.enqueueServerPacket(player.getValue(), statePacket);
-							} else {
-								boolean effectsChanged = !Arrays.equals(
-									oldState.getEffectIds(), statePacket.getEffectIds());
-								if (effectsChanged) {
-									// Effects changed — send immediately (affects client movement prediction)
-									this.playerStateState.put(player.getKey(), statePacket);
-									this.enqueueServerPacket(player.getValue(), statePacket);
-								} else if (doUpdate && !oldState.equalsState(statePacket)) {
-									// HP/MP changed — throttle to 8Hz
-									this.playerStateState.put(player.getKey(), statePacket);
-									this.enqueueServerPacket(player.getValue(), statePacket);
-								}
-							}
-						}
-
-						// --- LoadPacket (32 Hz) — per-player ledger-based delta sync ---
-						// The ledger is the authoritative set of IDs the server believes
-						// the client currently has. Each tick:
-						//   desired   = uncapped visible IDs at this player's position
-						//   toLoad    = desired ∖ ledger     (new entities)
-						//   toUnload  = ledger  ∖ desired    (entities that left)
-						// Caps apply ONLY to toLoad. Cap-trimmed IDs simply stay out of
-						// the ledger and the wire — they get picked up on a future tick.
-						// Reconcile (every FULL_SNAPSHOT_INTERVAL_MS) re-asserts the
-						// full desired set so a dropped packet self-heals within one
-						// cycle. No realm-existence filter — anything that left the
-						// realm naturally falls out of `desired` and the diff emits a
-						// correct unload.
-						if (doLoad) {
-							final long nowMs = System.currentTimeMillis();
-							PlayerLoadLedger ledger = this.playerLoadLedger.get(player.getKey());
-							if (ledger == null) {
-								ledger = new PlayerLoadLedger();
-								this.playerLoadLedger.put(player.getKey(), ledger);
-								this.playerLastFullSnapshotMs.put(player.getKey(), nowMs);
-							}
-							final VisibleIds desired = realm.getVisibleIdsCircularFast(
-									playerCenter, viewportRadius, player.getKey());
-
-							final Long lastFull = this.playerLastFullSnapshotMs.get(player.getKey());
-							final boolean reconcileDue = lastFull == null
-									|| (nowMs - lastFull) >= FULL_SNAPSHOT_INTERVAL_MS;
-
-							// Delta sets — start with strict set diff.
-							final Set<Long> playersToLoad    = setDiff(desired.getPlayers(),    ledger.players);
-							final Set<Long> enemiesToLoad    = setDiff(desired.getEnemies(),    ledger.enemies);
-							final Set<Long> bulletsToLoad    = setDiff(desired.getBullets(),    ledger.bullets);
-							final Set<Long> containersToLoad = setDiff(desired.getContainers(), ledger.containers);
-							final Set<Long> portalsToLoad    = setDiff(desired.getPortals(),    ledger.portals);
-
-							final Set<Long> playersToUnload    = setDiff(ledger.players,    desired.getPlayers());
-							final Set<Long> enemiesToUnload    = setDiff(ledger.enemies,    desired.getEnemies());
-							final Set<Long> bulletsToUnload    = setDiff(ledger.bullets,    desired.getBullets());
-							final Set<Long> containersToUnload = setDiff(ledger.containers, desired.getContainers());
-							final Set<Long> portalsToUnload    = setDiff(ledger.portals,    desired.getPortals());
-
-							// Re-send loot containers whose contents mutated this tick
-							// (pickups/inserts). Client merges the new payload into the
-							// existing entry — no unload+reload round-trip needed.
-							for (final Long id : desired.getContainers()) {
-								if (containersToLoad.contains(id)) continue;
-								final LootContainer lc = realm.getLoot().get(id);
-								if (lc != null && lc.getContentsChanged()) containersToLoad.add(id);
-							}
-
-							if (reconcileDue) {
-								// Periodic reconcile: treat the client as empty for loads
-								// and emit a full snapshot of the desired set, plus
-								// unloads for everything in the ledger no longer desired.
-								// Survives any dropped delta within FULL_SNAPSHOT_INTERVAL_MS.
-								playersToLoad.clear();    playersToLoad.addAll(desired.getPlayers());
-								enemiesToLoad.clear();    enemiesToLoad.addAll(desired.getEnemies());
-								bulletsToLoad.clear();    bulletsToLoad.addAll(desired.getBullets());
-								containersToLoad.clear(); containersToLoad.addAll(desired.getContainers());
-								portalsToLoad.clear();    portalsToLoad.addAll(desired.getPortals());
-								this.playerLastFullSnapshotMs.put(player.getKey(), nowMs);
-							}
-
-							// Apply caps to LOAD side only. Closest-first deterministic
-							// trim. Cap-trimmed IDs stay out of the ledger and arrive on
-							// a future tick — never produce a spurious unload.
-							final Set<Long> cappedEnemyLoad = capByDistance(
-									enemiesToLoad, playerCenter, realm.getEnemies(),
-									MAX_NEW_ENEMIES_PER_LOAD);
-							final Set<Long> cappedBulletLoad = capBulletsWithPlayerPriority(
-									bulletsToLoad, playerCenter, realm.getBullets(),
-									MAX_NEW_BULLETS_PER_LOAD);
-
-							final LoadPacket loadPkt = realm.buildLoadPacketForIds(
-									playersToLoad, cappedEnemyLoad, cappedBulletLoad,
-									containersToLoad, portalsToLoad, playerCenter);
-							final UnloadPacket unloadPkt = UnloadPacket.from(
-									playersToUnload.toArray(new Long[0]),
-									bulletsToUnload.toArray(new Long[0]),
-									enemiesToUnload.toArray(new Long[0]),
-									containersToUnload.toArray(new Long[0]),
-									portalsToUnload.toArray(new Long[0]));
-
-							if (loadPkt != null && !loadPkt.isEmpty()) {
-								this.enqueueServerPacket(player.getValue(), loadPkt);
-							}
-							if (unloadPkt.isNotEmpty()) {
-								this.enqueueServerPacket(player.getValue(), unloadPkt);
-								for (final Long unloadedEnemy : unloadPkt.getEnemies()) {
-									this.enemyUpdateState.remove(unloadedEnemy);
-								}
-								// Drop cached other-player UpdatePackets for any peer
-								// that just left this viewer's load — so when they
-								// re-enter later, the first UpdatePacket isn't
-								// wrongly suppressed by a stale delta cache entry.
-								final Map<Long, UpdatePacket> otherCache =
-									this.otherPlayerUpdateState.get(player.getKey());
-								if (otherCache != null) {
-									for (final Long unloadedPlayer : unloadPkt.getPlayers()) {
-										otherCache.remove(unloadedPlayer);
-									}
-								}
-							}
-
-							// Update the ledger by EXACTLY what we just shipped.
-							// Loads recorded from the capped/intent sets — anything the
-							// hydrator dropped (entity removed between query and build)
-							// is effectively unloaded already, so a stale ledger entry
-							// here is harmless: next tick's desired diff will re-emit a
-							// no-op unload that the client ignores.
-							ledger.players.addAll(playersToLoad);
-							ledger.enemies.addAll(cappedEnemyLoad);
-							ledger.bullets.addAll(cappedBulletLoad);
-							ledger.containers.addAll(containersToLoad);
-							ledger.portals.addAll(portalsToLoad);
-							ledger.players.removeAll(playersToUnload);
-							ledger.enemies.removeAll(enemiesToUnload);
-							ledger.bullets.removeAll(bulletsToUnload);
-							ledger.containers.removeAll(containersToUnload);
-							ledger.portals.removeAll(portalsToUnload);
-						}
-
-						// --- ObjectMovePacket: dead reckoning with tiered check rates ---
-						// Inner zone checked at 32Hz, full viewport at 16Hz.
-						// Only entities whose actual position diverges from the client's
-						// predicted position (based on last-sent pos+vel) are transmitted.
-						// Send PlayerPosAckPacket when moving (every tick) or periodically when idle
-						// (~10Hz idle acks) so high-latency clients get stop confirmation.
-						final boolean isMoving = player.getValue().getDx() != 0 || player.getValue().getDy() != 0;
-						final boolean periodicIdleAck = !isMoving && (this.tickCounter % 6 == 0);
-						if (isMoving || teleportedPlayers.contains(player.getKey()) || periodicIdleAck) {
-							this.enqueueServerPacket(player.getValue(),
-								PlayerPosAckPacket.from(
-									player.getValue().getLastProcessedInputSeq(),
-									player.getValue().getPos().x,
-									player.getValue().getPos().y));
-						}
-
-						if (doMovement) {
-							final float moveRadius = doFullMovement ? viewportRadius : viewportRadius * 0.5f;
-							// Build a fresh ObjectMovePacket centered on THIS player. Same
-							// reasoning as the LoadPacket: cells can hold multiple players
-							// at different positions, and reusing one player's perspective
-							// causes incorrect movement updates for others.
-							final ObjectMovePacket movePacket =
-									realm.getGameObjectsAsPacketsCircularFast(playerCenter, moveRadius);
-							if (movePacket != null) {
-								Map<Long, EntityMotionState> drState = this.playerDeadReckonState.get(player.getKey());
-								if (drState == null) {
-									drState = new HashMap<>();
-									this.playerDeadReckonState.put(player.getKey(), drState);
-								}
-
-								final float tickDuration = 1.0f;
-
-								final List<NetObjectMovement> corrections = new ArrayList<>();
-								for (final NetObjectMovement m : movePacket.getMovements()) {
-									// Skip local player — their position comes via PlayerPosAckPacket
-									if (m.getEntityId() == player.getKey()
-											&& !teleportedPlayers.contains(player.getKey())) {
-										continue;
-									}
-									// Dead reckoning: skip ANY entity whose actual state matches the
-									// client's velocity-extrapolated prediction. The webclient
-									// now extrapolates non-local players + enemies by velocity
-									// (dx*64*dt) every frame in updateInterpolation(), so steady-
-									// velocity motion needs no per-tick server correction. Direction
-									// changes / pos drift > 4px / 48-tick staleness still trigger sends.
-									final EntityMotionState lastSent = drState.get(m.getEntityId());
-									if (lastSent != null && !lastSent.needsUpdate(
-											m.getPosX(), m.getPosY(), m.getVelX(), m.getVelY(),
-											this.tickCounter, tickDuration)) {
-										continue;
-									}
-									if (lastSent != null) {
-										lastSent.markSent(m.getPosX(), m.getPosY(), m.getVelX(), m.getVelY(), this.tickCounter);
-									} else {
-										drState.put(m.getEntityId(), new EntityMotionState(
-											m.getPosX(), m.getPosY(), m.getVelX(), m.getVelY(), this.tickCounter));
-									}
-									corrections.add(m);
-								}
-
-								if (!corrections.isEmpty()) {
-									// Send as standard ObjectMovePacket for webclient compatibility.
-									// TODO: send CompactMovePacket (packet 25) once webclient supports it
-									// for an additional ~44% per-entity size reduction.
-									final ObjectMovePacket correctionPacket = ObjectMovePacket.from(
-										corrections.toArray(new NetObjectMovement[0]));
-									this.enqueueServerPacket(player.getValue(), correctionPacket);
-								}
-							}
-
-							// Enemy UpdatePackets (16 Hz) - extract enemy IDs from move packet.
-							// Gated on the per-player load ledger so we never send an
-							// update/state packet for an enemy this client doesn't have
-							// loaded — the ledger is the only authority on what the
-							// client is currently rendering.
-							if (doEnemyUpdate && movePacket != null) {
-								final PlayerLoadLedger viewerLedger =
-									this.playerLoadLedger.get(player.getKey());
-								final Set<Long> nearEnemyIds = new HashSet<>();
-								for (NetObjectMovement m : movePacket.getMovements()) {
-									if (m.getEntityType() == EntityType.ENEMY.getEntityTypeId()) {
-										nearEnemyIds.add(m.getEntityId());
-									}
-								}
-								for (Long enemyId : nearEnemyIds) {
-									if (viewerLedger == null || !viewerLedger.enemies.contains(enemyId)) continue;
-									final UpdatePacket updatePacket0 = realm.getEnemyAsPacket(enemyId);
-									final UpdatePacket oldState = this.enemyUpdateState.get(enemyId);
-									boolean doSend = false;
-									if (oldState == null) {
-										this.enemyUpdateState.put(enemyId, updatePacket0);
-										doSend = true;
-									} else if (!oldState.equals(updatePacket0, true)) {
-										this.enemyUpdateState.put(enemyId, updatePacket0);
-										doSend = true;
-									}
-									if (doSend) {
-										this.enqueueServerPacket(player.getValue(), updatePacket0);
-									}
-									// Send enemy PlayerStatePacket when HP or effects change (own diff, not tied to UpdatePacket)
-									final Enemy nearEnemy = realm.getEnemy(enemyId);
-									if (nearEnemy != null) {
-										final PlayerStatePacket enemyState =
-											PlayerStatePacket.from(nearEnemy);
-										final PlayerStatePacket cachedEnemyState =
-											this.playerStateState.get(enemyId);
-										if (cachedEnemyState == null || !cachedEnemyState.equalsState(enemyState)) {
-											this.playerStateState.put(enemyId, enemyState);
-											this.enqueueServerPacket(player.getValue(), enemyState);
-										}
-									}
-								}
-							}
-						}
-
-						// Heartbeat timeout check (every tick). Bumped from 10s to
-						// 60s so the webclient's heartbeat (1 Hz setInterval)
-						// surviving browser inactive-tab throttling doesn't
-						// false-positive the timeout when the player alt-tabs
-						// briefly. Browsers throttle setInterval to >=1 Hz in
-						// inactive tabs but Chrome's "intensive throttling"
-						// after ~5 min reduces that to ~1/min — the 60s
-						// budget covers the common alt-tab case while still
-						// reaping genuinely dead clients within a minute.
-						final Long playerLastHeartbeatTime = this.playerLastHeartbeatTime.get(player.getKey());
-						if (playerLastHeartbeatTime != null
-								&& ((Instant.now().toEpochMilli() - playerLastHeartbeatTime) > 60000)) {
-							long elapsed = Instant.now().toEpochMilli() - playerLastHeartbeatTime;
-							toRemoveReasons.put(player.getValue(), "heartbeat timeout (" + elapsed + "ms since last heartbeat)");
-						}
-
-					} catch (Exception e) {
-						RealmManagerServer.log.error("[SERVER] Failed to build game data for Player {}. Reason: {}",
-								player.getKey(), e);
-					}
-				}
-
-				for (Map.Entry<Player, String> entry : toRemoveReasons.entrySet()) {
-					this.disconnectPlayer(entry.getKey(), entry.getValue());
-				}
-
-				// Reset contentsChanged AFTER all players processed
-				// (was inside player loop before — caused Player B to miss updates)
-				for (LootContainer lc : realm.getLoot().values()) {
-					lc.setContentsChanged(false);
-				}
+			final TickSchedule sched = new TickSchedule(this.tickCounter);
+			for (final Realm realm : this.realms.values()) {
+				this.enqueueRealmGameData(realm, sched);
 			}
-
-			long nanosDiff = System.nanoTime() - startNanos;
+			final long nanosDiff = System.nanoTime() - startNanos;
 			log.debug("[SERVER] Game data enqueued in {} nanos ({}ms)", nanosDiff,
-					((double) nanosDiff / (double) 1000000l));
+					((double) nanosDiff / 1_000_000.0));
 		} catch (Exception e) {
 			log.error("[SERVER] Failed to enqueue game data. Reason: {}", e.getMessage(), e);
 		} finally {
-			// ALWAYS release the lock, even on exception, to prevent deadlock
 			this.releaseRealmLock();
+		}
+	}
+
+	private void enqueueRealmGameData(Realm realm, final TickSchedule sched) {
+		realm.updateSpatialGrid();
+		realm.clearTickMovementCache();
+		realm.clearTickStrippedUpdateCache();
+
+		final float viewportRadius = 10 * GlobalConstants.BASE_TILE_SIZE;
+		final Set<Long> teleportedPlayers = snapshotTeleportedPlayers(realm);
+		final Map<Player, String> toRemoveReasons = new LinkedHashMap<>();
+
+		for (final Player player : realm.getPlayers().values()) {
+			if (player.isHeadless()) continue;
+			try {
+				final Realm live = this.findPlayerRealm(player.getId());
+				if (live == null) continue;
+				this.enqueuePlayerGameData(live, player, sched, viewportRadius,
+						teleportedPlayers, toRemoveReasons);
+			} catch (Exception e) {
+				log.error("[SERVER] Failed to build game data for Player {}. Reason: {}",
+						player.getId(), e);
+			}
+		}
+
+		for (final Map.Entry<Player, String> entry : toRemoveReasons.entrySet()) {
+			this.disconnectPlayer(entry.getKey(), entry.getValue());
+		}
+		// Reset AFTER all players processed; clearing inside the loop made player B miss updates.
+		for (final LootContainer lc : realm.getLoot().values()) {
+			lc.setContentsChanged(false);
+		}
+	}
+
+	private static Set<Long> snapshotTeleportedPlayers(final Realm realm) {
+		final Set<Long> teleported = new HashSet<>();
+		for (final Player tp : realm.getPlayers().values()) {
+			if (tp.getTeleported()) teleported.add(tp.getId());
+		}
+		return teleported;
+	}
+
+	private void enqueuePlayerGameData(final Realm realm, final Player player, final TickSchedule sched,
+			final float viewportRadius, final Set<Long> teleportedPlayers,
+			final Map<Player, String> toRemoveReasons) throws Exception {
+		final long playerId = player.getId();
+		final Vector2f playerCenter = player.getPos();
+
+		if (sched.doLoadMap)  this.enqueueLoadMapDiff(realm, player);
+		if (sched.doUpdate)   this.enqueueSelfAndPeerUpdates(realm, player, viewportRadius);
+		this.enqueuePlayerStateIfChanged(player, sched.doUpdate);
+		if (sched.doLoad)     this.enqueueLoadAndUnloadDeltas(realm, player, playerCenter, viewportRadius);
+		this.enqueuePosAckIfNeeded(player, teleportedPlayers);
+		if (sched.doMovement) this.enqueueMovementAndEnemyUpdates(realm, player, viewportRadius, sched, teleportedPlayers);
+		this.maybeReapOnHeartbeatTimeout(player, toRemoveReasons);
+	}
+
+	private void enqueueLoadMapDiff(final Realm realm, final Player player) throws Exception {
+		final long pid = player.getId();
+		final NetTile[] netTilesForPlayer = realm.getTileManager().getLoadMapTiles(player);
+		final LoadMapPacket fresh = LoadMapPacket.from(realm.getRealmId(),
+				(short) realm.getMapId(), realm.getTileManager().getMapWidth(),
+				realm.getTileManager().getMapHeight(), netTilesForPlayer);
+		final LoadMapPacket prev = this.playerLoadMapState.get(pid);
+		if (prev == null) {
+			this.playerLoadMapState.put(pid, fresh);
+			this.enqueueServerPacket(player, fresh);
+			return;
+		}
+		if (prev.equals(fresh)) return;
+		final LoadMapPacket diff = prev.difference(fresh);
+		this.playerLoadMapState.put(pid, fresh);
+		if (diff != null) this.enqueueServerPacket(player, diff);
+	}
+
+	private void enqueueSelfAndPeerUpdates(final Realm realm, final Player player, final float viewportRadius) {
+		final long pid = player.getId();
+		final UpdatePacket selfUpdate = realm.getPlayerAsPacket(pid);
+		final UpdatePacket prevSelf = this.playerUpdateState.get(pid);
+		if (prevSelf == null || !prevSelf.equals(selfUpdate, false)) {
+			this.playerUpdateState.put(pid, selfUpdate);
+			this.enqueueServerPacket(player, selfUpdate);
+		}
+
+		// Force-refresh the per-viewer peer-update cache periodically so a freshly-loaded
+		// viewer that raced a peer's first UpdatePacket can't stay blank for that peer.
+		final long nowMs = System.currentTimeMillis();
+		final Long lastRefresh = this.lastViewerUpdateRefreshMs.get(pid);
+		if (lastRefresh == null || (nowMs - lastRefresh) >= VIEWER_UPDATE_REFRESH_MS) {
+			final Map<Long, UpdatePacket> existing = this.otherPlayerUpdateState.get(pid);
+			if (existing != null) existing.clear();
+			this.lastViewerUpdateRefreshMs.put(pid, nowMs);
+		}
+
+		final Player[] otherPlayers = realm.getPlayersInRadiusFast(player.getPos(), viewportRadius);
+		final int max = Math.min(otherPlayers.length, 20);
+		for (int i = 0; i < max; i++) {
+			final Player other = otherPlayers[i];
+			if (other.getId() == pid) continue;
+			try {
+				final UpdatePacket stripped = realm.getOrBuildStrippedUpdate(other);
+				if (stripped == null) continue;
+				final Map<Long, UpdatePacket> viewerCache = this.otherPlayerUpdateState
+						.computeIfAbsent(pid, k -> new ConcurrentHashMap<>());
+				final UpdatePacket prev = viewerCache.get(other.getId());
+				if (prev == null || !prev.equals(stripped, false)) {
+					viewerCache.put(other.getId(), stripped);
+					this.enqueueServerPacket(player, stripped);
+				}
+			} catch (Exception ex) {
+				log.error("[SERVER] Failed to build other player UpdatePacket. Reason: {}", ex);
+			}
+		}
+	}
+
+	// Effects ship every tick because they gate client-side movement prediction;
+	// HP/MP-only deltas are throttled to the 8Hz update cadence.
+	private void enqueuePlayerStateIfChanged(final Player player, final boolean doUpdate) {
+		final long pid = player.getId();
+		final PlayerStatePacket fresh = PlayerStatePacket.from(player);
+		final PlayerStatePacket prev = this.playerStateState.get(pid);
+		if (prev == null) {
+			this.playerStateState.put(pid, fresh);
+			this.enqueueServerPacket(player, fresh);
+			return;
+		}
+		final boolean effectsChanged = !Arrays.equals(prev.getEffectIds(), fresh.getEffectIds());
+		if (effectsChanged) {
+			this.playerStateState.put(pid, fresh);
+			this.enqueueServerPacket(player, fresh);
+		} else if (doUpdate && !prev.equalsState(fresh)) {
+			this.playerStateState.put(pid, fresh);
+			this.enqueueServerPacket(player, fresh);
+		}
+	}
+
+	// Ledger-based delta sync: caps apply only to LOAD side, so cap-trimmed
+	// IDs simply stay out of the ledger and the wire and get picked up on a
+	// future tick — they never produce a spurious unload.
+	private void enqueueLoadAndUnloadDeltas(final Realm realm, final Player player,
+			final Vector2f playerCenter, final float viewportRadius) throws Exception {
+		final long pid = player.getId();
+		final long nowMs = System.currentTimeMillis();
+		PlayerLoadLedger ledger = this.playerLoadLedger.get(pid);
+		if (ledger == null) {
+			ledger = new PlayerLoadLedger();
+			this.playerLoadLedger.put(pid, ledger);
+			this.playerLastFullSnapshotMs.put(pid, nowMs);
+		}
+		final VisibleIds desired = realm.getVisibleIdsCircularFast(playerCenter, viewportRadius, pid);
+
+		final Long lastFull = this.playerLastFullSnapshotMs.get(pid);
+		final boolean reconcileDue = lastFull == null || (nowMs - lastFull) >= FULL_SNAPSHOT_INTERVAL_MS;
+
+		final Set<Long> playersToLoad    = setDiff(desired.getPlayers(),    ledger.players);
+		final Set<Long> enemiesToLoad    = setDiff(desired.getEnemies(),    ledger.enemies);
+		final Set<Long> bulletsToLoad    = setDiff(desired.getBullets(),    ledger.bullets);
+		final Set<Long> containersToLoad = setDiff(desired.getContainers(), ledger.containers);
+		final Set<Long> portalsToLoad    = setDiff(desired.getPortals(),    ledger.portals);
+
+		final Set<Long> playersToUnload    = setDiff(ledger.players,    desired.getPlayers());
+		final Set<Long> enemiesToUnload    = setDiff(ledger.enemies,    desired.getEnemies());
+		final Set<Long> bulletsToUnload    = setDiff(ledger.bullets,    desired.getBullets());
+		final Set<Long> containersToUnload = setDiff(ledger.containers, desired.getContainers());
+		final Set<Long> portalsToUnload    = setDiff(ledger.portals,    desired.getPortals());
+
+		// Re-send loot containers whose contents mutated this tick; client merges in place.
+		for (final Long id : desired.getContainers()) {
+			if (containersToLoad.contains(id)) continue;
+			final LootContainer lc = realm.getLoot().get(id);
+			if (lc != null && lc.getContentsChanged()) containersToLoad.add(id);
+		}
+
+		if (reconcileDue) {
+			playersToLoad.clear();    playersToLoad.addAll(desired.getPlayers());
+			enemiesToLoad.clear();    enemiesToLoad.addAll(desired.getEnemies());
+			bulletsToLoad.clear();    bulletsToLoad.addAll(desired.getBullets());
+			containersToLoad.clear(); containersToLoad.addAll(desired.getContainers());
+			portalsToLoad.clear();    portalsToLoad.addAll(desired.getPortals());
+			this.playerLastFullSnapshotMs.put(pid, nowMs);
+		}
+
+		final Set<Long> cappedEnemyLoad = capByDistance(
+				enemiesToLoad, playerCenter, realm.getEnemies(), MAX_NEW_ENEMIES_PER_LOAD);
+		final Set<Long> cappedBulletLoad = capBulletsWithPlayerPriority(
+				bulletsToLoad, playerCenter, realm.getBullets(), MAX_NEW_BULLETS_PER_LOAD);
+
+		final LoadPacket loadPkt = realm.buildLoadPacketForIds(
+				playersToLoad, cappedEnemyLoad, cappedBulletLoad,
+				containersToLoad, portalsToLoad, playerCenter);
+		final UnloadPacket unloadPkt = UnloadPacket.from(
+				playersToUnload.toArray(new Long[0]),
+				bulletsToUnload.toArray(new Long[0]),
+				enemiesToUnload.toArray(new Long[0]),
+				containersToUnload.toArray(new Long[0]),
+				portalsToUnload.toArray(new Long[0]));
+
+		if (loadPkt != null && !loadPkt.isEmpty()) {
+			this.enqueueServerPacket(player, loadPkt);
+		}
+		if (unloadPkt.isNotEmpty()) {
+			this.enqueueServerPacket(player, unloadPkt);
+			for (final Long unloadedEnemy : unloadPkt.getEnemies()) {
+				this.enemyUpdateState.remove(unloadedEnemy);
+			}
+			final Map<Long, UpdatePacket> otherCache = this.otherPlayerUpdateState.get(pid);
+			if (otherCache != null) {
+				for (final Long unloadedPlayer : unloadPkt.getPlayers()) {
+					otherCache.remove(unloadedPlayer);
+				}
+			}
+		}
+
+		ledger.players.addAll(playersToLoad);
+		ledger.enemies.addAll(cappedEnemyLoad);
+		ledger.bullets.addAll(cappedBulletLoad);
+		ledger.containers.addAll(containersToLoad);
+		ledger.portals.addAll(portalsToLoad);
+		ledger.players.removeAll(playersToUnload);
+		ledger.enemies.removeAll(enemiesToUnload);
+		ledger.bullets.removeAll(bulletsToUnload);
+		ledger.containers.removeAll(containersToUnload);
+		ledger.portals.removeAll(portalsToUnload);
+	}
+
+	private void enqueuePosAckIfNeeded(final Player player, final Set<Long> teleportedPlayers) {
+		final boolean isMoving = player.getDx() != 0 || player.getDy() != 0;
+		final boolean periodicIdleAck = !isMoving && (this.tickCounter % 6 == 0);
+		if (!(isMoving || teleportedPlayers.contains(player.getId()) || periodicIdleAck)) return;
+		this.enqueueServerPacket(player, PlayerPosAckPacket.from(
+				player.getLastProcessedInputSeq(), player.getPos().x, player.getPos().y));
+	}
+
+	private void enqueueMovementAndEnemyUpdates(final Realm realm, final Player player,
+			final float viewportRadius, final TickSchedule sched, final Set<Long> teleportedPlayers) throws Exception {
+		final long pid = player.getId();
+		final float moveRadius = sched.doFullMovement ? viewportRadius : viewportRadius * 0.5f;
+		final ObjectMovePacket movePacket = realm.getGameObjectsAsPacketsCircularFast(player.getPos(), moveRadius);
+		if (movePacket != null) {
+			this.enqueueDeadReckoningCorrections(player, movePacket, teleportedPlayers);
+			if (sched.doEnemyUpdate) {
+				this.enqueueEnemyUpdatesForViewer(realm, player, movePacket);
+			}
+		}
+	}
+
+	private void enqueueDeadReckoningCorrections(final Player player,
+			final ObjectMovePacket movePacket, final Set<Long> teleportedPlayers) throws Exception {
+		final long pid = player.getId();
+		Map<Long, EntityMotionState> drState = this.playerDeadReckonState.get(pid);
+		if (drState == null) {
+			drState = new HashMap<>();
+			this.playerDeadReckonState.put(pid, drState);
+		}
+		final float tickDuration = 1.0f;
+		final List<NetObjectMovement> corrections = new ArrayList<>();
+		for (final NetObjectMovement m : movePacket.getMovements()) {
+			// Local player position arrives via PlayerPosAckPacket; only force-send if teleported.
+			if (m.getEntityId() == pid && !teleportedPlayers.contains(pid)) continue;
+			final EntityMotionState lastSent = drState.get(m.getEntityId());
+			if (lastSent != null && !lastSent.needsUpdate(
+					m.getPosX(), m.getPosY(), m.getVelX(), m.getVelY(),
+					this.tickCounter, tickDuration)) {
+				continue;
+			}
+			if (lastSent != null) {
+				lastSent.markSent(m.getPosX(), m.getPosY(), m.getVelX(), m.getVelY(), this.tickCounter);
+			} else {
+				drState.put(m.getEntityId(), new EntityMotionState(
+						m.getPosX(), m.getPosY(), m.getVelX(), m.getVelY(), this.tickCounter));
+			}
+			corrections.add(m);
+		}
+		if (!corrections.isEmpty()) {
+			this.enqueueServerPacket(player,
+					ObjectMovePacket.from(corrections.toArray(new NetObjectMovement[0])));
+		}
+	}
+
+	private void enqueueEnemyUpdatesForViewer(final Realm realm, final Player player,
+			final ObjectMovePacket movePacket) {
+		final long pid = player.getId();
+		final PlayerLoadLedger viewerLedger = this.playerLoadLedger.get(pid);
+		final Set<Long> nearEnemyIds = new HashSet<>();
+		for (final NetObjectMovement m : movePacket.getMovements()) {
+			if (m.getEntityType() == EntityType.ENEMY.getEntityTypeId()) {
+				nearEnemyIds.add(m.getEntityId());
+			}
+		}
+		for (final Long enemyId : nearEnemyIds) {
+			// Ledger is authoritative on what the client has loaded; never push
+			// updates for an enemy the viewer doesn't have.
+			if (viewerLedger == null || !viewerLedger.enemies.contains(enemyId)) continue;
+			final UpdatePacket fresh = realm.getEnemyAsPacket(enemyId);
+			final UpdatePacket prev = this.enemyUpdateState.get(enemyId);
+			if (prev == null || !prev.equals(fresh, true)) {
+				this.enemyUpdateState.put(enemyId, fresh);
+				this.enqueueServerPacket(player, fresh);
+			}
+			final Enemy nearEnemy = realm.getEnemy(enemyId);
+			if (nearEnemy == null) continue;
+			final PlayerStatePacket enemyState = PlayerStatePacket.from(nearEnemy);
+			final PlayerStatePacket cachedEnemyState = this.playerStateState.get(enemyId);
+			if (cachedEnemyState == null || !cachedEnemyState.equalsState(enemyState)) {
+				this.playerStateState.put(enemyId, enemyState);
+				this.enqueueServerPacket(player, enemyState);
+			}
+		}
+	}
+
+	private void maybeReapOnHeartbeatTimeout(final Player player, final Map<Player, String> toRemoveReasons) {
+		final Long last = this.playerLastHeartbeatTime.get(player.getId());
+		if (last == null) return;
+		final long elapsed = Instant.now().toEpochMilli() - last;
+		if (elapsed > 60000) {
+			toRemoveReasons.put(player, "heartbeat timeout (" + elapsed + "ms since last heartbeat)");
 		}
 	}
 
@@ -1254,13 +990,8 @@ public class RealmManagerServer implements Runnable {
 					}
 				}
 			} else {
-				// Player Disconnect routine. Was previously `return` which
-				// aborted the entire packet-pump loop the moment we hit a
-				// stale unmapped session — so a half-open WS that
-				// disconnected mid-handshake (no remoteAddresses mapping
-				// yet) would block every other client's packets indefinitely
-				// until the dead session aged out, including a fresh login
-				// from the same user trying to re-enter the game.
+				// `continue` (not `return`) — a stale unmapped session must not block
+				// other clients' packet pumps until the dead session ages out.
 				final Long dcPlayerId = this.getRemoteAddresses().get(entry.getKey());
 				if (dcPlayerId == null) {
 					log.info("[SERVER] Cleaning up unmapped stale session {} during packet pump", entry.getKey());
@@ -1287,27 +1018,18 @@ public class RealmManagerServer implements Runnable {
 			}
 		}
 
-		// Pass 1: Process ALL priority packets (shoot/move/heartbeat/command —
-		// always responsive, no cap).
 		for (final Packet packet : priorityQueue) {
 			processPacket(packet);
 		}
 
-		// Pass 2: Process normal packets up to the per-tick cap. Any packets
-		// beyond the cap are DEFERRED to the next tick (re-queued back into
-		// the session's inbound queue) instead of silently dropped — losing
-		// inventory operations / trade requests etc. under load was what
-		// made admin recovery impossible during a 40-player stress test.
+		// Overflow packets are re-queued, not dropped — losing inventory ops or
+		// trade requests under load made admin recovery impossible at 40+ players.
 		final int normalCap = Math.max(0, MAX_PACKETS_PER_TICK - priorityQueue.size());
 		final int processed = Math.min(normalQueue.size(), normalCap);
 		for (int i = 0; i < processed; i++) {
 			processPacket(normalQueue.get(i));
 		}
 		if (processed < normalQueue.size()) {
-			// Re-queue the overflow back to its source session so it lands
-			// at the front of next tick's priority/normal split. Use the
-			// packet's srcIp (set when the packet was parsed in
-			// ClientSession.parsePackets) to find the right session.
 			for (int i = processed; i < normalQueue.size(); i++) {
 				final Packet overflow = normalQueue.get(i);
 				final ClientSession session = this.server.getClients().get(overflow.getSrcIp());
@@ -1318,16 +1040,11 @@ public class RealmManagerServer implements Runnable {
 		}
 	}
 
+	// Reflection handlers take priority and short-circuit — running both paths
+	// double-applied any packet that only had a reflection handler registered.
 	private void processPacket(final Packet packet) {
 		try {
 			packet.setSrcIp(packet.getSrcIp());
-			// Single dispatch path: reflection-registered @PacketHandlerServer
-			// handlers take priority. If none exist for this packet class, fall
-			// back to the hardcoded fast-path registry. The previous shape ran
-			// reflection handlers TWICE for any packet that lacked a hardcoded
-			// entry — every InvestSkillPoint cast was applied twice (orange
-			// pip jumped 2 per right-click), and any other reflection-only
-			// packet had the same bug.
 			final List<MethodHandle> reflectionHandlers = this.userPacketCallbacksServer.get(packet.getId());
 			if (reflectionHandlers != null && !reflectionHandlers.isEmpty()) {
 				for (MethodHandle handler : reflectionHandlers) {
@@ -1819,174 +1536,147 @@ public class RealmManagerServer implements Runnable {
 		this.updEnemiesNanos = 0L;
 		this.updBulletsNanos = 0L;
 		this.updTailNanos = 0L;
-		// For each world on the server
-		for (final Map.Entry<Long, Realm> realmEntry : this.realms.entrySet()) {
-			final Realm realm = realmEntry.getValue();
-			// Idle realm short-circuit: a generated realm with no players has
-			// no one to AI-target, no one to hit with bullets, no LoadPackets
-			// to build. Skip the whole player/enemy/bullet update pass. We
-			// still let the cross-realm tail (removeExpiredBullets et al)
-			// sweep stragglers globally below. The one piece of bookkeeping
-			// we owe is zeroing any mid-move enemy's velocity so the world
-			// doesn't drift while no player observes it.
+
+		for (final Realm realm : this.realms.values()) {
 			if (realm.getPlayers().isEmpty()) {
-				if (!realm.getEnemies().isEmpty()) {
-					for (final Enemy enemy : realm.getEnemies().values()) {
-						if (enemy.getDx() != 0f || enemy.getDy() != 0f) {
-							enemy.setDx(0);
-							enemy.setDy(0);
-						}
-					}
-				}
+				this.parkIdleRealmEnemies(realm);
 				continue;
 			}
-			// Update player specific game objects — run inline, these are fast per-player ops
-			final long pStart = System.nanoTime();
-			for (final Map.Entry<Long, Player> player : realm.getPlayers().entrySet()) {
-				final Player p = realm.getPlayer(player.getValue().getId());
-				if (p == null) {
-					continue;
-				}
-				this.processBulletHit(realm.getRealmId(), p);
-				p.update(time);
-				p.removeExpiredEffects();
-				this.movePlayer(realm.getRealmId(), p);
-				// Resolve any in-progress cast whose timer has elapsed. We
-				// clear currentCast BEFORE re-entering useAbility so the
-				// resolution path sees isCasting()==false (otherwise the
-				// "reject input-driven re-casts while casting" gate at the
-				// top of useAbility would refuse our own resolution).
-				final CastState cs = p.getCurrentCast();
-				if (cs != null && cs.getEndTickMs() <= Instant.now().toEpochMilli()) {
-					p.setCurrentCast(null);
-					this.useAbility(realm.getRealmId(), p.getId(),
-							new Vector2f(cs.getWorldTargetX(), cs.getWorldTargetY()),
-							(byte) cs.getSlot(), true);
-				}
-			}
-			this.updPlayersNanos += System.nanoTime() - pStart;
-			// Once per tick: update enemies, then bullets. Iterating the maps
-			// directly avoids 200+ instanceof+cast dispatches per tick that
-			// the old getAllGameObjects() path incurred. bulletScale is also
-			// computed ONCE per realm tick (instead of per-bullet) so we drop
-			// 12 800 nanoTime() syscalls/sec at 200 bullets in flight.
-			final long nowNanos = System.nanoTime();
-			final long lastNanos = this.lastBulletUpdateNanos.getOrDefault(realm.getRealmId(), nowNanos);
-			final float bulletDt = Math.min((nowNanos - lastNanos) / 1_000_000_000.0f, 0.1f);
-			this.lastBulletUpdateNanos.put(realm.getRealmId(), nowNanos);
-			final float bulletScale = bulletDt * 64.0f;
-
-			// Stagger enemy AI decisions across ticks. Each enemy gets its
-			// AI processed once every ENEMY_AI_TICK_DIVISOR ticks (effective
-			// AI rate 32 Hz), spread by entity id so per-tick load is even.
-			// MOVEMENT APPLICATION (tickMove) still runs every tick (64 Hz)
-			// using the dx/dy set by the most recent AI call — without this
-			// split, staggering would cause enemies to visibly stutter
-			// between AI ticks. removeExpiredEffects also runs every tick
-			// (millisecond-scale timing, cheap length scan).
-			//
-			// SLEEP optimization: any enemy with no player inside its
-			// chaseRange is "dormant" — we skip update() entirely and zero
-			// its velocity (preventing drift). For 10K stationary enemies
-			// with one player nearby, this turns 10K heavy AI calls/tick
-			// into ~50 heavy + 9950 cheap dist checks. Snapshot the player
-			// list ONCE per tick to avoid recreating an iterator per enemy.
-			final long eStart = System.nanoTime();
-			final int aiTick = this.tickCounter & (ENEMY_AI_TICK_DIVISOR - 1);
-			final int moveFarTick = (int) (this.tickCounter & (ENEMY_MOVE_FAR_DIVISOR - 1));
-			final Player[] activePlayers = realm.getPlayers().values().toArray(new Player[0]);
-			final int playerCount = activePlayers.length;
-			// Spatial-grid pre-filter: only enemies within MAX_AWAKE_RADIUS of
-			// at least one player can possibly be awake (max enemy chaseRange
-			// in the catalog is 700; the radius is a bit wider for safety
-			// margin). Anything farther is guaranteed dormant — we don't
-			// iterate them at all this tick. Cost: O(players × grid query)
-			// to build the candidate set, vs the old O(enemies × players)
-			// distance sweep over every enemy in the realm. For a realm with
-			// 1000 generated enemies and one player only ~50 are typically
-			// within range, dropping enemy-tick cost by ~20×.
-			final float MAX_AWAKE_RADIUS = 720f;
-			final java.util.Set<Long> candidates = new java.util.HashSet<>();
-			for (int i = 0; i < playerCount; i++) {
-				final Player p = activePlayers[i];
-				candidates.addAll(realm.queryEnemiesNear(p.getPos().x, p.getPos().y, MAX_AWAKE_RADIUS));
-			}
-			for (final long cid : candidates) {
-				final Enemy enemy = realm.getEnemies().get(cid);
-				if (enemy == null) continue;
-				// Single distance pass classifies the enemy:
-				//   visible — within viewport of ANY player -> full 64Hz move
-				//   awake   — within chaseRange of ANY player but not visible ->
-				//             AI staggered + movement only every Nth tick
-				//   dormant — outside chaseRange of every player -> only dx/dy
-				//             zeroed; AI / move / script all skipped
-				boolean awake = false;
-				boolean visible = false;
-				{
-					final float ex = enemy.getPos().x;
-					final float ey = enemy.getPos().y;
-					final float chaseRangeSq = (float) enemy.getChaseRange() * enemy.getChaseRange();
-					for (int i = 0; i < playerCount; i++) {
-						final float pdx = activePlayers[i].getPos().x - ex;
-						final float pdy = activePlayers[i].getPos().y - ey;
-						final float dsq = pdx * pdx + pdy * pdy;
-						if (dsq <= VIEWPORT_RADIUS_SQ) {
-							awake = true;
-							visible = true;
-							break;
-						}
-						if (dsq <= chaseRangeSq) {
-							awake = true;
-							// don't break — keep looking for a viewport-close player
-						}
-					}
-				}
-				if (!awake) {
-					if (enemy.getDx() != 0f || enemy.getDy() != 0f) {
-						enemy.setDx(0);
-						enemy.setDy(0);
-					}
-					// removeExpiredEffects moved OUT of the dormant path.
-					// Status effects on out-of-range enemies are inert (no
-					// one's there to see them tick down, no DoT damage is
-					// being applied), so we skip the per-tick Instant.now()
-					// sweep. They'll be cleaned the first tick the enemy
-					// re-enters someone's chaseRange.
-					continue;
-				}
-				if ((enemy.getId() & (ENEMY_AI_TICK_DIVISOR - 1)) == aiTick) {
-					enemy.update(realm.getRealmId(), this, time);
-				}
-				// Visible enemies always move; off-screen awake enemies move
-				// every ENEMY_MOVE_FAR_DIVISOR-th tick. Stutter doesn't matter
-				// for entities no client is rendering.
-				if (visible || (enemy.getId() & (ENEMY_MOVE_FAR_DIVISOR - 1)) == moveFarTick) {
-					enemy.tickMove(realm);
-				}
-				enemy.removeExpiredEffects();
-				// Friendly-aura hook (Enemy67 healer) — runs every tick for
-				// every awake scripted enemy, sidestepping the AI stagger and
-				// the attack()/processAttacks gates (DEX cooldown, attackRange,
-				// closest-player INVISIBLE bail). Combat scripts leave this
-				// as the default no-op.
-				final EnemyScriptBase tickScript = this.getEnemyScript(enemy.getEnemyId());
-				if (tickScript != null) {
-					try {
-						tickScript.tick(realm, enemy);
-					} catch (Exception ex) {
-						log.error("Enemy script tick() failed for enemyId={}: {}", enemy.getEnemyId(), ex);
-					}
-				}
-			}
-			this.updEnemiesNanos += System.nanoTime() - eStart;
-			final long bStart = System.nanoTime();
-			for (final Bullet bullet : realm.getBullets().values()) {
-				bullet.update(bulletScale);
-			}
-			this.updBulletsNanos += System.nanoTime() - bStart;
+			this.tickRealmPlayers(realm, time);
+			this.tickRealmEnemies(realm, time);
+			this.tickRealmBullets(realm);
 		}
 
 		final long tailStart = System.nanoTime();
+		this.tickGlobalTail();
+		this.updTailNanos += System.nanoTime() - tailStart;
+	}
+
+	private void parkIdleRealmEnemies(final Realm realm) {
+		if (realm.getEnemies().isEmpty()) return;
+		for (final Enemy enemy : realm.getEnemies().values()) {
+			if (enemy.getDx() != 0f || enemy.getDy() != 0f) {
+				enemy.setDx(0);
+				enemy.setDy(0);
+			}
+		}
+	}
+
+	private void tickRealmPlayers(final Realm realm, final double time) {
+		final long start = System.nanoTime();
+		for (final Player p : realm.getPlayers().values()) {
+			final Player live = realm.getPlayer(p.getId());
+			if (live == null) continue;
+			this.processBulletHit(realm.getRealmId(), live);
+			live.update(time);
+			live.removeExpiredEffects();
+			this.movePlayer(realm.getRealmId(), live);
+			this.resolveCompletedCast(realm, live);
+		}
+		this.updPlayersNanos += System.nanoTime() - start;
+	}
+
+	// Clear currentCast BEFORE re-entering useAbility so the resolution path
+	// sees isCasting()==false — otherwise the input-rejection gate at the top
+	// of useAbility refuses our own resolution.
+	private void resolveCompletedCast(final Realm realm, final Player p) {
+		final CastState cs = p.getCurrentCast();
+		if (cs == null || cs.getEndTickMs() > Instant.now().toEpochMilli()) return;
+		p.setCurrentCast(null);
+		this.useAbility(realm.getRealmId(), p.getId(),
+				new Vector2f(cs.getWorldTargetX(), cs.getWorldTargetY()),
+				(byte) cs.getSlot(), true);
+	}
+
+	private static final float MAX_AWAKE_RADIUS = 720f;
+
+	private void tickRealmEnemies(final Realm realm, final double time) {
+		final long start = System.nanoTime();
+
+		final long nowNanos = System.nanoTime();
+		final long lastNanos = this.lastBulletUpdateNanos.getOrDefault(realm.getRealmId(), nowNanos);
+		final float bulletDt = Math.min((nowNanos - lastNanos) / 1_000_000_000.0f, 0.1f);
+		this.lastBulletUpdateNanos.put(realm.getRealmId(), nowNanos);
+		realm.setBulletScaleThisTick(bulletDt * 64.0f);
+
+		final int aiTick = this.tickCounter & (ENEMY_AI_TICK_DIVISOR - 1);
+		final int moveFarTick = this.tickCounter & (ENEMY_MOVE_FAR_DIVISOR - 1);
+		final Player[] activePlayers = realm.getPlayers().values().toArray(new Player[0]);
+
+		final Set<Long> candidates = collectAwakeCandidates(realm, activePlayers);
+		for (final long cid : candidates) {
+			final Enemy enemy = realm.getEnemies().get(cid);
+			if (enemy == null) continue;
+			tickAwakeEnemy(realm, enemy, activePlayers, time, aiTick, moveFarTick);
+		}
+		this.updEnemiesNanos += System.nanoTime() - start;
+	}
+
+	private static Set<Long> collectAwakeCandidates(final Realm realm, final Player[] activePlayers) {
+		final Set<Long> candidates = new HashSet<>();
+		for (final Player p : activePlayers) {
+			candidates.addAll(realm.queryEnemiesNear(p.getPos().x, p.getPos().y, MAX_AWAKE_RADIUS));
+		}
+		return candidates;
+	}
+
+	private void tickAwakeEnemy(final Realm realm, final Enemy enemy, final Player[] activePlayers,
+			final double time, final int aiTick, final int moveFarTick) {
+		final int classification = classifyEnemyProximity(enemy, activePlayers);
+		if (classification == PROX_DORMANT) {
+			if (enemy.getDx() != 0f || enemy.getDy() != 0f) {
+				enemy.setDx(0);
+				enemy.setDy(0);
+			}
+			return;
+		}
+		if ((enemy.getId() & (ENEMY_AI_TICK_DIVISOR - 1)) == aiTick) {
+			enemy.update(realm.getRealmId(), this, time);
+		}
+		final boolean visible = classification == PROX_VISIBLE;
+		if (visible || (enemy.getId() & (ENEMY_MOVE_FAR_DIVISOR - 1)) == moveFarTick) {
+			enemy.tickMove(realm);
+		}
+		enemy.removeExpiredEffects();
+		final EnemyScriptBase tickScript = this.getEnemyScript(enemy.getEnemyId());
+		if (tickScript != null) {
+			try {
+				tickScript.tick(realm, enemy);
+			} catch (Exception ex) {
+				log.error("Enemy script tick() failed for enemyId={}: {}", enemy.getEnemyId(), ex);
+			}
+		}
+	}
+
+	private static final int PROX_DORMANT = 0;
+	private static final int PROX_AWAKE = 1;
+	private static final int PROX_VISIBLE = 2;
+
+	private static int classifyEnemyProximity(final Enemy enemy, final Player[] activePlayers) {
+		final float ex = enemy.getPos().x;
+		final float ey = enemy.getPos().y;
+		final float chaseRangeSq = (float) enemy.getChaseRange() * enemy.getChaseRange();
+		int best = PROX_DORMANT;
+		for (final Player p : activePlayers) {
+			final float pdx = p.getPos().x - ex;
+			final float pdy = p.getPos().y - ey;
+			final float dsq = pdx * pdx + pdy * pdy;
+			if (dsq <= VIEWPORT_RADIUS_SQ) return PROX_VISIBLE;
+			if (dsq <= chaseRangeSq) best = PROX_AWAKE;
+		}
+		return best;
+	}
+
+	private void tickRealmBullets(final Realm realm) {
+		final long start = System.nanoTime();
+		final float bulletScale = realm.getBulletScaleThisTick();
+		for (final Bullet bullet : realm.getBullets().values()) {
+			bullet.update(bulletScale);
+		}
+		this.updBulletsNanos += System.nanoTime() - start;
+	}
+
+	private void tickGlobalTail() {
 		this.removeExpiredBullets();
 		this.removeExpiredLootContainers();
 		this.removeExpiredPortals();
@@ -1997,159 +1687,132 @@ public class RealmManagerServer implements Runnable {
 			realm.processDecoys(this);
 			realm.processClones(this);
 		}
-
-		// Passive tick — extracted to ServerPassiveTickHelper. Refreshes the
-		// per-class always-on auras (Priest Protective, Paladin Holy Resolve,
-		// Heavy Buffer / Paladin Guiding Light, Necromancer Necrotic). Runs
-		// internally on its own 125ms cadence.
 		ServerPassiveTickHelper.tick(this, this.tickCounter);
+		this.tickPartyRefresh();
+		this.tickPhalanxDomes();
+		this.tickMinimapBroadcast();
+		this.tickPeriodicEnemyRespawn();
+		this.tickEmptyRealmCleanup();
+	}
 
-		// (Persistent-effect tick loops removed 2026-05-19 — see TODO at top of
-		// this file. The Necromancer Soul Harvest vortex, Ninja Blade Storm
-		// orbit, and Ninja Death Blossom spiral all lived here; their abilities
-		// no longer exist in the 2026-05-18 class rewrite. Bring them back as
-		// one shared persistent-effect primitive when Caltrops or similar
-		// needs to linger on the ground / follow the caster.)
-
-		// Phase 4 — Party MVP. Refresh every 32 ticks (~0.5s) so teammate
-		// HP/MP bars track combat in near-real-time. Also drop expired
-		// invites on the same cadence so the pending list doesn't leak.
-		if (this.tickCounter % 32 == 0) {
-			final Set<Long> disbandedInviters = this.partyManager.evictExpiredInvites();
-			for (final Long inviterId : disbandedInviters) {
-				final Player p = this.getPlayerById(inviterId);
-				if (p != null) this.sendEmptyPartyUpdate(p);
-			}
-			final Set<Long> sent = new HashSet<>();
-			for (final Player p : this.getPlayers()) {
-				final long pid = this.partyManager.getPartyId(p.getId());
-				if (pid == 0L) continue;
-				if (sent.add(pid)) this.broadcastPartyUpdate(pid);
-			}
+	private void tickPartyRefresh() {
+		if (this.tickCounter % 32 != 0) return;
+		final Set<Long> disbandedInviters = this.partyManager.evictExpiredInvites();
+		for (final Long inviterId : disbandedInviters) {
+			final Player p = this.getPlayerById(inviterId);
+			if (p != null) this.sendEmptyPartyUpdate(p);
 		}
+		final Set<Long> sent = new HashSet<>();
+		for (final Player p : this.getPlayers()) {
+			final long pid = this.partyManager.getPartyId(p.getId());
+			if (pid == 0L) continue;
+			if (sent.add(pid)) this.broadcastPartyUpdate(pid);
+		}
+	}
 
-		// Knight Phalanx Dome — every tick, any player with PHALANX_DOME has a
-		// 96-px radius sphere around them that destroys any incoming enemy
-		// bullet that enters. Cheap because the dome's lifetime is short (~3.5s)
-		// and active casters are usually rare. Also re-emits the persistent
-		// visual every 12 ticks (~190ms) so it reads as a steady bubble.
-		final float PHALANX_RADIUS = 128f;
-		final float PHALANX_RADIUS_SQ = PHALANX_RADIUS * PHALANX_RADIUS;
+	private static final float PHALANX_RADIUS = 128f;
+	private static final float PHALANX_RADIUS_SQ = PHALANX_RADIUS * PHALANX_RADIUS;
+
+	private void tickPhalanxDomes() {
 		final boolean refreshDomeVisual = (this.tickCounter % 12 == 0);
 		for (final Realm realm : this.realms.values()) {
 			if (realm.getPlayers().isEmpty()) continue;
 			for (final Player p : realm.getPlayers().values()) {
 				if (!p.hasEffect(StatusEffectType.PHALANX_DOME)) continue;
-				final Vector2f pc = p.getPos().clone(p.getSize() / 2, p.getSize() / 2);
-				// Destroy enemy bullets inside the dome.
-				final List<Long> killedIds = new ArrayList<>();
-				for (final Bullet b : realm.getBullets().values()) {
-					if (!b.isEnemy()) continue;
-					final float dx = b.getPos().x - pc.x;
-					final float dy = b.getPos().y - pc.y;
-					if (dx * dx + dy * dy <= PHALANX_RADIUS_SQ) {
-						killedIds.add(b.getId());
-					}
-				}
-				for (final long bid : killedIds) {
-					final Bullet b = realm.getBullets().get(bid);
-					if (b != null) {
-						realm.getExpiredBullets().add(bid);
-						realm.removeBullet(b);
-					}
-				}
-				if (refreshDomeVisual) {
-					// Persistent BLUE shield dome (tier 1 = light blue tint).
-					// Duration matches refresh cadence so the dome holds steady.
-					this.enqueueServerPacketToRealm(realm, CreateEffectPacket.aoeEffect(
-							CreateEffectPacket.EFFECT_SHIELD_DOME, pc.x, pc.y, PHALANX_RADIUS, (short) 240, (byte) 1));
-				}
+				tickPhalanxDomeFor(realm, p, refreshDomeVisual);
 			}
 		}
+	}
 
-		// Broadcast global player positions for minimap (1 Hz) — only if any position changed
-		if (this.tickCounter % 64 == 0) {
-			for (final Map.Entry<Long, Realm> realmEntry : this.realms.entrySet()) {
-				final Realm realm = realmEntry.getValue();
-				if (realm.getPlayers().isEmpty()) {
-					this.lastGlobalPositions.remove(realmEntry.getKey());
-					continue;
-				}
-				final NetPlayerPosition[] positions = realm.getPlayers().values().stream()
-						.map(NetPlayerPosition::from)
-						.toArray(NetPlayerPosition[]::new);
-				// Delta check: skip broadcast if no position has changed
-				final NetPlayerPosition[] lastPositions = this.lastGlobalPositions.get(realmEntry.getKey());
-				boolean changed = (lastPositions == null) || (lastPositions.length != positions.length);
-				if (!changed) {
-					for (int i = 0; i < positions.length; i++) {
-						if (positions[i].getPlayerId() != lastPositions[i].getPlayerId()
-								|| positions[i].getX() != lastPositions[i].getX()
-								|| positions[i].getY() != lastPositions[i].getY()
-								|| positions[i].isTeleportable() != lastPositions[i].isTeleportable()) {
-							changed = true;
-							break;
-						}
-					}
-				}
-				if (changed) {
-					this.lastGlobalPositions.put(realmEntry.getKey(), positions);
-					final GlobalPlayerPositionPacket minimapPacket =
-							GlobalPlayerPositionPacket.from(positions);
-					for (final Player p : realm.getPlayers().values()) {
-						this.enqueueServerPacket(p, minimapPacket);
-					}
-				}
+	private void tickPhalanxDomeFor(final Realm realm, final Player p, final boolean refreshVisual) {
+		final Vector2f pc = p.getPos().clone(p.getSize() / 2, p.getSize() / 2);
+		final List<Long> killedIds = new ArrayList<>();
+		for (final Bullet b : realm.getBullets().values()) {
+			if (!b.isEnemy()) continue;
+			final float dx = b.getPos().x - pc.x;
+			final float dy = b.getPos().y - pc.y;
+			if (dx * dx + dy * dy <= PHALANX_RADIUS_SQ) {
+				killedIds.add(b.getId());
 			}
 		}
-
-		// Periodic enemy respawn in overworld (every 1920 ticks ~30s)
-		if (this.tickCounter % 1920 == 0) {
-			for (final Realm realm : this.realms.values()) {
-				if (realm.isOverworld() && realm.getMapId() != 1 && !realm.getPlayers().isEmpty()) {
-					realm.respawnEnemies(50);
-				}
+		for (final long bid : killedIds) {
+			final Bullet b = realm.getBullets().get(bid);
+			if (b != null) {
+				realm.getExpiredBullets().add(bid);
+				realm.removeBullet(b);
 			}
 		}
+		if (refreshVisual) {
+			this.enqueueServerPacketToRealm(realm, CreateEffectPacket.aoeEffect(
+					CreateEffectPacket.EFFECT_SHIELD_DOME, pc.x, pc.y, PHALANX_RADIUS, (short) 240, (byte) 1));
+		}
+	}
 
-		// Periodic cleanup: remove empty dungeon/vault realms (every 128 ticks ~2s)
-		if (this.tickCounter % 128 == 0) {
-			// Collect realm IDs that are referenced as a sourceRealmId by any
-			// active dungeon. These must stay alive so the boss-drop exit portal
-			// can link back to them when the dungeon boss is killed.
-			final Set<Long> referencedAsSource = new HashSet<>();
-			for (final Realm r : this.realms.values()) {
-				if (r.getSourceRealmId() != 0) {
-					referencedAsSource.add(r.getSourceRealmId());
-				}
+	private void tickMinimapBroadcast() {
+		if (this.tickCounter % 64 != 0) return;
+		for (final Map.Entry<Long, Realm> realmEntry : this.realms.entrySet()) {
+			final Realm realm = realmEntry.getValue();
+			if (realm.getPlayers().isEmpty()) {
+				this.lastGlobalPositions.remove(realmEntry.getKey());
+				continue;
 			}
-
-			final List<Long> realmIdsToRemove = new ArrayList<>();
-			for (final Map.Entry<Long, Realm> entry : this.realms.entrySet()) {
-				final Realm r = entry.getValue();
-				if (!r.getPlayers().isEmpty()) continue;
-
-				// Vault realms (mapId=1): always remove when empty
-				if (r.getMapId() == 1) {
-					realmIdsToRemove.add(entry.getKey());
-				}
-				// Non-shared realms (dungeon instances): remove when empty,
-				// BUT keep alive if any child dungeon still references this
-				// realm as its source (the player needs to return here via
-				// the boss exit portal).
-				else if (!r.isShared() && !referencedAsSource.contains(entry.getKey())) {
-					realmIdsToRemove.add(entry.getKey());
-				}
-			}
-			for (Long id : realmIdsToRemove) {
-				log.info("[SERVER] Cleaning up empty realm {}", id);
-				final Realm removed = this.realms.remove(id);
-				if (removed != null) {
-					removed.setShutdown(true);
-				}
+			final NetPlayerPosition[] positions = realm.getPlayers().values().stream()
+					.map(NetPlayerPosition::from)
+					.toArray(NetPlayerPosition[]::new);
+			if (!positionsChanged(this.lastGlobalPositions.get(realmEntry.getKey()), positions)) continue;
+			this.lastGlobalPositions.put(realmEntry.getKey(), positions);
+			final GlobalPlayerPositionPacket minimapPacket = GlobalPlayerPositionPacket.from(positions);
+			for (final Player p : realm.getPlayers().values()) {
+				this.enqueueServerPacket(p, minimapPacket);
 			}
 		}
-		this.updTailNanos += System.nanoTime() - tailStart;
+	}
+
+	private static boolean positionsChanged(final NetPlayerPosition[] last, final NetPlayerPosition[] curr) {
+		if (last == null || last.length != curr.length) return true;
+		for (int i = 0; i < curr.length; i++) {
+			if (curr[i].getPlayerId() != last[i].getPlayerId()
+					|| curr[i].getX() != last[i].getX()
+					|| curr[i].getY() != last[i].getY()
+					|| curr[i].isTeleportable() != last[i].isTeleportable()) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private void tickPeriodicEnemyRespawn() {
+		if (this.tickCounter % 1920 != 0) return;
+		for (final Realm realm : this.realms.values()) {
+			if (realm.isOverworld() && realm.getMapId() != 1 && !realm.getPlayers().isEmpty()) {
+				realm.respawnEnemies(50);
+			}
+		}
+	}
+
+	// Dungeon source realms must outlive their child while the boss-drop exit
+	// portal could still teleport players back to them.
+	private void tickEmptyRealmCleanup() {
+		if (this.tickCounter % 128 != 0) return;
+		final Set<Long> referencedAsSource = new HashSet<>();
+		for (final Realm r : this.realms.values()) {
+			if (r.getSourceRealmId() != 0) referencedAsSource.add(r.getSourceRealmId());
+		}
+		final List<Long> realmIdsToRemove = new ArrayList<>();
+		for (final Map.Entry<Long, Realm> entry : this.realms.entrySet()) {
+			final Realm r = entry.getValue();
+			if (!r.getPlayers().isEmpty()) continue;
+			if (r.getMapId() == 1) {
+				realmIdsToRemove.add(entry.getKey());
+			} else if (!r.isShared() && !referencedAsSource.contains(entry.getKey())) {
+				realmIdsToRemove.add(entry.getKey());
+			}
+		}
+		for (Long id : realmIdsToRemove) {
+			log.info("[SERVER] Cleaning up empty realm {}", id);
+			final Realm removed = this.realms.remove(id);
+			if (removed != null) removed.setShutdown(true);
+		}
 	}
 
 	private void movePlayer(final long realmId, final Player p) {
@@ -2171,13 +1834,8 @@ public class RealmManagerServer implements Runnable {
             return;
         }
 
-		// Process ALL queued inputs this tick. At high ping, inputs arrive in
-		// bursts — processing all of them prevents server position from drifting
-		// behind the client. Cap raised to 32 per tick (~500ms catch-up window)
-		// because 8 was too tight: any sustained network blip would queue more
-		// than 8 and the surplus piled up across multiple ticks, leaving the
-		// server N ticks behind the client and forcing an ack snapback.
-		// Per-tick safety still comes from applyMovementTick's |v|<=1 clamp.
+		// Process up to 32 queued inputs this tick so a burst from a high-ping
+		// client doesn't leave server position drifting behind for many ticks.
 		if (p.getInputQueue() == null) p.setInputQueue(new ConcurrentLinkedQueue<>());
 		while (!p.getInputQueue().isEmpty() && (int) p.getInputQueue().peek()[0] <= p.getLastProcessedInputSeq()) {
 		    p.getInputQueue().poll();
@@ -2193,12 +1851,10 @@ public class RealmManagerServer implements Runnable {
 		    this.applyMovementTick(targetRealm, p);
 		    processed++;
 		}
-		// If no queued inputs, run one tick with the last (vx, vy) (coast)
 		if (processed == 0) {
 		    this.applyMovementTick(targetRealm, p);
 		}
 
-		// Calculate if we should apply ground damage
 		if (targetRealm.getTileManager().collidesDamagingTile(p)) {
 			final Long lastDamageTime = this.playerGroundDamageState.get(p.getId());
 			if (lastDamageTime == null || (Instant.now().toEpochMilli() - lastDamageTime) > 450) {
@@ -2206,11 +1862,7 @@ public class RealmManagerServer implements Runnable {
 				this.sendTextEffectToPlayer(p, TextEffect.DAMAGE, "-" + damageToInflict);
 				p.setHealth(p.getHealth() - damageToInflict);
 				this.playerGroundDamageState.put(p.getId(), Instant.now().toEpochMilli());
-				// Death check — Entity.getDeath() returns true when health<=0,
-				// but nothing fires playerDeath() from ground-damage on its
-				// own. Without this the player could stand in lava and just
-				// keep ticking into negative HP forever (user reported -500
-				// HP while in a lava pool).
+				// Ground damage doesn't go through normal hit pipeline, so call playerDeath explicitly.
 				if (p.getDeath()) {
 					this.playerDeath(targetRealm, p);
 				}
@@ -2218,14 +1870,11 @@ public class RealmManagerServer implements Runnable {
 		}
 	}
 
-	/** Applies one movement tick for a player using their current (vx, vy). */
 	private void applyMovementTick(final Realm targetRealm, final Player p) {
 		float vx = p.getCurrentVx();
 		float vy = p.getCurrentVy();
 
-		// Defensively normalise: client SHOULD send a unit vector, but if it
-		// sends a longer one we clamp magnitude to 1 so movement speed can't
-		// exceed the configured per-tick step.
+		// Clamp magnitude to 1 so a misbehaving client can't outpace the configured step.
 		final float mag = (float) Math.sqrt(vx * vx + vy * vy);
 		if (mag > 1.0f) {
 		    vx /= mag;
@@ -2237,17 +1886,10 @@ public class RealmManagerServer implements Runnable {
 		if (p.hasEffect(StatusEffectType.SLOWED)) tilesPerSec *= 0.5f;
 		final float spd = tilesPerSec * 32.0f / 64.0f;
 
-		// Unit-vector-driven movement gives full diagonal speed when intended:
-		// a unit vector at 45° has |vx|=|vy|=√2/2, so applying spd to each
-		// component produces the same total step length as a cardinal move.
-		// The dirFlags-era explicit √2/2 diagonal scaling is no longer needed.
 		final boolean moving = mag > 0.001f;
 		p.setDx(moving ? vx * spd : 0f);
 		p.setDy(moving ? vy * spd : 0f);
 
-		// Animation/facing flags derived from vx/vy. Threshold at 0.1 keeps tiny
-		// off-axis components (e.g. vx=0.07 from a 4° camera tilt) from flipping
-		// the facing every frame.
 		p.setLeft (moving && vx < -0.1f);
 		p.setRight(moving && vx >  0.1f);
 		p.setUp   (moving && vy < -0.1f);
@@ -2405,25 +2047,14 @@ public class RealmManagerServer implements Runnable {
 			}
 		}
 
-		// Terrain hit FIRST: destroy bullets that enter walls before they can
-		// hit entities on the other side
+		// Terrain hit must run first so wall-eaten bullets don't apply damage
+		// to entities that the bullet would never have reached on the client.
 		this.proccessTerrainHit(realmId, p);
 
-		// nearbyBullets was snapshot before proccessTerrainHit ran, so any bullet
-		// whose center stepped into a collision tile this tick is still in the
-		// list but has been removed from the realm. Skip those — otherwise we
-		// apply damage from a bullet the client has already despawned (e.g. a
-		// player hugging a tree gets hit by an "invisible" projectile).
+		// nearbyBullets was snapshot before proccessTerrainHit; re-check against
+		// the live map so we don't apply damage from an already-despawned bullet.
 		final Map<Long, Bullet> liveBullets = targetRealm.getBullets();
 
-		// Pre-partition nearby bullets by source so we don't iterate the
-		// "wrong half" against the wrong target. Previously we walked the
-		// full bullet list against both players and enemies and let a
-		// boolean flag filter inside proccessEnemyHit / processPlayerHit —
-		// each call still paid the cost of a Map lookup + entity-state
-		// check before bailing. Splitting upfront cuts collision-loop work
-		// roughly in half during ability spam (where ~50% of nearby
-		// bullets are enemy-side).
 		List<Bullet> enemyBullets = null;
 		List<Bullet> playerBullets = null;
 		for (int i = 0; i < nearbyBullets.size(); i++) {
@@ -2459,17 +2090,11 @@ public class RealmManagerServer implements Runnable {
 	}
 
 	
-	// Per-tick caps on NEW entities added to a player's ledger. Caps apply
-	// ONLY to the load side — cap-trimmed IDs simply stay out of the ledger
-	// and the wire and get picked up on a future tick, so they never
-	// produce a spurious unload. At 32 Hz these limits comfortably exceed
-	// any realistic spawn / cross-viewport rate while bounding worst-case
-	// packet size during stress (e.g. a fresh viewer entering a 500-enemy
-	// boss room hydrates over ~3 ticks instead of one ~50 KB packet).
+	// Caps apply only to the LOAD side — cap-trimmed IDs stay out of the
+	// ledger and the wire, so they never produce a spurious unload.
 	private static final int MAX_NEW_ENEMIES_PER_LOAD = 500;
 	private static final int MAX_NEW_BULLETS_PER_LOAD = 1000;
 
-	/** Strict set difference: {@code a ∖ b} as a fresh HashSet. */
 	private static Set<Long> setDiff(final Set<Long> a, final Set<Long> b) {
 		if (a.isEmpty()) return new HashSet<>();
 		if (b.isEmpty()) return new HashSet<>(a);
@@ -2478,13 +2103,6 @@ public class RealmManagerServer implements Runnable {
 		return out;
 	}
 
-	/**
-	 * Trim {@code ids} to the {@code cap} closest entities to {@code center},
-	 * looked up via {@code source}. IDs whose entity is missing from
-	 * {@code source} are skipped. Used to keep the per-tick LoadPacket
-	 * bounded while staying deterministic (sort-then-truncate so the same
-	 * tick produces the same trimmed set).
-	 */
 	private static Set<Long> capByDistance(final Set<Long> ids, final Vector2f center,
 			final Map<Long, ? extends GameObject> source, final int cap) {
 		if (ids.size() <= cap) return ids;
@@ -2506,12 +2124,8 @@ public class RealmManagerServer implements Runnable {
 		return out;
 	}
 
-	/**
-	 * Bullet cap with player-owned-bullet priority. A player's own
-	 * projectiles always fit first — otherwise heavy enemy-bullet density
-	 * could starve the player's own abilities of cap slots and the player
-	 * would see enemy shots but not their own.
-	 */
+	// Player-owned bullets always fit first so enemy spam can't starve the
+	// player's view of their own projectiles.
 	private static Set<Long> capBulletsWithPlayerPriority(final Set<Long> ids, final Vector2f center,
 			final Map<Long, Bullet> bullets, final int cap) {
 		if (ids.size() <= cap) return ids;
@@ -2839,15 +2453,10 @@ public class RealmManagerServer implements Runnable {
 				}
 			}
 
-			// Notify the overseer of the kill (handles taunts, event spawning)
-			// NOTE: We get qualifying players BEFORE clearing damage tracking for soulbound loot
+			// Snapshot qualifying players BEFORE clearing damage tracking, so soulbound rolls work.
 			List<Long> qualifyingPlayerIds = (targetRealm.getOverseer() != null)
 					? targetRealm.getOverseer().getQualifyingPlayers(enemy.getId())
 					: new ArrayList<>();
-			// Party-shared loot eligibility: expand the qualifying-players
-			// list to include every party member of any qualifying player
-			// (deduped). The "earned a soulbound roll" club grows to include
-			// teammates who helped tank/cc/heal without dealing top damage.
 			if (!qualifyingPlayerIds.isEmpty()) {
 				final LinkedHashSet<Long> expanded = new LinkedHashSet<>(qualifyingPlayerIds);
 				for (final Long qid : qualifyingPlayerIds) {
@@ -2855,8 +2464,6 @@ public class RealmManagerServer implements Runnable {
 					if (pid == 0L) continue;
 					for (final Long memberId : this.partyManager.getPartyMembers(qid)) {
 						if (memberId == null || memberId.equals(qid)) continue;
-						// Only credit teammates currently in the same realm
-						// (no claim-from-character-select abuse).
 						final Realm mr = this.findPlayerRealm(memberId);
 						if (mr != null && mr.getRealmId() == targetRealm.getRealmId()) {
 							expanded.add(memberId);
@@ -2873,13 +2480,9 @@ public class RealmManagerServer implements Runnable {
 
 			targetRealm.getExpiredEnemies().add(enemy.getId());
 			targetRealm.clearHitMap();
-			// Overseer handles repopulation now — skip legacy spawnRandomEnemy for overworld
 			targetRealm.removeEnemy(enemy);
 
-			// Boss-drop exit portal: runs BEFORE loot processing so it is never
-			// skipped by an early return (e.g. missing loot table). Uses the
-			// dungeonBossEnemyId stored on the realm at spawn time rather than
-			// re-reading from MapModel, which is more reliable.
+			// Run boss-exit portal before loot processing so a missing loot table can't skip it.
 			if (targetRealm.getSourceRealmId() != 0
 					&& targetRealm.getDungeonBossEnemyId() > 0
 					&& enemy.getEnemyId() == targetRealm.getDungeonBossEnemyId()) {
@@ -2896,45 +2499,31 @@ public class RealmManagerServer implements Runnable {
 				}
 			}
 
-			// Try to get the loot model mapped by this enemyId
 			final LootTableModel lootTable = GameDataManager.LOOT_TABLES.get(enemy.getEnemyId());
 			if (lootTable == null) {
 				log.warn("[SERVER] No loot table registered for enemy {}", enemy.getEnemyId());
 				return;
 			}
 
-			// Soulbound loot system: each qualifying player gets their own loot roll.
-			// Brown bags (consumables only) remain public and visible to all.
-			// All other bag tiers (purple, cyan, white, boosted) are soulbound.
 			final float diff = enemy.getDifficulty();
 			final boolean upgradeEligible = diff > GlobalConstants.LOOT_TIER_UPGRADE_MIN_DIFFICULTY;
 			float upgradeChance = upgradeEligible
 					? (GlobalConstants.LOOT_TIER_UPGRADE_BASE_PERCENT
 							+ GlobalConstants.LOOT_TIER_UPGRADE_PER_DIFFICULTY * diff) / 100.0f
 					: 0.0f;
-			// MARKED_FOR_LOOT — Trickster's passive proc. When this enemy dies
-			// while carrying the mark, every qualifying player's upgrade roll
-			// gets +25% (additive). Effect applies whether the trickster
-			// landed the killing blow or not, so the WHOLE party benefits as
-			// long as the mark was active when the kill resolved.
 			if (enemy.hasEffect(StatusEffectType.MARKED_FOR_LOOT)) {
 				upgradeChance = Math.min(1.0f, upgradeChance + 0.25f);
 			}
 
-			// If no qualifying players (e.g. solo kill or damage tracking disabled), 
-			// use a single public drop (backwards compatible)
 			if (qualifyingPlayerIds.isEmpty()) {
 				dropLootForPlayer(targetRealm, enemy, lootTable, -1, diff, upgradeEligible, upgradeChance);
 			} else {
-				// Roll separate loot for each qualifying player
 				for (Long playerId : qualifyingPlayerIds) {
 					dropLootForPlayer(targetRealm, enemy, lootTable, playerId, diff, upgradeEligible, upgradeChance);
 				}
 			}
 
-			// Portal drops: use dungeon graph if this realm has a nodeId.
-			// Overworld/shared realms bypass graph filtering so that each
-			// enemy's loot table directly controls which dungeon portals drop.
+			// Overworld bypasses graph filtering; per-enemy loot tables drive portal drops there.
 			final String currentNodeId = targetRealm.getNodeId();
 			final DungeonGraphNode currentNode = (currentNodeId != null && GameDataManager.DUNGEON_GRAPH != null)
 					? GameDataManager.DUNGEON_GRAPH.get(currentNodeId) : null;
@@ -3118,19 +2707,10 @@ public class RealmManagerServer implements Runnable {
 	}
 
 
-	/**
-	 * Data class for a deferred realm transition. The heavy realm generation
-	 * (terrain, enemies, dungeon layout) runs on a worker thread. Once complete,
-	 * the result is enqueued here and the tick thread integrates it: adds the
-	 * realm, transfers the player, sends map/load packets.
-	 */
 	public void enqueuePendingTransition(PendingRealmTransition transition) {
 		this.pendingRealmTransitions.add(transition);
 	}
 
-	/**
-	 * Drain completed realm generations and integrate them on the tick thread.
-	 */
 	public void processPendingTransitions() {
 		PendingRealmTransition t;
 		while ((t = this.pendingRealmTransitions.poll()) != null) {
@@ -3159,18 +2739,9 @@ public class RealmManagerServer implements Runnable {
 	}
 
 	/**
-	 * Invalidate the LoadPacket cache for all players in a realm, forcing a full
-	 * re-send on the next tick. Called when a player enters or leaves a realm so
-	 * that existing clients immediately learn about the roster change.
-	 *
-	 * Prefer {@link #invalidateLoadStateForPlayer(long)} when a SINGLE player
-	 * is joining — the normal delta logic in enqueueGameData picks up the new
-	 * roster entry automatically when the new player enters each existing
-	 * client's viewport (it's just another entity that wasn't in the
-	 * recipient's ledger). Wiping the whole realm's ledger here forces every
-	 * existing player to redo a full Load on the next tick, which under
-	 * 1500-enemy / 4500-bullet load was costing ~150-300 ms on the tick
-	 * thread per join.
+	 * Wipe every player's load ledger in this realm. Prefer
+	 * {@link #invalidateLoadStateForPlayer(long)} for single-player joins —
+	 * realm-wide wipes cost 150-300ms on the tick thread at 1500-enemy load.
 	 */
 	public void invalidateRealmLoadState(Realm realm) {
 		for (final Long pid : realm.getPlayers().keySet()) {
@@ -3179,29 +2750,15 @@ public class RealmManagerServer implements Runnable {
 		}
 	}
 
-	/**
-	 * Targeted variant — only the named player's ledger is cleared. Use this
-	 * for player-join (the joining client needs a full snapshot of their new
-	 * realm; their neighbors get the join via the natural delta path).
-	 */
 	public void invalidateLoadStateForPlayer(long playerId) {
 		this.playerLoadLedger.remove(playerId);
 		this.playerLastFullSnapshotMs.remove(playerId);
 	}
 
-	/**
-	 * Called by worker threads after async login auth completes.
-	 * Queues the realm join to be processed on the tick thread.
-	 */
 	public void enqueuePendingJoin(PendingRealmJoin join) {
 		this.pendingRealmJoins.add(join);
 	}
 
-	/**
-	 * Called at the start of tick(), BEFORE processServerPackets / enqueueGameData.
-	 * Drains all pending joins and adds players to their realms atomically on
-	 * the tick thread, then invalidates load state so existing clients see them.
-	 */
 	public void processPendingJoins() {
 		PendingRealmJoin join;
 		while ((join = this.pendingRealmJoins.poll()) != null) {
@@ -3209,13 +2766,7 @@ public class RealmManagerServer implements Runnable {
 				final Realm welcomeRealm = join.getRealm();
 				final Player toWelcome = join.getPlayer();
 				welcomeRealm.addPlayer(toWelcome);
-				// Only the joining player needs a full Load snapshot built
-				// next tick — neighbors will pick up the new entity through
-				// the natural ledger-vs-viewport delta in enqueueGameData
-				// without paying the cost of rebuilding their entire 1500-
-				// enemy / 4500-bullet visible set. The previous full-realm
-				// invalidation was the dominant cause of the 10-20 tick
-				// stalls observed when a player logged in mid-stress-test.
+				// Joiner-only invalidation; neighbors discover via natural ledger delta.
 				this.invalidateLoadStateForPlayer(toWelcome.getId());
 				join.getSession().setHandshakeComplete(true);
 				this.remoteAddresses.put(join.getSrcIp(), toWelcome.getId());
@@ -3237,12 +2788,9 @@ public class RealmManagerServer implements Runnable {
 		return result;
 	}
 
-	// Adds a realm to the map of realms after trying to decorate
-	// the realm terrain using any decorators, spawning static enemies and portals
 	public void addRealm(final Realm realm) {
 		this.tryDecorate(realm);
 		realm.spawnStaticEnemies(realm.getMapId());
-		// Spawn static portals defined in the map data
 		final MapModel mapModel = GameDataManager.MAPS.get(realm.getMapId());
 		if (mapModel != null && mapModel.getStaticPortals() != null) {
 			for (final PortalModel sp : mapModel.getStaticPortals()) {
@@ -3252,13 +2800,11 @@ public class RealmManagerServer implements Runnable {
 					portal.setNeverExpires();
 					if (sp.getTargetNodeId() != null) {
 						portal.setTargetNodeId(sp.getTargetNodeId());
-						// If target is a shared node with an existing realm, link to it
 						final DungeonGraphNode targetNode = GameDataManager.DUNGEON_GRAPH.get(sp.getTargetNodeId());
 						if (targetNode != null && targetNode.isShared()) {
 							this.findRealmForNode(sp.getTargetNodeId()).ifPresent(
 									existing -> portal.setToRealmId(existing.getRealmId()));
 						}
-						// Non-shared nodes: toRealmId stays 0 — a new instance is created on first use
 					}
 					realm.addPortal(portal);
 					log.info("[SERVER] Placed static portal {} at ({},{}) -> node '{}' in realm {}",
@@ -3268,10 +2814,7 @@ public class RealmManagerServer implements Runnable {
 				}
 			}
 		}
-		// Overseer is ONLY attached to overworld map 2 (Beach). Each instance
-		// gets its own overseer so multiple beach realms in the dungeon graph
-		// have independent announcements / event spawning / population top-up.
-		// Dungeon maps and static maps (nexus, vault) get no overseer.
+		// Overseer only attaches to map 2 (Beach overworld); each instance gets its own.
 		if (realm.getMapId() == 2 && realm.getOverseer() == null) {
 			realm.setOverseer(new RealmOverseer(realm, this));
 			log.info("[SERVER] Attached RealmOverseer to realm {} (mapId=2)",
@@ -3415,15 +2958,6 @@ public class RealmManagerServer implements Runnable {
 		return null;
 	}
 
-	/**
-	 * Phase 4 — build + broadcast a {@link PartyUpdatePacket} to every member
-	 * of {@code partyId}. Pulls each member's live HP/MP/level via a global
-	 * playerId lookup so cross-realm parties (one member in nexus, others in
-	 * the overworld) still see each other's bars.
-	 *
-	 * Callers: roster-change events (invite accept, leave, disband) and the
-	 * periodic refresh in the tick loop.
-	 */
 	public void broadcastPartyUpdate(long partyId) {
 		if (partyId == 0L) return;
 		final List<Long> roster = this.partyManager.getPartyMembers(
@@ -3447,9 +2981,6 @@ public class RealmManagerServer implements Runnable {
 			final Realm r = this.findPlayerRealm(p.getId());
 			m.setRealmId(r == null ? 0L : r.getRealmId());
 			m.setEffectIds(p.getEffectIds() == null ? new Short[0] : p.getEffectIds().clone());
-			// Hotbar bindings (4 ability ids) — copied as a boxed array so the
-			// streamable collection codec doesn't choke on null. Same for the
-			// cooldown end-times. Both arrays are exactly 4 long; UI iterates.
 			final int[] hb = p.getHotbarBindings();
 			final Integer[] hbBoxed = new Integer[4];
 			for (int i = 0; i < 4; i++) hbBoxed[i] = (hb != null && i < hb.length) ? hb[i] : 0;
@@ -3458,10 +2989,7 @@ public class RealmManagerServer implements Runnable {
 			final Long[] cdBoxed = new Long[4];
 			for (int i = 0; i < 4; i++) cdBoxed[i] = (cds != null && i < cds.length) ? cds[i] : 0L;
 			m.setAbilityCooldownEnds(cdBoxed);
-			// Phase 4 — teammate ability tooltip parity. Carry the invested
-			// level for each hotbar slot so the party panel can render
-			// damage / per-level scaling / cooldown REDUCTION using THEIR
-			// skill points instead of always defaulting to 0.
+			// Invested level per hotbar slot — needed for teammate ability tooltip parity.
 			final Integer[] invBoxed = new Integer[4];
 			for (int i = 0; i < 4; i++) {
 				final int aid = (hb != null && i < hb.length) ? hb[i] : 0;
@@ -3547,9 +3075,7 @@ public class RealmManagerServer implements Runnable {
 	}
 
 	private boolean persistPlayer(final Player player) {
-		if (player.isHeadless() || player.isBot())
-			return false;
-		// Extra safety: never persist bot accounts even if flag wasn't set
+		if (player.isHeadless() || player.isBot()) return false;
 		if (player.getAccountUuid() == null || player.getName() == null || player.getName().startsWith("Bot_"))
 			return false;
 		try {
@@ -3559,57 +3085,45 @@ public class RealmManagerServer implements Runnable {
 					.filter(character -> character.getCharacterUuid().equals(player.getCharacterUuid())).findAny();
 			if (currentCharacter.isPresent()) {
 				final CharacterDto character = currentCharacter.get();
-				// Don't persist a character that the data service has already
-				// soft-deleted (delete/death raced ahead of this 12s sync) —
-				// the data service refuses the write anyway, this just saves
-				// a round trip and a noisy warn log.
+				// Skip soft-deleted characters; the data service rejects the write anyway.
 				if (character.isDeleted()) {
-					RealmManagerServer.log.info(
-							"[SERVER] Skipping persist for character {} on account {} — already soft-deleted on data service.",
+					log.info("[SERVER] Skipping persist for character {} on account {} — already soft-deleted on data service.",
 							character.getCharacterUuid(), account.getAccountEmail());
 					return false;
 				}
-				final CharacterStatsDto newStats = player.serializeStats();
-				final Set<GameItemRefDto> newItems = player.serializeItems();
-				character.setItems(newItems);
-				character.setStats(newStats);
-				final CharacterDto savedStats = ServerGameLogic.DATA_SERVICE.executePost(
+				character.setItems(player.serializeItems());
+				character.setStats(player.serializeStats());
+				ServerGameLogic.DATA_SERVICE.executePost(
 						"/data/account/character/" + character.getCharacterUuid(), character, CharacterDto.class);
-				RealmManagerServer.log.info("[SERVER] Succesfully persisted user account {}",
-						account.getAccountEmail());
-				// Lifetime metrics flush — drain the in-memory deltas and POST
-				// them as a $inc payload. On failure (HTTP / serialization),
-				// merge the delta back into the counters so the next window's
-				// events stack on top instead of losing the work. See
-				// docs/player-metrics-design.md.
-				try {
-					final PlayerMetrics m = player.getMetrics();
-					if (m != null) {
-						final MetricsDelta delta = m.drainAndReset();
-						if (delta != null) {
-							final MetricsDeltaDto dto = MetricsDeltaDto.from(delta);
-							try {
-								ServerGameLogic.DATA_SERVICE.executePost(
-										"/data/account/character/" + character.getCharacterUuid() + "/metrics/delta",
-										dto, Object.class);
-							} catch (Exception postEx) {
-								RealmManagerServer.log.warn(
-										"[METRICS] Flush failed for {} — re-queueing delta. Reason: {}",
-										character.getCharacterUuid(), postEx.getMessage());
-								m.mergeBack(delta);
-							}
-						}
-					}
-				} catch (Exception metricsEx) {
-					RealmManagerServer.log.error(
-							"[METRICS] Unexpected error during flush for {}: {}",
-							character.getCharacterUuid(), metricsEx.getMessage());
-				}
+				log.info("[SERVER] Succesfully persisted user account {}", account.getAccountEmail());
+				this.flushMetricsDelta(player, character.getCharacterUuid());
 			}
 		} catch (Exception e) {
-			RealmManagerServer.log.error("[SERVER] Failed to get player account. Reason: {}", e);
+			log.error("[SERVER] Failed to get player account. Reason: {}", e);
 		}
 		return true;
+	}
+
+	// On HTTP failure the delta is merged back into the in-memory counters so
+	// the next window's events stack on top instead of losing the work.
+	private void flushMetricsDelta(final Player player, final String characterUuid) {
+		try {
+			final PlayerMetrics m = player.getMetrics();
+			if (m == null) return;
+			final MetricsDelta delta = m.drainAndReset();
+			if (delta == null) return;
+			final MetricsDeltaDto dto = MetricsDeltaDto.from(delta);
+			try {
+				ServerGameLogic.DATA_SERVICE.executePost(
+						"/data/account/character/" + characterUuid + "/metrics/delta", dto, Object.class);
+			} catch (Exception postEx) {
+				log.warn("[METRICS] Flush failed for {} — re-queueing delta. Reason: {}",
+						characterUuid, postEx.getMessage());
+				m.mergeBack(delta);
+			}
+		} catch (Exception metricsEx) {
+			log.error("[METRICS] Unexpected error during flush for {}: {}", characterUuid, metricsEx.getMessage());
+		}
 	}
 
 	public void sendTextEffectToPlayer(final Player player, final TextEffect effect, final String text) {
@@ -3621,12 +3135,6 @@ public class RealmManagerServer implements Runnable {
 		}
 	}
 
-	/**
-	 * Phase 3 — apply a status to an entity AND broadcast a floating-text label
-	 * (e.g. "BRACED") over their head so the player sees feedback. Use this in
-	 * place of bare {@code entity.addEffect(...)} wherever an ability gives
-	 * combat feedback. Status enum's {@code name()} is the label.
-	 */
 	public void applyStatusWithFeedback(final Realm realm, final Entity entity,
 			final EntityType entityType, final StatusEffectType status, final long durationMs) {
 		if (entity == null || status == null) return;
@@ -3634,15 +3142,10 @@ public class RealmManagerServer implements Runnable {
 		this.broadcastTextEffect(realm, entityType, entity, TextEffect.PLAYER_INFO, status.name());
 	}
 
-	/**
-	 * Broadcast a text effect to players near an entity. Finds the realm automatically.
-	 * For callers that already have the realm, use the overload that accepts it directly.
-	 */
 	public void broadcastTextEffect(final EntityType entityType, final GameObject entity,
 			final TextEffect effect, final String text) {
 		final Realm realm = this.findPlayerRealm(entity.getId());
 		if (realm == null) {
-			// Entity might be an enemy — search all realms
 			for (final Realm r : this.realms.values()) {
 				if (r.getEnemy(entity.getId()) != null || r.getPlayer(entity.getId()) != null) {
 					broadcastTextEffect(r, entityType, entity, effect, text);
@@ -3659,13 +3162,7 @@ public class RealmManagerServer implements Runnable {
 		broadcastTextEffect(realm, entityType, entity, effect, text, 0f, 0f);
 	}
 
-	/**
-	 * Same as the four-arg overload but carries an explicit world-space impact
-	 * point. Use this for bullet-vs-enemy damage text so the client renders the
-	 * number where the projectile actually struck rather than wherever the
-	 * target has moved to by the time the packet is processed. Pass 0,0 to fall
-	 * back to the target's current position.
-	 */
+	// posX/posY pin damage text to the impact point so it doesn't follow the moving target.
 	public void broadcastTextEffect(final Realm realm, final EntityType entityType, final GameObject entity,
 			final TextEffect effect, final String text, final float posX, final float posY) {
 		try {
@@ -3685,10 +3182,6 @@ public class RealmManagerServer implements Runnable {
 		}
 	}
 
-	/**
-	 * Register a poison damage-over-time effect on an enemy.
-	 * Delegates to the target realm's poison DoT system.
-	 */
 	public void registerPoisonDot(long realmId, long enemyId, int totalDamage, long duration, long sourcePlayerId) {
 		final Realm realm = this.realms.get(realmId);
 		if (realm != null) {
@@ -3704,26 +3197,12 @@ public class RealmManagerServer implements Runnable {
 		this.realmLock.unlock();
 	}
 
-	/**
-	 * Drops loot for a specific player (soulbound) or for everyone (public).
-	 * 
-	 * @param targetRealm The realm where loot will be dropped
-	 * @param enemy The enemy that died
-	 * @param lootTable The loot table to roll from
-	 * @param soulboundPlayerId The player ID this loot is bound to, or -1 for public loot
-	 * @param diff Enemy difficulty for tier upgrade chances
-	 * @param upgradeEligible Whether tier upgrades are possible
-	 * @param upgradeChance The chance for each item to be upgraded
-	 */
-	private void dropLootForPlayer(final Realm targetRealm, final Enemy enemy, 
+	// soulboundPlayerId == -1 means public loot.
+	private void dropLootForPlayer(final Realm targetRealm, final Enemy enemy,
 			final LootTableModel lootTable, final long soulboundPlayerId,
 			final float diff, final boolean upgradeEligible, final float upgradeChance) {
-		
-		// Roll loot drops from the loot table
 		final List<GameItem> lootToDrop = lootTable.getLootDrop();
-		
-		// Guaranteed stat potion drops for dungeon bosses
-		// Each qualifying player gets their own potion drops
+
 		if (targetRealm.getDungeonBossEnemyId() > 0
 				&& enemy.getEnemyId() == targetRealm.getDungeonBossEnemyId()) {
 			final LootGroupModel statPotionGroup = GameDataManager.LOOT_GROUPS.get(0);
@@ -3732,76 +3211,49 @@ public class RealmManagerServer implements Runnable {
 					final int potionItemId = statPotionGroup.getPotentialDrops()
 							.get(Realm.RANDOM.nextInt(statPotionGroup.getPotentialDrops().size()));
 					final GameItem potion = GameDataManager.GAME_ITEMS.get(potionItemId);
-					if (potion != null) {
-						lootToDrop.add(potion);
-					}
+					if (potion != null) lootToDrop.add(potion);
 				}
 			}
 		}
-		
-		// Separate items into categories for bag determination
-		final List<GameItem> consumableDrops = new ArrayList<>();  // Always public (brown bag)
-		final List<GameItem> normalDrops = new ArrayList<>();      // Soulbound (various bags)
-		final List<GameItem> boostedDrops = new ArrayList<>();     // Soulbound (boosted bag)
-		
+
+		final List<GameItem> consumableDrops = new ArrayList<>();
+		final List<GameItem> normalDrops = new ArrayList<>();
+		final List<GameItem> boostedDrops = new ArrayList<>();
 		for (final GameItem original : lootToDrop) {
-			// Consumables go in public brown bags
-			if (original.isConsumable()) {
-				consumableDrops.add(original);
-				continue;
-			}
-			
+			if (original.isConsumable()) { consumableDrops.add(original); continue; }
 			GameItem toDrop = original;
 			boolean wasUpgraded = false;
 			if (upgradeEligible && Realm.RANDOM.nextFloat() < upgradeChance) {
 				final GameItem upgraded = findUpgradedItem(original);
-				if (upgraded != null) {
-					toDrop = upgraded;
-					wasUpgraded = true;
-				}
+				if (upgraded != null) { toDrop = upgraded; wasUpgraded = true; }
 			}
-			if (wasUpgraded) {
-				boostedDrops.add(toDrop);
-			} else {
-				normalDrops.add(toDrop);
-			}
+			(wasUpgraded ? boostedDrops : normalDrops).add(toDrop);
 		}
-		
-		// Drop consumables in a public brown bag (visible to all)
+
 		if (!consumableDrops.isEmpty()) {
-			final LootContainer publicBag = new LootContainer(LootTier.BROWN,
+			targetRealm.addLootContainer(new LootContainer(LootTier.BROWN,
 					enemy.getPos().withNoise(64, 64),
-					consumableDrops.toArray(new GameItem[0]));
-			// Brown bags are always public - no soulbound
-			targetRealm.addLootContainer(publicBag);
+					consumableDrops.toArray(new GameItem[0])));
 		}
-		
-		// Drop normal items in a soulbound bag (determineTier chooses PURPLE/CYAN/WHITE)
 		if (!normalDrops.isEmpty()) {
-			final LootContainer soulboundBag = new LootContainer(LootTier.BLUE,
+			final LootContainer bag = new LootContainer(LootTier.BLUE,
 					enemy.getPos().withNoise(64, 64),
 					normalDrops.toArray(new GameItem[0]));
-			soulboundBag.setSoulboundPlayerId(soulboundPlayerId);
-			targetRealm.addLootContainer(soulboundBag);
+			bag.setSoulboundPlayerId(soulboundPlayerId);
+			targetRealm.addLootContainer(bag);
 		}
-		
-		// Drop boosted items in a separate soulbound boosted bag
 		if (!boostedDrops.isEmpty()) {
-			final LootContainer boostedBag = new LootContainer(LootTier.BOOSTED,
+			final LootContainer bag = new LootContainer(LootTier.BOOSTED,
 					enemy.getPos().withNoise(64, 64),
 					boostedDrops.toArray(new GameItem[0]));
-			boostedBag.setSoulboundPlayerId(soulboundPlayerId);
-			targetRealm.addLootContainer(boostedBag);
+			bag.setSoulboundPlayerId(soulboundPlayerId);
+			targetRealm.addLootContainer(bag);
 			log.info("[SERVER] BOOSTED loot drop: {} upgraded item(s) from enemy {} (difficulty={}) for player {}",
-					boostedDrops.size(), enemy.getEnemyId(), diff, 
+					boostedDrops.size(), enemy.getEnemyId(), diff,
 					soulboundPlayerId == -1 ? "PUBLIC" : soulboundPlayerId);
 		}
 	}
 
-	/**
-	 * Attempts to find the same item type (slot + class) one tier higher.
-	 * Returns null if no upgrade exists (already max tier, consumable, or untiered).
-	 */
 	private static GameItem findUpgradedItem(GameItem item) {
 		if (item == null || item.isConsumable() || item.getTier() < 0) return null;
 		final byte nextTier = (byte) (item.getTier() + 1);

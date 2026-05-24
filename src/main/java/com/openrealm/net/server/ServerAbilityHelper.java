@@ -41,16 +41,6 @@ import com.openrealm.net.realm.Realm;
 import com.openrealm.net.realm.RealmManagerServer;
 import com.openrealm.game.script.item.UseableItemScriptBase;
 
-/**
- * Ability resolution — branches across SELF buffs, AoE enemy / ally, projectile
- * spawns, legacy-item-backed abilities, and the cast-time gates. Extracted
- * from {@link RealmManagerServer} so the ~900 lines of branching logic live
- * next to the other ServerXxxHelper handlers and the realm manager stops
- * being a god class.
- *
- * Logic is byte-for-byte identical to the original; only the {@code this.X}
- * → {@code mgr.X} indirection changed.
- */
 @Slf4j
 public final class ServerAbilityHelper {
 
@@ -62,17 +52,11 @@ public final class ServerAbilityHelper {
 
 		final Player player = targetRealm.getPlayer(playerId);
 		if (player == null) return;
-		// Reject input-driven re-casts while the player is mid-cast on a
-		// previous ability. Cast-resolution calls bypass this gate.
+		// Reject re-cast while mid-cast on a previous ability; cast-resolution bypasses.
 		if (!isCastResolution && player.isCasting()) return;
 
-		// Phase 2B: read MP cost + cooldown from the new Ability data if the
-		// requested slot is bound; otherwise fall back to the legacy ability
-		// item path (slot 0 / classAbilityId) so abilities still fire for
-		// classes that haven't been ported.
 		final int slot = abilityIndex >= 0 && abilityIndex < 4 ? abilityIndex : 0;
 		final Ability ab = player.getActiveAbility(slot);
-		// [DIAG] log every cast so we can trace the slot → ability → tags path.
 		log.info("[USEABILITY] playerId={} classId={} slot={} hotbarId={} ab={} tags={}",
 				player.getId(), player.getClassId(), slot,
 				player.getHotbarId(slot),
@@ -82,24 +66,16 @@ public final class ServerAbilityHelper {
 		final long abCooldownMs;
 		if (ab != null) {
 			abMpCost = ab.getMpCost();
-			// Phase 2D — effective cooldown = baseCooldown − level × cdReduction,
-			// floored at 500ms. cdReductionPerPointMs defaults to 0 so abilities
-			// that don't declare a per-point CD lever behave unchanged.
+			// Effective CD = baseCooldown − level × cdReduction, floored at 500ms.
 			final int invested = player.getSkillLevel(ab.getId());
 			final long reduction = (long) invested * (long) ab.getCdReductionPerPointMs();
 			abCooldownMs = Math.max(500L, ab.getBaseCooldownMs() - reduction);
 		} else {
-			abMpCost     = -1;  // sentinel meaning "use legacy"
+			abMpCost     = -1;
 			abCooldownMs = -1;
 		}
 
-		// Per-slot cooldown via Player.abilityCooldowns. For the legacy path
-		// (ab == null) we still use the playerAbilityState map keyed by
-		// playerId — preserves existing behavior bit-for-bit.
-		//
-		// Cast-resolution calls skip the CD gate entirely: the cooldown was
-		// set at cast-start to (now + castMs + cooldownMs), so by the time
-		// resolution fires it's still in effect and would block us.
+		// Cast-resolution skips the CD gate — the cooldown was set at cast-start to (now + castMs + cooldownMs).
 		final long now = Instant.now().toEpochMilli();
 		if (ab != null && !isCastResolution) {
 			final long[] cds = player.getAbilityCooldowns();
@@ -112,23 +88,8 @@ public final class ServerAbilityHelper {
 			}
 		}
 
-		// Legacy GameItem still drives projectile spawn for some abilities —
-		// Phase 2B only swaps cost/CD off Ability data, Phase 2C will read
-		// projectile group + scalings from Ability.effects directly.
-		//
-		// IMPORTANT: classes that fully migrated to the new Ability pipeline
-		// (Heavy_Debuffer/Buffer/DPS/Oddball — all have classAbilityId=0 in
-		// character-classes.json) have NO legacy ability item. Previously we
-		// bailed here when getAbility() returned null, which silently killed
-		// the cast AFTER the client had already paid mana + started cooldown
-		// (those are predicted client-side). Symptoms: mana drain + cooldown
-		// spinner + zero visual effect because the AoE/effect dispatch block
-		// at line ~2935 was never reached.
-		//
-		// Fix: only bail when BOTH the new Ability data (ab) AND the legacy
-		// item are missing. When ab is non-null the new path doesn't need
-		// abilityItem to compute the visual; null-guard the few places that
-		// still touch it.
+		// Bail only when BOTH the new Ability data AND the legacy item are missing — otherwise
+		// classes with no legacy ability item would silently kill the cast after client paid mana.
 		final GameItem legacyAbility = player.getAbility();
 		final GameItem abilityItem = legacyAbility != null
 				? GameDataManager.GAME_ITEMS.get(legacyAbility.getItemId())
@@ -137,7 +98,6 @@ public final class ServerAbilityHelper {
 		final Effect effect = abilityItem != null ? abilityItem.getEffect() : null;
 
 		if (ab == null) {
-			// Legacy global-cooldown gate (unchanged from pre-Phase-2 behavior).
 			final Long lastAbilityUsage = mgr.getPlayerAbilityState().get(playerId);
 			if (lastAbilityUsage == null
 					|| (now - lastAbilityUsage >= effect.getCooldownDuration())) {
@@ -148,37 +108,17 @@ public final class ServerAbilityHelper {
 			}
 		}
 
-		// Godmode (INVINCIBLE) = infinite mana. MP is charged at cast-start
-		// (not at resolution), so cast-resolution calls skip this block —
-		// the player has already paid the cost up front.
+		// MP is charged at cast-start, not at resolution. INVINCIBLE = free casts.
 		if (!isCastResolution && !player.hasEffect(StatusEffectType.INVINCIBLE)) {
 			final int mpCost = abMpCost >= 0 ? abMpCost : effect.getMpCost();
 			if (player.getMana() < mpCost) return;
 			player.setMana(player.getMana() - mpCost);
-			// Force the next PlayerStatePacket to ship even if a healer regen
-			// happens to restore mana back to the cached value before the next
-			// 8Hz mark. Without this the client's predicted-deduction view
-			// stays low because equalsState() sees the post-regen mana ==
-			// cached mana and skips the send — and the client then gates
-			// further casts on its stale-low local value.
+			// Force PlayerStatePacket to ship — otherwise post-regen mana matching cached mana
+			// skips the send and the client gates further casts on its stale-low local view.
 			mgr.invalidatePlayerStateCache(player.getId());
 		}
 
-		// ── Cast-time gate ──────────────────────────────────────────
-		// If the ability has baseCastMs > 0 and we are NOT already in the
-		// resolution call, schedule the resolution and return early:
-		//   1. SLOW the player for the cast duration (prepares the spell)
-		//   2. Stash CastState so the per-tick loop can resolve it later
-		//   3. Set the slot cooldown to (now + castMs + cooldownMs) so the
-		//      same slot can't be re-cast during the cast and the regular
-		//      cooldown still applies after the spell fires
-		//   4. Broadcast AbilityCastStartPacket so every client in the realm
-		//      (caster + party + bystanders) can render a cast bar overlay
-		// Per-skill-point cast-speed reduction follows the same lever as
-		// per-skill-point cooldown reduction: castMs = max(150, baseCastMs −
-		// invested × cdReductionPerPointMs / 2). That keeps the formulas
-		// simple and tightly correlated — pumping points into an ability
-		// makes it both come up faster AND fire faster.
+		// Cast-time gate: schedule resolution, SLOW for cast duration, broadcast cast-start.
 		if (!isCastResolution && ab != null && ab.getBaseCastMs() > 0L) {
 			final int invested = player.getSkillLevel(ab.getId());
 			final long castReduction = (long) invested * (long) ab.getCdReductionPerPointMs() / 2L;
@@ -189,7 +129,7 @@ public final class ServerAbilityHelper {
 			player.addEffect(StatusEffectType.SLOWED, castMs);
 			player.setCurrentCast(new CastState(
 					ab.getId(), slot, now, now + castMs, pos.x, pos.y, false));
-			// Push the slot cooldown forward so the cast time is included.
+			// Push slot cooldown forward to include the cast time.
 			final long[] cds2 = player.getAbilityCooldowns();
 			if (cds2 != null && slot < cds2.length) {
 				cds2[slot] = now + castMs + abCooldownMs;
@@ -199,38 +139,20 @@ public final class ServerAbilityHelper {
 							playerId, ab.getId(), (byte) slot, (int) castMs, pos.x, pos.y));
 			return;
 		}
-		// Cast-completion metric — fires on every ability invocation that
-		// reaches the effect dispatch below. Instant casts (no cast gate)
-		// only hit this point; cast-time abilities hit it on resolution,
-		// after their cast-start record already fired in the gate above.
 		if (ab != null && player.getMetrics() != null) {
 			player.getMetrics().recordCastCompleted(ab.getId());
 		}
-		// Phase 2B refactor: when an Ability is bound, it is FULLY authoritative
-		// for projectile + self-effect. Without this rule, an Ability that
-		// only defines STATUS_APPLY SELF (e.g. Blink) would fall through to
-		// the legacy item's projectile group (Fire Spray) and the
-		// player.setPos teleport branch would never be reached because the
-		// projectile-spawn branch already consumed the cast.
+		// When an Ability is bound, it is FULLY authoritative for projectile + self-effect.
 		int effPgId;
 		StatusEffectType effSelfStatus;
 		int effSelfDurationMs;
 		boolean effHasSelfStatus;
-		// Phase 3 — abilities may apply multiple SELF statuses (e.g. Knight Brace
-		// applies BRACED + SLOWED). The primary (first) status keeps the legacy
-		// TELEPORT branch behavior; extras are appended to this list and applied
-		// alongside the primary at each apply site.
 		final List<Object[]> extraSelfStatuses = new ArrayList<>();
 		if (ab != null) {
 			effPgId           = -1;
 			effSelfStatus     = null;
 			effSelfDurationMs = 0;
 			effHasSelfStatus  = false;
-			// Resolve DURATION-target scalings once so each SELF status here
-			// (and the projectile/aoe branches farther down) extends correctly
-			// by the caster's stat. Without this Ninja Smokebomb's 13.33 DEX
-			// coeff DURATION scaling was discarded and INVISIBLE/SPEEDY stayed
-			// at their raw baseDurationMs no matter how much DEX the player had.
 			int selfDurationBonusMs = 0;
 			if (ab.getScalings() != null) {
 				for (AbilityScaling sc : ab.scalingList()) {
@@ -258,11 +180,10 @@ public final class ServerAbilityHelper {
 								extraSelfStatuses.add(new Object[] { st, dur });
 							}
 						}
-					} catch (NumberFormatException ignore) { /* non-numeric statusId — Phase 2D resolves via enum name */ }
+					} catch (NumberFormatException ignore) { }
 				}
 			}
 		} else {
-			// Legacy path: no Ability bound, fall back to the GameItem template.
 			effPgId           = (abilityItem.getDamage() != null) ? abilityItem.getDamage().getProjectileGroupId() : -1;
 			effSelfStatus     = (effect != null) ? effect.getEffectId() : null;
 			effSelfDurationMs = (effect != null) ? (int) effect.getDuration() : 0;
@@ -272,27 +193,16 @@ public final class ServerAbilityHelper {
 				? GameDataManager.PROJECTILE_GROUPS.get(effPgId)
 				: null;
 
-		// Phase 1B: ability is class-bound, not equipped. Abilities have no
-		// gemstone socket today, so the ShotContext is created empty — if a
-		// future kit lets a Gemstone modify ability projectiles, populate
-		// here. Null-guard for classes with no legacy ability item (Heavy_*).
 		final ShotContext abilityCtx = new ShotContext();
 		if (abilityItem != null) {
 			final Gemstone g = GemstoneRegistry.forItem(abilityItem);
 			if (g != null) g.modifyShot(abilityCtx, player, abilityItem);
 		}
 
-		// Phase 2B: ability tag "from_sky" emits a two-part visual at the
-		// cursor — a vertical chain-lightning streak descending from 320 px
-		// above the target, plus a wizard-burst flare at impact. The
-		// projectile itself still spawns at the cursor (via the normal
-		// positionMode-2 ABSOLUTE path) so the bullet dies on contact and
-		// the visuals tell the player "this came from the sky".
 		final boolean fromSky = ab != null && ab.getTags() != null && ab.getTags().contains("from_sky");
 		final boolean holyVisual = ab != null && ab.getTags() != null && ab.getTags().contains("holy");
 		final float SKY_FALL_HEIGHT = 320f;
 		if (fromSky && !holyVisual) {
-			// Meteor — thicker fiery bolt, smoke-poof + double wizard-burst.
 			for (int offX = -6; offX <= 6; offX += 3) {
 				mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.lineEffect(
 						CreateEffectPacket.EFFECT_CHAIN_LIGHTNING,
@@ -306,11 +216,7 @@ public final class ServerAbilityHelper {
 			mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.aoeEffect(
 					CreateEffectPacket.EFFECT_WIZARD_BURST, pos.x, pos.y, 48f, (short) 500, (byte) 6));
 		} else if (fromSky && holyVisual) {
-			// Holy Beam / Divine Verdict — single big paladin-seal beam
-			// descending at the cursor. Avoid KNIGHT_SHOCKWAVE as the impact
-			// (case 11 is directional and renders as a forward thrust arrow
-			// even when emitted via aoeEffect, producing a stray gold arrow).
-			// WIZARD_BURST is radial so it reads as a ground-impact flash.
+			// WIZARD_BURST (radial) not KNIGHT_SHOCKWAVE (directional) so it reads as ground impact.
 			mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.aoeEffect(
 					CreateEffectPacket.EFFECT_PALADIN_SEAL,
 					pos.x, pos.y, 130f, (short) 1400, (byte) 3));
@@ -319,9 +225,6 @@ public final class ServerAbilityHelper {
 					pos.x, pos.y, 90f, (short) 700, (byte) 3));
 		}
 
-		// Phase 3: "visual_at_self:N" tag emits a CreateEffectPacket of type N
-		// at the caster's position. Lets self-buff abilities (Knight Taunt,
-		// Phalanx, Last Stand) supply a distinct visual without bespoke code.
 		if (ab != null && ab.getTags() != null) {
 			for (String tag : ab.getTags()) {
 				if (tag == null || !tag.toLowerCase().startsWith("visual_at_self:")) continue;
@@ -330,23 +233,15 @@ public final class ServerAbilityHelper {
 					final Vector2f pcenter = player.getPos().clone(player.getSize() / 2, player.getSize() / 2);
 					mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.aoeEffect(
 							eff, pcenter.x, pcenter.y, 48f, (short) 600));
-				} catch (NumberFormatException ignore) { /* skip malformed */ }
+				} catch (NumberFormatException ignore) { }
 				break;
 			}
 
-			// "knight_slam" — short forward streak originating IN FRONT of the
-			// player, so the projectiles and the visual both read as
-			// "pushed forward from the front of the caster" (NOT from behind).
 			if (ab.getTags().contains("knight_slam")) {
 				final Vector2f from = player.getPos().clone(player.getSize() / 2, player.getSize() / 2);
 				float dxK = pos.x - from.x, dyK = pos.y - from.y;
 				final float lenK = (float) Math.sqrt(dxK * dxK + dyK * dyK);
 				if (lenK > 0.001f) {
-					// Streak hugs the shield-projectile travel — spawns just in
-					// front of the caster, total reach capped to ~110px (the
-					// shield projectile range is 70px + 30px spawn-forward; a
-					// touch more so the streak visually escorts the projectiles
-					// to their stun point, not far past it).
 					final float FRONT_OFFSET = 30f;
 					final float MAX_REACH    = 110f;
 					final float endDist      = Math.min(lenK, MAX_REACH);
@@ -360,9 +255,6 @@ public final class ServerAbilityHelper {
 				}
 			}
 
-			// soul_harvest spawn removed 2026-05-19 — see TODO at top of file.
-
-			// "taunt_visual" — small red circle blink at player + "TAUNTING" text.
 			if (ab.getTags().contains("taunt_visual")) {
 				final Vector2f pc = player.getPos().clone(player.getSize() / 2, player.getSize() / 2);
 				mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.aoeEffect(
@@ -370,9 +262,6 @@ public final class ServerAbilityHelper {
 				mgr.sendTextEffectToPlayer(player, TextEffect.PLAYER_INFO, "TAUNTING");
 			}
 
-			// "brace_visual" — dedicated renderer case (BRACE_STANCE): a small
-			// translucent shield-arc in front of the player + 4 ground tick marks.
-			// Reads as "raise shield / brace for impact", not a circle.
 			if (ab.getTags().contains("brace_visual")) {
 				final Vector2f pc = player.getPos().clone(player.getSize() / 2, player.getSize() / 2);
 				mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.aoeEffect(
@@ -380,9 +269,6 @@ public final class ServerAbilityHelper {
 				mgr.sendTextEffectToPlayer(player, TextEffect.PLAYER_INFO, "BRACED");
 			}
 
-			// "dash_trail" tag — chain-lightning streak from the caster toward
-			// the cursor, ~5 tiles long. Pure visual; the SPEEDY status (applied
-			// elsewhere) does the actual mobility.
 			if (ab.getTags().contains("dash_trail")) {
 				final Vector2f from = player.getPos().clone(player.getSize() / 2, player.getSize() / 2);
 				float dx = pos.x - from.x, dy = pos.y - from.y;
@@ -394,14 +280,8 @@ public final class ServerAbilityHelper {
 						from.x, from.y, from.x + dx, from.y + dy, (short) 500));
 			}
 
-			// "shadow_dash" tag — actually teleport the player along a chain
-			// lightning streak toward the cursor. The streak draws from the
-			// pre-dash origin to wherever they end up; if a tile blocks the
-			// path partway, the dash stops at the last clear position. The
-			// SPEEDY status applied via STATUS_APPLY SELF gives the follow-up
-			// burst once they land.
 			if (ab.getTags().contains("shadow_dash")) {
-				// GROUNDED vetoes movement abilities (dashes, blinks, teleports).
+				// GROUNDED vetoes movement abilities.
 				if (player.hasEffect(StatusEffectType.GROUNDED)) {
 					mgr.sendTextEffectToPlayer(player, TextEffect.PLAYER_INFO, "GROUNDED");
 					return;
@@ -409,13 +289,11 @@ public final class ServerAbilityHelper {
 				final Vector2f origin = player.getPos().clone(player.getSize() / 2, player.getSize() / 2);
 				float dx = pos.x - origin.x, dy = pos.y - origin.y;
 				final float len = (float) Math.sqrt(dx * dx + dy * dy);
-				final float MAX_DASH = 192f; // ~6 tiles
+				final float MAX_DASH = 192f;
 				if (len > 0.001f) { dx = dx / len; dy = dy / len; }
 				else              { dx = 1f; dy = 0f; }
 				final float dashDist = Math.min(MAX_DASH, len < 0.001f ? MAX_DASH : len);
-				// Walk in 16px increments until we hit a wall — last clear
-				// step is where the ninja lands. Uses the existing tile
-				// collider so cliffs / walls block correctly.
+				// Walk in 16px increments until hitting a wall — last clear step is landing.
 				float walked = 0f;
 				Vector2f landing = player.getPos().clone();
 				final float STEP = 16f;
@@ -435,33 +313,22 @@ public final class ServerAbilityHelper {
 				mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.lineEffect(
 						CreateEffectPacket.EFFECT_CHAIN_LIGHTNING,
 						origin.x, origin.y, endCenter.x, endCenter.y, (short) 500));
-				// Faint smoke at the origin so the "vanish here / appear there"
-				// read is sharper than just the streak.
 				mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.aoeEffect(
 						CreateEffectPacket.EFFECT_SMOKE_POOF, origin.x, origin.y, 40f, (short) 400, (byte) 0));
 			}
 
-			// "shuriken_volley" tag — Ninja #1 Star Throw. Fires 3 shurikens
-			// in a STRAIGHT LINE one behind the other, all heading at the
-			// same angle toward the cursor. Sprite tier maps directly off
-			// skill points (SP 0 = Iron 1000 / col 10, SP 5 = Demonbane
-			// 1005 / col 15). Slow magnitude (6) so the "trio in line"
-			// stays readable as it crosses the screen.
 			if (ab.getTags().contains("shuriken_volley")) {
 				final int sp = player.getSkillLevel(ab.getId());
 				final int tier = Math.min(5, Math.max(0, sp));
 				final int groupId = 1000 + tier;
 				final Vector2f origin = player.getPos().clone(player.getSize() / 2, player.getSize() / 2);
 				final float baseA = Bullet.getAngle(origin, pos);
-				// Bullet.update() moves the projectile by (sin(stored), cos(stored)).
-				// The Bullet ctor stores `-angle`, so the actual flight unit
-				// vector is (-sin(baseA), cos(baseA)). To stagger spawns BEHIND
-				// the player along that flight line, the backward unit vector
-				// is (sin(baseA), -cos(baseA)).
+				// Bullet ctor stores -angle so flight unit = (-sin(baseA), cos(baseA));
+				// backward unit for stagger = (sin(baseA), -cos(baseA)).
 				final float bx = (float) Math.sin(baseA);
 				final float by = (float) -Math.cos(baseA);
 				final int   STARS = 3;
-				final float STEP = 36f; // pixels between adjacent shurikens
+				final float STEP = 36f;
 				int dmg = ab.getBaseDamage();
 				for (AbilityScaling sc : ab.scalingList()) {
 					if (!"DAMAGE".equalsIgnoreCase(sc.getTarget())) continue;
@@ -471,9 +338,6 @@ public final class ServerAbilityHelper {
 				final short damage = (short) Math.min(Short.MAX_VALUE, Math.max(0, dmg));
 				final List<Short> flags = new ArrayList<>();
 				for (int i = 0; i < STARS; i++) {
-					// Offset each shuriken backwards along the true flight
-					// direction so they spawn nose-to-tail in a single file
-					// regardless of cursor direction (diagonals included).
 					final Vector2f src = new Vector2f(
 							origin.x + bx * STEP * i,
 							origin.y + by * STEP * i);
@@ -482,21 +346,11 @@ public final class ServerAbilityHelper {
 							damage, false, flags, (short) 0, (short) 0, player.getId());
 				}
 			}
-
-			// blade_orbit + blade_blender spawns removed 2026-05-19 — see TODO at top of file.
 		}
 
-		// Phase 2B: ability tag "aoe_targeted" handles ground-targeted AoE
-		// abilities (Frost Nova et al) — no projectile, just an AoE effect
-		// at the cursor that applies STATUS_APPLY ENEMIES_HIT to anything
-		// in radius and broadcasts a visual via CreateEffectPacket.
 		final boolean aoeTargeted = ab != null && ab.getTags() != null && ab.getTags().contains("aoe_targeted");
 		final boolean aoeAlly    = ab != null && ab.getTags() != null && ab.getTags().contains("aoe_ally");
 		if (aoeTargeted || aoeAlly) {
-			// Radius: ability.baseRadius if set (lets short-range melee
-			// AoEs like Ground Pound be tighter than the 96px floor),
-			// otherwise the 96px default, plus the sum of RADIUS scaling
-			// contributions (curve-aware).
 			float aoeRadius = (ab.getBaseRadius() > 0) ? ab.getBaseRadius() : 96f;
 			if (ab != null) {
 				for (AbilityScaling sc : ab.scalingList()) {
@@ -505,72 +359,56 @@ public final class ServerAbilityHelper {
 					aoeRadius += sc.curveEnum().apply(statVal, sc.getCoeff(), sc.getCap());
 				}
 			}
-			// Ally-targeted AoEs (priest heal/cleanse/sanctuary). Center on caster
-			// for self-heal pulses; allies are detected in radius around 'pos'
-			// which for ally abilities we anchor at the caster.
 			final Vector2f effCenter;
 			if (aoeAlly) {
 				effCenter = player.getPos().clone(player.getSize() / 2, player.getSize() / 2);
 			} else {
 				effCenter = pos;
 			}
-			// Visual effect type — derived from tags so designers can pick.
-			// from_sky owns its own staged visual chain above; skip the generic
-			// AoE ring there so we don't double-stack a stasis field on top of
-			// the meteor explosion.
+			// from_sky owns its own visual chain above — skip generic AoE ring.
 			if (!fromSky) {
 				short visualEffect = CreateEffectPacket.EFFECT_STASIS_FIELD;
-				byte  vTier        = 1; // T1 light-blue default for stasis
-				if (ab.getTags().contains("fire"))     { visualEffect = CreateEffectPacket.EFFECT_WIZARD_BURST;   vTier = 4; } // orange
-				if (ab.getTags().contains("curse"))    { visualEffect = CreateEffectPacket.EFFECT_CURSE_RADIUS;   vTier = 6; } // purple
-				if (ab.getTags().contains("heal"))     { visualEffect = CreateEffectPacket.EFFECT_HEAL_RADIUS;    vTier = 2; } // green
-				if (ab.getTags().contains("cleanse"))  { visualEffect = CreateEffectPacket.EFFECT_WATER_FOUNTAIN; vTier = 1; } // sapphire
-				if (ab.getTags().contains("bless"))    { visualEffect = CreateEffectPacket.EFFECT_PALADIN_SEAL;   vTier = 3; } // gold
-				if (ab.getTags().contains("holy"))     { visualEffect = CreateEffectPacket.EFFECT_PALADIN_SEAL;   vTier = 3; } // gold
-				if (ab.getTags().contains("frost"))    { visualEffect = CreateEffectPacket.EFFECT_FROST_NOVA;     vTier = 1; } // ice
-				if (ab.getTags().contains("poison"))   { visualEffect = CreateEffectPacket.EFFECT_POISON_CLOUD;   vTier = 2; } // toxic green
-				if (ab.getTags().contains("drain"))    { visualEffect = CreateEffectPacket.EFFECT_LIFE_DRAIN;     vTier = 5; } // blood red
-				if (ab.getTags().contains("bone"))     { visualEffect = CreateEffectPacket.EFFECT_BONE_SPIKES;    vTier = 0; } // bone white
-				if (ab.getTags().contains("lightning")){ visualEffect = CreateEffectPacket.EFFECT_LIGHTNING_STRIKE;vTier = 3; } // electric yellow
-				if (ab.getTags().contains("arcane"))   { visualEffect = CreateEffectPacket.EFFECT_MANA_BOLT;      vTier = 6; } // arcane purple
-				if (ab.getTags().contains("time"))     { visualEffect = CreateEffectPacket.EFFECT_TIME_STOP;      vTier = 1; } // silver-blue
-				if (ab.getTags().contains("smite"))    { visualEffect = CreateEffectPacket.EFFECT_SMITE_FLASH;    vTier = 3; } // gold flash
-				if (ab.getTags().contains("death_bloom")){visualEffect = CreateEffectPacket.EFFECT_DEATH_BLOSSOM; vTier = 6; } // dark blade
-				if (ab.getTags().contains("bloom"))    { visualEffect = CreateEffectPacket.EFFECT_INSPIRE_BLOOM;  vTier = 3; } // gold petals
-				if (ab.getTags().contains("slash"))    { visualEffect = CreateEffectPacket.EFFECT_RECKLESS_SLASH; vTier = 5; } // red arc
-				if (ab.getTags().contains("shuriken")) { visualEffect = CreateEffectPacket.EFFECT_STAR_SHURIKEN;  vTier = 0; } // steel
-				if (ab.getTags().contains("snare_trap")){visualEffect = CreateEffectPacket.EFFECT_SNARE_GEAR;     vTier = 4; } // iron
-				if (ab.getTags().contains("explosion")){ visualEffect = CreateEffectPacket.EFFECT_COMBUSTION_TRAP;vTier = 4; } // orange blast
-				if (ab.getTags().contains("warcry"))   { visualEffect = CreateEffectPacket.EFFECT_WAR_CRY_WAVE;   vTier = 5; } // red roar
-				if (ab.getTags().contains("caltrops")) { visualEffect = CreateEffectPacket.EFFECT_CALTROPS;       vTier = 0; } // steel spikes
-				if (ab.getTags().contains("smoke"))    { visualEffect = CreateEffectPacket.EFFECT_SMOKE_POOF;     vTier = 0; } // grey smoke
-				// Bespoke phase-3 visuals — hand-tuned procedural effects in
-				// renderer.js + PlayState.java. Tier byte is mostly cosmetic.
-				if (ab.getTags().contains("sanctuary"))      { visualEffect = CreateEffectPacket.EFFECT_SANCTUARY_DOME;  vTier = 3; } // golden dome
-				if (ab.getTags().contains("vampiric"))       { visualEffect = CreateEffectPacket.EFFECT_VAMPIRIC_LATCH;  vTier = 5; } // red drain
-				// Heavy class visuals (2026-05-14)
-				if (ab.getTags().contains("rapier_stab"))    { visualEffect = CreateEffectPacket.EFFECT_RAPIER_STAB;     vTier = 0; } // silver
-				if (ab.getTags().contains("low_swing"))      { visualEffect = CreateEffectPacket.EFFECT_LOW_SWING;       vTier = 5; } // red steel
-				if (ab.getTags().contains("disarm_flourish")){ visualEffect = CreateEffectPacket.EFFECT_DISARM_FLOURISH; vTier = 3; } // gold + white
-				if (ab.getTags().contains("divine_beam"))    { visualEffect = CreateEffectPacket.EFFECT_DIVINE_BEAM;     vTier = 3; } // gold pillar
-				if (ab.getTags().contains("fortify_aura"))   { visualEffect = CreateEffectPacket.EFFECT_FORTIFY_AURA;    vTier = 2; } // green regen
-				if (ab.getTags().contains("ground_pound"))   { visualEffect = CreateEffectPacket.EFFECT_GROUND_POUND;    vTier = 4; } // brown dust
-				// 2026-05-19 — extra tag mappings so each of the 12 new classes can
-				// pick a within-class unique cast visual without sharing icons.
-				if (ab.getTags().contains("beast"))          { visualEffect = CreateEffectPacket.EFFECT_BEAST_CLAWS;     vTier = 5; } // primal claws
-				if (ab.getTags().contains("arcane_aura"))    { visualEffect = CreateEffectPacket.EFFECT_ARCANE_AURA;     vTier = 6; } // purple arcane
-				if (ab.getTags().contains("haste"))          { visualEffect = CreateEffectPacket.EFFECT_HASTE_WIND;      vTier = 1; } // wind streak
-				if (ab.getTags().contains("rampage"))        { visualEffect = CreateEffectPacket.EFFECT_RAMPAGE_AURA;    vTier = 5; } // berserker red
-				if (ab.getTags().contains("storm"))          { visualEffect = CreateEffectPacket.EFFECT_STORM_AURA;      vTier = 3; } // storm clouds
-				if (ab.getTags().contains("death_pact"))     { visualEffect = CreateEffectPacket.EFFECT_DEATH_PACT_AURA; vTier = 6; } // dark crimson
-				// A few effects benefit from a longer-than-default on-screen
-				// life (Sanctuary's INVINCIBLE buff lasts 5s). Bumping the
-				// per-packet duration keeps the visual matched to the gameplay
-				// window.
+				byte  vTier        = 1;
+				if (ab.getTags().contains("fire"))     { visualEffect = CreateEffectPacket.EFFECT_WIZARD_BURST;   vTier = 4; }
+				if (ab.getTags().contains("curse"))    { visualEffect = CreateEffectPacket.EFFECT_CURSE_RADIUS;   vTier = 6; }
+				if (ab.getTags().contains("heal"))     { visualEffect = CreateEffectPacket.EFFECT_HEAL_RADIUS;    vTier = 2; }
+				if (ab.getTags().contains("cleanse"))  { visualEffect = CreateEffectPacket.EFFECT_WATER_FOUNTAIN; vTier = 1; }
+				if (ab.getTags().contains("bless"))    { visualEffect = CreateEffectPacket.EFFECT_PALADIN_SEAL;   vTier = 3; }
+				if (ab.getTags().contains("holy"))     { visualEffect = CreateEffectPacket.EFFECT_PALADIN_SEAL;   vTier = 3; }
+				if (ab.getTags().contains("frost"))    { visualEffect = CreateEffectPacket.EFFECT_FROST_NOVA;     vTier = 1; }
+				if (ab.getTags().contains("poison"))   { visualEffect = CreateEffectPacket.EFFECT_POISON_CLOUD;   vTier = 2; }
+				if (ab.getTags().contains("drain"))    { visualEffect = CreateEffectPacket.EFFECT_LIFE_DRAIN;     vTier = 5; }
+				if (ab.getTags().contains("bone"))     { visualEffect = CreateEffectPacket.EFFECT_BONE_SPIKES;    vTier = 0; }
+				if (ab.getTags().contains("lightning")){ visualEffect = CreateEffectPacket.EFFECT_LIGHTNING_STRIKE;vTier = 3; }
+				if (ab.getTags().contains("arcane"))   { visualEffect = CreateEffectPacket.EFFECT_MANA_BOLT;      vTier = 6; }
+				if (ab.getTags().contains("time"))     { visualEffect = CreateEffectPacket.EFFECT_TIME_STOP;      vTier = 1; }
+				if (ab.getTags().contains("smite"))    { visualEffect = CreateEffectPacket.EFFECT_SMITE_FLASH;    vTier = 3; }
+				if (ab.getTags().contains("death_bloom")){visualEffect = CreateEffectPacket.EFFECT_DEATH_BLOSSOM; vTier = 6; }
+				if (ab.getTags().contains("bloom"))    { visualEffect = CreateEffectPacket.EFFECT_INSPIRE_BLOOM;  vTier = 3; }
+				if (ab.getTags().contains("slash"))    { visualEffect = CreateEffectPacket.EFFECT_RECKLESS_SLASH; vTier = 5; }
+				if (ab.getTags().contains("shuriken")) { visualEffect = CreateEffectPacket.EFFECT_STAR_SHURIKEN;  vTier = 0; }
+				if (ab.getTags().contains("snare_trap")){visualEffect = CreateEffectPacket.EFFECT_SNARE_GEAR;     vTier = 4; }
+				if (ab.getTags().contains("explosion")){ visualEffect = CreateEffectPacket.EFFECT_COMBUSTION_TRAP;vTier = 4; }
+				if (ab.getTags().contains("warcry"))   { visualEffect = CreateEffectPacket.EFFECT_WAR_CRY_WAVE;   vTier = 5; }
+				if (ab.getTags().contains("caltrops")) { visualEffect = CreateEffectPacket.EFFECT_CALTROPS;       vTier = 0; }
+				if (ab.getTags().contains("smoke"))    { visualEffect = CreateEffectPacket.EFFECT_SMOKE_POOF;     vTier = 0; }
+				if (ab.getTags().contains("sanctuary"))      { visualEffect = CreateEffectPacket.EFFECT_SANCTUARY_DOME;  vTier = 3; }
+				if (ab.getTags().contains("vampiric"))       { visualEffect = CreateEffectPacket.EFFECT_VAMPIRIC_LATCH;  vTier = 5; }
+				if (ab.getTags().contains("rapier_stab"))    { visualEffect = CreateEffectPacket.EFFECT_RAPIER_STAB;     vTier = 0; }
+				if (ab.getTags().contains("low_swing"))      { visualEffect = CreateEffectPacket.EFFECT_LOW_SWING;       vTier = 5; }
+				if (ab.getTags().contains("disarm_flourish")){ visualEffect = CreateEffectPacket.EFFECT_DISARM_FLOURISH; vTier = 3; }
+				if (ab.getTags().contains("divine_beam"))    { visualEffect = CreateEffectPacket.EFFECT_DIVINE_BEAM;     vTier = 3; }
+				if (ab.getTags().contains("fortify_aura"))   { visualEffect = CreateEffectPacket.EFFECT_FORTIFY_AURA;    vTier = 2; }
+				if (ab.getTags().contains("ground_pound"))   { visualEffect = CreateEffectPacket.EFFECT_GROUND_POUND;    vTier = 4; }
+				if (ab.getTags().contains("beast"))          { visualEffect = CreateEffectPacket.EFFECT_BEAST_CLAWS;     vTier = 5; }
+				if (ab.getTags().contains("arcane_aura"))    { visualEffect = CreateEffectPacket.EFFECT_ARCANE_AURA;     vTier = 6; }
+				if (ab.getTags().contains("haste"))          { visualEffect = CreateEffectPacket.EFFECT_HASTE_WIND;      vTier = 1; }
+				if (ab.getTags().contains("rampage"))        { visualEffect = CreateEffectPacket.EFFECT_RAMPAGE_AURA;    vTier = 5; }
+				if (ab.getTags().contains("storm"))          { visualEffect = CreateEffectPacket.EFFECT_STORM_AURA;      vTier = 3; }
+				if (ab.getTags().contains("death_pact"))     { visualEffect = CreateEffectPacket.EFFECT_DEATH_PACT_AURA; vTier = 6; }
 				short visualDurationMs = 1500;
 				if (visualEffect == CreateEffectPacket.EFFECT_SANCTUARY_DOME) visualDurationMs = 5000;
 				else if (visualEffect == CreateEffectPacket.EFFECT_VAMPIRIC_LATCH) visualDurationMs = 2000;
-				// Heavy class visuals — match life to the gameplay flavor
 				else if (visualEffect == CreateEffectPacket.EFFECT_RAPIER_STAB) visualDurationMs = 350;
 				else if (visualEffect == CreateEffectPacket.EFFECT_LOW_SWING)   visualDurationMs = 500;
 				else if (visualEffect == CreateEffectPacket.EFFECT_DISARM_FLOURISH) visualDurationMs = 900;
@@ -579,19 +417,13 @@ public final class ServerAbilityHelper {
 				else if (visualEffect == CreateEffectPacket.EFFECT_GROUND_POUND) visualDurationMs = 700;
 				mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.aoeEffect(
 						visualEffect, effCenter.x, effCenter.y, aoeRadius, visualDurationMs, vTier));
-				// "outline_ring" tag — extra outline at radius. For Hunter's Mark
-				// the reticle IS the outline so skip the redundant stasis ring.
+				// Hunter's Mark reticle IS the outline — skip redundant stasis ring.
 				if (ab.getTags().contains("outline_ring") && !ab.getTags().contains("mark")) {
 					mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.aoeEffect(
 							CreateEffectPacket.EFFECT_STASIS_FIELD,
 							effCenter.x, effCenter.y, aoeRadius, (short) 1500, (byte) 6));
 				}
 			}
-			// "rain_arrows" tag — spawn visual-only arrow projectiles that fall
-			// from above the AoE into the circle. Damage=0 so they don't double-
-			// dip on the AoE's own damage, but they render as the archer arrow
-			// sprite (projectileId 88, the tier 8-10 bow round) for that cool
-			// "barrage from the sky" feel.
 			if (ab.getTags().contains("rain_arrows")) {
 				final int ARROW_COUNT = 14;
 				final int ARROW_PID = 88;
@@ -601,9 +433,7 @@ public final class ServerAbilityHelper {
 					final double th = rng.nextDouble() * 2.0 * Math.PI;
 					final float offX = (float)(r * Math.cos(th));
 					final float offY = (float)(r * Math.sin(th));
-					// Spawn 280px above the landing point; fall straight down.
-					// addProjectile passes angle to Bullet ctor which stores
-					// -angle, so passing 0 yields (sin,cos)=(0,1) → +Y motion.
+					// Bullet ctor stores -angle; angle=0 → (sin,cos)=(0,1) → +Y motion (falling).
 					final Vector2f src = new Vector2f(
 							effCenter.x + offX, effCenter.y + offY - 280f);
 					mgr.addProjectile(targetRealm.getRealmId(), 0L, player.getId(),
@@ -612,8 +442,6 @@ public final class ServerAbilityHelper {
 							(short) 0, (short) 0, player.getId());
 				}
 			}
-			// Optional direct damage (no projectile). Used by Meteor / Rain of
-			// Arrows / etc. Reads baseDamage + DAMAGE scalings from Ability.
 			int abDamage = 0;
 			if (ab.getBaseDamage() > 0) {
 				abDamage = ab.getBaseDamage();
@@ -625,24 +453,9 @@ public final class ServerAbilityHelper {
 			}
 			final short finalDmg = (short) Math.min(Short.MAX_VALUE, Math.max(0, abDamage));
 			final boolean armorPierce = ab.getTags().contains("armor_pierce");
-			// Per-enemy ARMOR_BROKEN is resolved inside the loop below — this
-			// only covers the ability-side "armor_pierce" tag (applies to all
-			// targets uniformly).
 			final TextEffect dmgTextEffectBase = armorPierce ? TextEffect.ARMOR_BREAK : TextEffect.DAMAGE;
-			// Enemy branch — runs whenever the ability is aoe_targeted. Used to
-			// be gated by `!aoeAlly` (mutually exclusive enemy/ally branches),
-			// which broke abilities that legitimately do BOTH — e.g. Necro Soul
-			// Drain debuffs nearby enemies AND grants MANA_FOUNT to nearby
-			// allies in one cast. The effect/scaling lists already filter by
-			// target (ENEMIES_HIT vs ALLIES_HIT), so running both branches is
-			// safe and matches the data.
+			// Both branches can run for one cast (e.g. Necro Soul Drain debuffs enemies + buffs allies).
 			if (aoeTargeted) {
-				// Compute the debuff-duration bonus ONCE per cast: ability's
-				// DURATION-target scalings (e.g. Wither's WIS*20) + the
-				// Necromancer "Cost of Living" passive's WIS/50s extension to
-				// any party debuff the player applies. Without this, Wither's
-				// status durations stayed at their raw baseDurationMs and the
-				// passive was a silent no-op (passives.json had no triggers).
 				int debuffBonusMs = 0;
 				if (ab.getScalings() != null) {
 					for (AbilityScaling sc : ab.scalingList()) {
@@ -685,7 +498,6 @@ public final class ServerAbilityHelper {
 					mgr.enemyDeath(targetRealm, e);
 				}
 			}
-			// Ally branch — HEAL / CLEANSE / STATUS_APPLY ALLIES_HIT for priest kit.
 			if (aoeAlly) {
 				int healAmount = 0;
 				boolean hasCleanse = false;
@@ -705,9 +517,7 @@ public final class ServerAbilityHelper {
 					final int statVal = resolveScalingInput(player, ab, sc);
 					healAmount += (int) sc.curveEnum().apply(statVal, sc.getCoeff(), sc.getCap());
 				}
-				// Priest "Blessed One" (12008) — healing this player applies is
-				// amplified by (WIS)%. Applied AFTER scalings so it acts as a
-				// final multiplier on the total heal, not just the flat base.
+				// Priest "Blessed One" (12008) — +WIS% as a final multiplier on total heal.
 				final PassiveAbility _bocp = player.getClassPassive();
 				if (_bocp != null && _bocp.getId() == 12008 && healAmount > 0) {
 					final int wis = player.getComputedStats().getWis();
@@ -747,7 +557,6 @@ public final class ServerAbilityHelper {
 					}
 				}
 			}
-			// Self-effect from STATUS_APPLY SELF (already derived above).
 			if (effHasSelfStatus && effSelfStatus != null) {
 				mgr.applyStatusWithFeedback(targetRealm, player, EntityType.PLAYER, effSelfStatus, effSelfDurationMs);
 				for (Object[] xs : extraSelfStatuses) {
@@ -755,12 +564,6 @@ public final class ServerAbilityHelper {
 							(StatusEffectType) xs[0], (Integer) xs[1]);
 				}
 			}
-			// SPAWN_POTIONS — priest "Holy Bounty" pattern: drop N HP + N MP
-			// potions on the ground around the cast point as separate loot
-			// bags so the whole party can pick them up. baseMagnitude is the
-			// count of EACH potion type; SKILL_POINTS scaling on COUNT adds
-			// to that flat. Cap at 6 of each to prevent flooding the realm
-			// with loot bags at max investment.
 			if (ab != null) {
 				for (AbilityEffect aoeEff : ab.effectList()) {
 					if (!"SPAWN_POTIONS".equalsIgnoreCase(aoeEff.getType())) continue;
@@ -781,7 +584,6 @@ public final class ServerAbilityHelper {
 					for (int i = 0; i < total; i++) {
 						final boolean isHp = i < hpCount;
 						final GameItem potion = isHp ? hp.clone() : mp.clone();
-						// Spread potions in a tight ring around the cast pos.
 						final double a = (2 * Math.PI) * i / Math.max(1, total);
 						final float r = 28f;
 						final Vector2f drop = new Vector2f(
@@ -791,18 +593,9 @@ public final class ServerAbilityHelper {
 					}
 				}
 			}
-			return; // Skip the projectile spawn paths — this was a pure AoE.
+			return;
 		}
-		// New-system pure-Ability projectile branch (2026-05-18) — no legacy
-		// GameItem backing. Fires when the ability has a PROJECTILE_GROUP
-		// effect and ab.getBaseDamage() > 0 (damage comes from Ability data).
-		// Spawns at the player's center, oriented toward cursor.
-		// Pure-Ability projectile branch — fires whenever an Ability declares a
-		// PROJECTILE_GROUP and no legacy item backs it. Damage comes from
-		// baseDamage + DAMAGE scalings (an ability with scalings only — e.g.
-		// Fire Breath at "scalings: [WIS coeff 1.2 -> DAMAGE]" and no flat
-		// baseDamage — was previously skipped because we gated on baseDamage>0,
-		// so the cast resolved as a no-op despite obviously firing).
+		// Pure-Ability projectile branch — no legacy item backing.
 		if (abilityItem == null && ab != null && group != null) {
 			final Vector2f dest = new Vector2f(pos.x, pos.y);
 			final Vector2f source0 = player.getPos().clone(player.getSize() / 2, player.getSize() / 2);
@@ -813,13 +606,8 @@ public final class ServerAbilityHelper {
 				final int statVal = resolveScalingInput(player, ab, sc);
 				dmg += (int) sc.curveEnum().apply(statVal, sc.getCoeff(), sc.getCap());
 			}
-			// Resolve DURATION-target scalings + Necromancer "Cost of Living"
-			// passive bonus, then fold the ability's STATUS_APPLY ENEMIES_HIT
-			// entries into the ShotContext so spawned bullets actually apply
-			// the declared debuffs on contact. Previously the projectile
-			// branch only read p.getEffects() from the projectile-group def,
-			// so any STATUS_APPLY listed on the Ability itself was a no-op
-			// (Necro Wretch's WEAKEN + SLOWED never landed).
+			// Fold ability's STATUS_APPLY ENEMIES_HIT into ShotContext so bullets actually
+			// apply declared debuffs on contact (otherwise only projectile-group effects fire).
 			int _projDebuffBonusMs = 0;
 			for (AbilityScaling sc : ab.scalingList()) {
 				if (!"DURATION".equalsIgnoreCase(sc.getTarget())) continue;
@@ -852,8 +640,6 @@ public final class ServerAbilityHelper {
 							source0.clone(-offset, -offset), baseA + deltaA, rolledDamage, abilityCtx);
 				}
 			}
-			// Self statuses on the projectile-bearing ability (e.g. Bolas Throw doesn't have any,
-			// but pattern accommodates future kits like "fire while ARMORED").
 			if (effHasSelfStatus && effSelfStatus != null) {
 				mgr.applyStatusWithFeedback(targetRealm, player, EntityType.PLAYER, effSelfStatus, effSelfDurationMs);
 				for (Object[] xs : extraSelfStatuses) {
@@ -863,10 +649,7 @@ public final class ServerAbilityHelper {
 			}
 			return;
 		}
-		// Pure self-buff Ability with no projectile and no AoE tag — just
-		// apply SELF statuses (visual_at_self tag, if any, already emitted
-		// earlier in this method). Without this, line 3230 below NPEs on
-		// abilityItem.getDamage().
+		// Pure self-buff Ability with no projectile/AoE — just apply SELF statuses.
 		if (abilityItem == null && ab != null) {
 			if (effHasSelfStatus && effSelfStatus != null) {
 				mgr.applyStatusWithFeedback(targetRealm, player, EntityType.PLAYER, effSelfStatus, effSelfDurationMs);
@@ -889,11 +672,7 @@ public final class ServerAbilityHelper {
 				final short offset = (short) (p.getSize() / (short) 2);
 				short rolledDamage;
 				if (ab != null && ab.getBaseDamage() > 0) {
-					// Ability-data damage path: baseDamage + sum of scalings
-					// targeting DAMAGE. Player STR is NOT auto-added; the
-					// Ability controls the full damage budget so designers
-					// can build large nukes (e.g. Meteor's 2000 base) without
-					// fighting the legacy weapon's small range.
+					// Ability-data damage path: baseDamage + DAMAGE scalings. Player STR NOT auto-added.
 					int dmg = ab.getBaseDamage();
 					for (AbilityScaling sc : ab.scalingList()) {
 						if (!"DAMAGE".equalsIgnoreCase(sc.getTarget())) continue;
@@ -903,7 +682,6 @@ public final class ServerAbilityHelper {
 					rolledDamage = (short) Math.min(Short.MAX_VALUE, Math.max(0, dmg));
 				} else {
 					rolledDamage = abilityItem.getDamage().getInRange();
-					// Ability item scaling — same stat indirection as weapons.
 					rolledDamage += RealmManagerServer.statByIndex(player.getComputedStats(),
 							abilityItem.getScalingStat());
 				}
@@ -911,12 +689,7 @@ public final class ServerAbilityHelper {
 				if (p.getPositionMode() != ProjectilePositionMode.TARGET_PLAYER) {
 					source = dest;
 				} else {
-					// TARGET_PLAYER mode — bullets spawn at the caster. Push the
-					// spawn point ~36px FORWARD along the aim line so the bullet
-					// reads as "force-pushed from the front of the player"
-					// instead of materialising on top of the player sprite. The
-					// playerCenter capture happens once outside the loop so
-					// fan-spread iterations don't accumulate offsets.
+					// Push spawn ~60px forward along aim line so bullet doesn't materialise on player sprite.
 					float dxN = dest.x - playerCenter.x;
 					float dyN = dest.y - playerCenter.y;
 					final float lenN = (float) Math.sqrt(dxN * dxN + dyN * dyN);
@@ -927,14 +700,7 @@ public final class ServerAbilityHelper {
 								playerCenter.y + dyN / lenN * SPAWN_FWD);
 					}
 				}
-				// Symmetric fan around the aim line — see ServerGameLogic
-				// shoot logic for the same fix. Aim hits the center of the
-				// spread regardless of how many extra projectiles the player
-				// has gemmed in. from_sky abilities (Meteor) spawn the bullet
-				// AT the cursor and rely on the CreateEffectPacket visuals
-				// (chain-lightning streak + impact burst, emitted above) to
-				// sell the "fell from above" effect — keeps the bullet path
-				// identical to a normal targeted ability.
+				// Symmetric fan around aim line — aim hits the center regardless of extra projectiles.
 				{
 					final int totalBullets = 1 + abilityCtx.getExtraProjectiles();
 					final float SPREAD = 0.10f;
@@ -947,7 +713,6 @@ public final class ServerAbilityHelper {
 					}
 				}
 			}
-			// Apply self-effect if present (e.g., warrior helmet SPEEDY buff)
 			if (effHasSelfStatus && effSelfStatus != null) {
 				mgr.applyStatusWithFeedback(targetRealm, player, EntityType.PLAYER, effSelfStatus, effSelfDurationMs);
 				for (Object[] xs : extraSelfStatuses) {
@@ -962,7 +727,6 @@ public final class ServerAbilityHelper {
 
 				final short offset = (short) (p.getSize() / (short) 2);
 				short rolledDamage = abilityItem.getDamage().getInRange();
-				// Ability item scaling — defaults to STR (4) for legacy items.
 				rolledDamage += RealmManagerServer.statByIndex(player.getComputedStats(),
 						abilityItem.getScalingStat());
 				rolledDamage = CombatMath.applyShotDamageMods(rolledDamage, abilityCtx);
@@ -979,21 +743,16 @@ public final class ServerAbilityHelper {
 				}
 			}
 
-			// If the ability is non damaging or script-only (rogue cloak, priest tome, sorcerer scepter,
-			// wizard blink) — drive off the derived effect so each hotbar slot can have its own.
 		} else if (effSelfStatus != null) {
+			// GROUNDED blocks teleport-class abilities (same veto as shadow_dash).
 			if (effSelfStatus.equals(StatusEffectType.TELEPORT)
 					&& player.hasEffect(StatusEffectType.GROUNDED)) {
-				// GROUNDED also blocks wizard-blink / sorcerer-flicker style
-				// teleports — same veto as shadow_dash.
 				mgr.sendTextEffectToPlayer(player, TextEffect.PLAYER_INFO, "GROUNDED");
 				return;
 			}
 			if (effSelfStatus.equals(StatusEffectType.TELEPORT)
 					&& !targetRealm.getTileManager().collidesAtPosition(pos, player.getSize())
 					&& !targetRealm.getTileManager().isVoidTile(pos, 0, 0)) {
-				// Emit a violet runic glyph at BOTH origin and destination so
-				// the teleport reads as "vanish here / appear there".
 				final Vector2f origin = player.getPos().clone(player.getSize() / 2, player.getSize() / 2);
 				mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.aoeEffect(
 						CreateEffectPacket.EFFECT_BLINK_GLYPH, origin.x, origin.y, 56f, (short) 700, (byte) 6));
@@ -1008,14 +767,8 @@ public final class ServerAbilityHelper {
 				}
 			}
 		}
-		// Invoke any item specific scripts — ONLY when no Ability data is
-		// bound for the slot (legacy fallback). When a new Ability is in
-		// play, the tag-based visuals (taunt_visual, brace_visual,
-		// knight_slam, etc.) own the cast effect; running the legacy item
-		// script on top emitted a second visual for every ability — for
-		// Knight that was the shield-bash forward-thrust arrow firing
-		// alongside Taunt/Brace/Phalanx and making all four casts look the
-		// same.
+		// Legacy item-script fallback ONLY when no Ability data bound — otherwise tag-based
+		// visuals own the cast and running the legacy script doubles them up.
 		if (ab == null) {
 			final UseableItemScriptBase script = mgr.getItemScript(abilityItem.getItemId());
 			if (script != null) {

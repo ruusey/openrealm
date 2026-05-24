@@ -58,28 +58,11 @@ public class GameDataManager {
 	public static Map<Integer, AnimationModel>                ANIMATIONS = null;
 	public static Map<Integer, SetPieceModel>                 SETPIECES = null;
 	public static Map<Integer, RealmEventModel>               REALM_EVENTS = null;
-	// Phase 2A — combat-rework data tables. Loaded from abilities.json /
-	// passives.json (registered in GameDataFileService.ALLOWED + the
-	// editor's mtimes endpoint). Both can be empty maps during the
-	// Phase 2A transition; resolution code must tolerate that.
 	public static Map<Integer, Ability>                       ABILITIES = null;
 	public static Map<Integer, PassiveAbility>                PASSIVES = null;
-	// Phase 3 — data-driven weapon archetype gameplay. Indexed by the
-	// WeaponArchetype enum's byte id. See WeaponArchetypeModel for the
-	// schema. Items inherit scalingStat from here at catalog-load time.
 	public static Map<Byte, WeaponArchetypeModel>             WEAPON_ARCHETYPES = null;
 
-	/**
-	 * Locate a game-data file. Order of precedence:
-	 *   1. {@code openrealm.dataDir} system property / {@code OPENREALM_DATA_DIR}
-	 *      env var — the externalized writable dir on the data service.
-	 *      Editor saves land here; reload picks them up on the next call.
-	 *   2. Bundled classpath copy at {@code data/<filename>} — the fallback
-	 *      for game servers (which fetch via remote=true) and for first
-	 *      boot before the externalized dir has been populated.
-	 *
-	 * Used by every {@code load*(remote=false)} branch.
-	 */
+	/** Resolves filename against openrealm.dataDir/OPENREALM_DATA_DIR, falling back to classpath data/. */
 	private static InputStream openLocalData(String filename) throws IOException {
 		String dir = System.getProperty("openrealm.dataDir");
 		if (dir == null || dir.isBlank()) dir = System.getenv("OPENREALM_DATA_DIR");
@@ -437,17 +420,7 @@ public class GameDataManager {
 				GameDataManager.WEAPON_ARCHETYPES.size());
 	}
 
-	/**
-	 * After {@link #loadGameItems} and {@link #loadWeaponArchetypes} have both
-	 * landed, walk every item that declares a weaponArchetype and inherit
-	 * gameplay-shape fields the JSON didn't set. Currently inherits scalingStat
-	 * only — combat-time fields (attackSpeedMul / damageMul / rangeMul / etc.)
-	 * are looked up live at fire time so balance edits don't need a reload.
-	 *
-	 * Inheritance rule: if the item's scalingStat is still the default STR(4)
-	 * AND the archetype's scaling stat is different, take the archetype's.
-	 * Items that explicitly set a non-STR scalingStat keep it.
-	 */
+	/** Inherit archetype scalingStat onto items still defaulting to STR(4). */
 	private static void applyWeaponArchetypeDefaults() {
 		if (GameDataManager.GAME_ITEMS == null || GameDataManager.WEAPON_ARCHETYPES == null) return;
 		int inherited = 0;
@@ -522,7 +495,7 @@ public class GameDataManager {
 
 	public static void loadGameData(final boolean loadRemote) {
 		GameDataManager.log.info("Loading Game Data from remote={}", loadRemote);
-		// Load each data type independently so one failure doesn't prevent loading the rest
+		// Independent loaders — one failure must not block the rest.
 		Runnable[] loaders = {
 			() -> { try { GameDataManager.loadProjectileGroups(loadRemote); } catch (Exception e) { GameDataManager.log.error("Failed to load projectile groups: {}", e.getMessage()); } },
 			() -> { try { GameDataManager.loadGameItems(loadRemote); } catch (Exception e) { GameDataManager.log.error("Failed to load game items: {}", e.getMessage()); } },
@@ -546,8 +519,7 @@ public class GameDataManager {
 		for (Runnable loader : loaders) {
 			loader.run();
 		}
-		// Post-load enrichment — needs both GAME_ITEMS and WEAPON_ARCHETYPES
-		// populated, so run after every loader.
+		// Post-load enrichment: requires GAME_ITEMS + WEAPON_ARCHETYPES populated.
 		try {
 			GameDataManager.applyWeaponArchetypeDefaults();
 		} catch (Exception e) {
