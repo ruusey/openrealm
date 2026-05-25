@@ -33,6 +33,8 @@ public class ServerFameStoreHelper {
     /** itemId range covering the 8 dyes. Anything outside is rejected. */
     public static final int DYE_ITEM_MIN = 821;
     public static final int DYE_ITEM_MAX = 828;
+    public static final int GEM_ITEM_MIN = 830;
+    public static final int GEM_ITEM_MAX = 836;
     /** itemId range covering the 8 enchantment crystals (Vit/Wis/HP/MP/Att/Def/Spd/Dex). */
     public static final int CRYSTAL_ITEM_MIN = 808;
     public static final int CRYSTAL_ITEM_MAX = 815;
@@ -61,7 +63,8 @@ public class ServerFameStoreHelper {
     /** Whether the given itemId is sellable through the fame store. */
     private static boolean isFameStoreItem(int itemId) {
         return (itemId >= DYE_ITEM_MIN && itemId <= DYE_ITEM_MAX)
-            || (itemId >= CRYSTAL_ITEM_MIN && itemId <= CRYSTAL_ITEM_MAX);
+            || (itemId >= CRYSTAL_ITEM_MIN && itemId <= CRYSTAL_ITEM_MAX)
+            || (itemId >= GEM_ITEM_MIN && itemId <= GEM_ITEM_MAX);
     }
 
     /**
