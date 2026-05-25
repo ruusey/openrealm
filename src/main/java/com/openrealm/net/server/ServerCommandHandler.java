@@ -917,7 +917,7 @@ public class ServerCommandHandler {
             from.getPlayers().remove(who.getId());
             from.removePlayer(who);
 
-            if (from.getMapId() == 1) {
+            if (from.getMapId() == Realm.VAULT_MAP_ID) {
                 try {
                     final List<ChestDto> chests = from.serializeChests();
                     ServerGameLogic.DATA_SERVICE.executePost(

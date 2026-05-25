@@ -67,6 +67,7 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class Realm {
     public static final transient SecureRandom RANDOM = new SecureRandom();
+    public static final int VAULT_MAP_ID = 30;
     private static final long POISON_TICK_INTERVAL_MS = 200;
     // Cap is hit only under stress; we sort by distance first so truncation
     // is deterministic and doesn't flicker with HashSet iteration order.
@@ -95,7 +96,7 @@ public class Realm {
     private ShortIdAllocator shortIdAllocator = new ShortIdAllocator();
     private final ReentrantLock playerLock = new ReentrantLock();
 
-    // Only populated on vault realms (mapId == 1); list[0] is the only index v1 uses.
+    // Only populated on vault realms (mapId == VAULT_MAP_ID); list[0] is the only index v1 uses.
     private final Map<Long, List<PotionStorage>> playerPotionStorage = new ConcurrentHashMap<>();
 
     // partyIds currently occupying this dungeon; checked against MapModel.maxPartyCount.
@@ -199,8 +200,12 @@ public class Realm {
             final int rows = (int) Math.ceil(count / (double) cols);
             final int spacingX = 64;
             final int spacingY = 48;
-            final float centerX = 16 * 32;
-            final float startY = 16 * 32 - (rows * spacingY) / 2f + spacingY / 2f;
+            // Derive from the actual map so swapping the vault map (e.g.
+            // VAULT_MAP_ID) doesn't require re-tuning hardcoded pixels.
+            final MapModel vaultModel = GameDataManager.MAPS.get(this.mapId);
+            final Vector2f mc = vaultModel != null ? vaultModel.getCenter() : new Vector2f(16 * 32, 16 * 32);
+            final float centerX = mc.x;
+            final float startY = mc.y - (rows * spacingY) / 2f + spacingY / 2f;
             final float leftColX = centerX - spacingX;
             final float rightColX = centerX + spacingX;
 

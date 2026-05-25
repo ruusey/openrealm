@@ -160,15 +160,19 @@ public class ServerGameLogic {
 
 		if (usePortalPacket.isToVault()) {
 			final Realm currentRealm = mgr.getRealms().get(usePortalPacket.getFromRealmId());
-			if (currentRealm == null || currentRealm.getMapId() == 1) {
+			if (currentRealm == null || currentRealm.getMapId() == Realm.VAULT_MAP_ID) {
 				return;
 			}
 
 			final Player user = currentRealm.getPlayers().remove(usePortalPacket.getPlayerId());
 
-			final MapModel mapModel = GameDataManager.MAPS.get(1);
-			final Realm generatedRealm = new Realm(true, 1, "vault");
-			final Vector2f chestLoc = new Vector2f((0 + (1920 / 2)) - 450, (0 + (1080 / 2)) - 300);
+			final MapModel mapModel = GameDataManager.MAPS.get(Realm.VAULT_MAP_ID);
+			final Realm generatedRealm = new Realm(true, Realm.VAULT_MAP_ID, "vault");
+			// Exit portal: a few tiles south of the vault's center spawn so
+			// the player doesn't land on top of it. Tunable via VAULT_MAP_ID's
+			// map definition - getCenter is the only fixed reference.
+			final Vector2f mapCenter = mapModel != null ? mapModel.getCenter() : new Vector2f(16 * 32, 16 * 32);
+			final Vector2f chestLoc = new Vector2f(mapCenter.x, mapCenter.y + 96);
 			final Portal exitPortal = new Portal(Realm.RANDOM.nextLong(), (short) 3, chestLoc);
 			exitPortal.setNeverExpires();
 			final Realm vaultExitTarget = mgr.getTopRealm();
@@ -200,7 +204,7 @@ public class ServerGameLogic {
 
 			// serializeChestsForSave returns null if setupChests hasn't completed — skip save
 			// so we don't wipe persisted vault with [].
-			if (currentRealm.getMapId() == 1) {
+			if (currentRealm.getMapId() == Realm.VAULT_MAP_ID) {
 				final List<ChestDto> chestsToSave = currentRealm.serializeChestsForSave();
 				if (chestsToSave != null) {
 					final String acctUuid = user.getAccountUuid();
@@ -263,7 +267,7 @@ public class ServerGameLogic {
 
 		// Save + remove vault realm if leaving a vault. Skip POST when
 		// serializeChestsForSave returns null (setupChests incomplete).
-		if (currentRealm.getMapId() == 1) {
+		if (currentRealm.getMapId() == Realm.VAULT_MAP_ID) {
 			final List<ChestDto> chestsToSave = currentRealm.serializeChestsForSave();
 			if (chestsToSave != null) {
 				final String acctUuid = user.getAccountUuid();

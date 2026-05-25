@@ -507,7 +507,7 @@ public class RealmManagerServer implements Runnable {
 				if (dcPlayer != null) {
 					log.info("[SERVER] Cleaning up stale session for player {} — reason: {}", dcPlayer.getName(), staleReason);
 					this.saveVaultAndStorageOnDisconnect(playerRealm, dcPlayer);
-					if (playerRealm.getMapId() == 1) {
+					if (playerRealm.getMapId() == Realm.VAULT_MAP_ID) {
 						playerRealm.setShutdown(true);
 						this.realms.remove(playerRealm.getRealmId());
 					}
@@ -527,7 +527,7 @@ public class RealmManagerServer implements Runnable {
 	}
 
 	private void saveVaultAndStorageOnDisconnect(final Realm playerRealm, final Player dcPlayer) {
-		if (playerRealm.getMapId() != 1) return;
+		if (playerRealm.getMapId() != Realm.VAULT_MAP_ID) return;
 		try {
 			final String acctUuid = dcPlayer.getAccountUuid();
 			final String dcName = dcPlayer.getName();
@@ -1100,7 +1100,7 @@ public class RealmManagerServer implements Runnable {
 		try {
 			final Realm playerRealm = this.findPlayerRealm(player.getId());
 			if (playerRealm != null) {
-				if (playerRealm.getMapId() == 1) {
+				if (playerRealm.getMapId() == Realm.VAULT_MAP_ID) {
 					try {
 						// serializeChestsForSave returns null if setupChests
 						// hasn't completed; skip the POST so a fast disconnect
@@ -1197,13 +1197,13 @@ public class RealmManagerServer implements Runnable {
 		}
 		// Fallback: any non-vault realm (prefer by nodeId, then any)
 		for (final Realm realm : this.realms.values()) {
-			if (realm.isOverworld() && realm.getMapId() != 1) {
+			if (realm.isOverworld() && realm.getMapId() != Realm.VAULT_MAP_ID) {
 				return realm;
 			}
 		}
 		// Last resort: return the first realm that isn't a vault
 		for (final Realm realm : this.realms.values()) {
-			if (realm.getMapId() != 1) {
+			if (realm.getMapId() != Realm.VAULT_MAP_ID) {
 				return realm;
 			}
 		}
@@ -1773,7 +1773,7 @@ public class RealmManagerServer implements Runnable {
 	private void tickPeriodicEnemyRespawn() {
 		if (this.tickCounter % 1920 != 0) return;
 		for (final Realm realm : this.realms.values()) {
-			if (realm.isOverworld() && realm.getMapId() != 1 && !realm.getPlayers().isEmpty()) {
+			if (realm.isOverworld() && realm.getMapId() != Realm.VAULT_MAP_ID && !realm.getPlayers().isEmpty()) {
 				realm.respawnEnemies(50);
 			}
 		}
@@ -1791,7 +1791,7 @@ public class RealmManagerServer implements Runnable {
 		for (final Map.Entry<Long, Realm> entry : this.realms.entrySet()) {
 			final Realm r = entry.getValue();
 			if (!r.getPlayers().isEmpty()) continue;
-			if (r.getMapId() == 1) {
+			if (r.getMapId() == Realm.VAULT_MAP_ID) {
 				realmIdsToRemove.add(entry.getKey());
 			} else if (!r.isShared() && !referencedAsSource.contains(entry.getKey())) {
 				realmIdsToRemove.add(entry.getKey());
