@@ -417,8 +417,7 @@ public class RealmManagerServer implements Runnable {
 		final long tickTotal = System.nanoTime() - tickStart;
 		this.currentTickCount++;
 		this.tickTimeAccumNanos += tickTotal;
-		// Sample window advances by exactly 1000ms — using Instant.now() here
-		// slips 1-2ms/cycle and produces phantom "65 ticks this second" logs.
+		
 		final long nowMs = Instant.now().toEpochMilli();
 		if (nowMs - this.tickSampleTime >= 1000) {
 			this.tickSampleTime += 1000;
