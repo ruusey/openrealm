@@ -415,9 +415,9 @@ public final class ServerAbilityHelper {
 				if (ab.getTags().contains("smoke"))    { visualEffect = CreateEffectPacket.EFFECT_SMOKE_POOF;     vTier = 0; }
 				if (ab.getTags().contains("sanctuary"))      { visualEffect = CreateEffectPacket.EFFECT_SANCTUARY_DOME;  vTier = 3; }
 				if (ab.getTags().contains("vampiric"))       { visualEffect = CreateEffectPacket.EFFECT_VAMPIRIC_LATCH;  vTier = 5; }
-				if (ab.getTags().contains("rapier_stab"))    { visualEffect = CreateEffectPacket.EFFECT_RAPIER_STAB;     vTier = 0; }
-				if (ab.getTags().contains("low_swing"))      { visualEffect = CreateEffectPacket.EFFECT_LOW_SWING;       vTier = 5; }
-				if (ab.getTags().contains("disarm_flourish")){ visualEffect = CreateEffectPacket.EFFECT_DISARM_FLOURISH; vTier = 3; }
+				if (ab.getTags().contains("rapier_stab"))    { visualEffect = CreateEffectPacket.EFFECT_RAPIER_STAB;     vTier = 4; }
+				if (ab.getTags().contains("low_swing"))      { visualEffect = CreateEffectPacket.EFFECT_LOW_SWING;       vTier = 6; }
+				if (ab.getTags().contains("disarm_flourish")){ visualEffect = CreateEffectPacket.EFFECT_DISARM_FLOURISH; vTier = 6; }
 				if (ab.getTags().contains("divine_beam"))    { visualEffect = CreateEffectPacket.EFFECT_DIVINE_BEAM;     vTier = 3; }
 				if (ab.getTags().contains("fortify_aura"))   { visualEffect = CreateEffectPacket.EFFECT_FORTIFY_AURA;    vTier = 2; }
 				if (ab.getTags().contains("ground_pound"))   { visualEffect = CreateEffectPacket.EFFECT_GROUND_POUND;    vTier = 4; }
@@ -430,9 +430,9 @@ public final class ServerAbilityHelper {
 				short visualDurationMs = 1500;
 				if (visualEffect == CreateEffectPacket.EFFECT_SANCTUARY_DOME) visualDurationMs = 5000;
 				else if (visualEffect == CreateEffectPacket.EFFECT_VAMPIRIC_LATCH) visualDurationMs = 2000;
-				else if (visualEffect == CreateEffectPacket.EFFECT_RAPIER_STAB) visualDurationMs = 350;
-				else if (visualEffect == CreateEffectPacket.EFFECT_LOW_SWING)   visualDurationMs = 500;
-				else if (visualEffect == CreateEffectPacket.EFFECT_DISARM_FLOURISH) visualDurationMs = 900;
+				else if (visualEffect == CreateEffectPacket.EFFECT_RAPIER_STAB) visualDurationMs = 600;
+				else if (visualEffect == CreateEffectPacket.EFFECT_LOW_SWING)   visualDurationMs = 750;
+				else if (visualEffect == CreateEffectPacket.EFFECT_DISARM_FLOURISH) visualDurationMs = 1300;
 				else if (visualEffect == CreateEffectPacket.EFFECT_DIVINE_BEAM) visualDurationMs = 900;
 				else if (visualEffect == CreateEffectPacket.EFFECT_FORTIFY_AURA) visualDurationMs = 5000;
 				else if (visualEffect == CreateEffectPacket.EFFECT_GROUND_POUND) visualDurationMs = 700;
@@ -519,6 +519,14 @@ public final class ServerAbilityHelper {
 				}
 			}
 			if (aoeAlly) {
+				int allyBuffBonusMs = 0;
+				if (ab.getScalings() != null) {
+					for (AbilityScaling sc : ab.scalingList()) {
+						if (!"DURATION".equalsIgnoreCase(sc.getTarget())) continue;
+						final int statVal = resolveScalingInput(player, ab, sc);
+						allyBuffBonusMs += (int) sc.curveEnum().apply(statVal, sc.getCoeff(), sc.getCap());
+					}
+				}
 				int healAmount = 0;
 				boolean hasCleanse = false;
 				int cleanseCap = Integer.MAX_VALUE;
@@ -571,7 +579,7 @@ public final class ServerAbilityHelper {
 									Short.parseShort(String.valueOf(aoeEff.getStatusId()).trim()));
 							if (st != null) {
 								mgr.applyStatusWithFeedback(targetRealm, ally, EntityType.PLAYER,
-										st, aoeEff.getBaseDurationMs());
+										st, aoeEff.getBaseDurationMs() + allyBuffBonusMs);
 							}
 						} catch (NumberFormatException ignore) { }
 					}
