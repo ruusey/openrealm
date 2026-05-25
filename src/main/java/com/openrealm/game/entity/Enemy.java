@@ -656,6 +656,11 @@ public class Enemy extends Entity {
     private void fireLegacyAttack(Player player, RealmManagerServer mgr, Realm targetRealm) {
         Vector2f dest = player.getBounds().getPos().clone(player.getSize() / 2, player.getSize() / 2);
         Vector2f source = this.getPos().clone(this.getSize() / 2, this.getSize() / 2);
+        if (player.getDx() != 0 || player.getDy() != 0) {
+            float travelTime = source.distanceTo(dest) / 5f;
+            dest.x += player.getDx() * travelTime;
+            dest.y += player.getDy() * travelTime;
+        }
         float angle = Bullet.getAngle(source, dest);
         ProjectileGroup group = GameDataManager.PROJECTILE_GROUPS.get(this.weaponId);
         if (group == null) return;
