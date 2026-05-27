@@ -123,6 +123,8 @@ import com.openrealm.net.server.ServerCombatHelper;
 import com.openrealm.net.server.ServerCommandHandler;
 import com.openrealm.net.server.ServerGameLogic;
 import com.openrealm.net.server.ServerPassiveTickHelper;
+import com.openrealm.net.server.PvpMatchManager;
+import com.openrealm.net.server.PvpMinionAi;
 import com.openrealm.net.server.ServerTradeManager;
 import com.openrealm.net.server.packet.CommandPacket;
 import com.openrealm.net.server.packet.HeartbeatPacket;
@@ -269,7 +271,9 @@ public class RealmManagerServer implements Runnable {
 
 	public void doRunServer() {
 		ServerTradeManager.mgr = this;
+		PvpMatchManager.mgr = this;
 		this.doSetup();
+		PvpMatchManager.runExpiryAndWaveCheck();
 		WorkerThread.submitAndForkRun(this.server);
 		WorkerThread.submitAndForkRun(this);
 	}
@@ -1096,6 +1100,8 @@ public class RealmManagerServer implements Runnable {
 	public void disconnectPlayer(Player player, String reason) {
 		log.info("[SERVER] Disconnecting Player {} — reason: {}", player.getName(), reason);
 
+		PvpMatchManager.handlePlayerDisconnect(player.getId());
+
 		// Step 1: Remove player from realm (most critical — prevents ghost players)
 		try {
 			final Realm playerRealm = this.findPlayerRealm(player.getId());
@@ -1447,7 +1453,11 @@ public class RealmManagerServer implements Runnable {
 				try {
 					handlerMethod = this.publicLookup.findStatic(ServerCommandHandler.class, method.getName(), mt);
 				} catch (Exception e) {
-					handlerMethod = this.publicLookup.findStatic(ServerTradeManager.class, method.getName(), mt);
+					try {
+						handlerMethod = this.publicLookup.findStatic(ServerTradeManager.class, method.getName(), mt);
+					} catch (Exception ex) {
+						handlerMethod = this.publicLookup.findStatic(PvpMatchManager.class, method.getName(), mt);
+					}
 				}
 				if (handlerMethod != null) {
 					ServerCommandHandler.COMMAND_CALLBACKS.put(commandToHandle.value(), handlerMethod);
@@ -1619,6 +1629,13 @@ public class RealmManagerServer implements Runnable {
 	private void tickAwakeEnemy(final Realm realm, final Enemy enemy, final Player[] activePlayers,
 			final double time, final int aiTick, final int moveFarTick) {
 		final int classification = classifyEnemyProximity(enemy, activePlayers);
+		// PvP realms route the entire enemy tick to PvpMinionAi so the PvE AI scaffolding
+		// stays untouched — lane following + opposing-team targeting all live there.
+		if (realm.isPvp() && enemy.getTeamId() != 0) {
+			PvpMinionAi.tick(realm, enemy, this, time, aiTick, moveFarTick, classification,
+					ENEMY_AI_TICK_DIVISOR, ENEMY_MOVE_FAR_DIVISOR);
+			return;
+		}
 		if (classification == PROX_DORMANT) {
 			if (enemy.getDx() != 0f || enemy.getDy() != 0f) {
 				enemy.setDx(0);
@@ -2074,6 +2091,18 @@ public class RealmManagerServer implements Runnable {
 					if (!liveBullets.containsKey(b.getId())) continue;
 					this.proccessEnemyHit(realmId, b, enemy);
 				}
+			}
+		}
+
+		// PvP player-vs-player: in arena realms, player bullets also need to be
+		// checked against the player p (processPlayerHit routes them through the
+		// dedicated PvP path with friendly-fire + ×0.1 scaling).
+		if (playerBullets != null && targetRealm.isPvp() && !player.hasEffect(StatusEffectType.INVINCIBLE)) {
+			for (int i = 0; i < playerBullets.size(); i++) {
+				final Bullet b = playerBullets.get(i);
+				if (!liveBullets.containsKey(b.getId())) continue;
+				if (b.getSrcEntityId() == player.getId()) continue;
+				this.processPlayerHit(realmId, b, player);
 			}
 		}
 	}
@@ -2579,6 +2608,12 @@ public class RealmManagerServer implements Runnable {
 
 	// Invoked upon player death (permadeath)
 	public void playerDeath(final Realm targetRealm, final Player player) {
+		// PvP arena: no permadeath. Hand off to PvpMatchManager which ends the match,
+		// restores HP, and teleports both players back to the nexus.
+		if (targetRealm != null && targetRealm.isPvp() && player.getPvpTeamId() != 0) {
+			PvpMatchManager.onPlayerHpZero(player);
+			return;
+		}
 		// Lifetime metric — record at the very top so it counts even when
 		// the amulet-revive branch returns before bottom-of-method cleanup.
 		if (player.getMetrics() != null) {

@@ -7,7 +7,6 @@ import com.openrealm.net.core.PacketId;
 import com.openrealm.net.core.SerializableField;
 import com.openrealm.net.core.nettypes.SerializableFloat;
 import com.openrealm.net.core.nettypes.SerializableInt;
-import com.openrealm.net.core.nettypes.SerializableLong;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -35,17 +34,15 @@ import lombok.extern.slf4j.Slf4j;
 @NoArgsConstructor
 @PacketId(packetId = (byte)1)
 public class PlayerMovePacket extends Packet {
-	@SerializableField(order = 0, type = SerializableLong.class)
-    private long entityId;
-	@SerializableField(order = 1, type = SerializableInt.class)
+	@SerializableField(order = 0, type = SerializableInt.class)
     private int seq;
-	@SerializableField(order = 2, type = SerializableFloat.class)
+	@SerializableField(order = 1, type = SerializableFloat.class)
     private float vx;
-	@SerializableField(order = 3, type = SerializableFloat.class)
+	@SerializableField(order = 2, type = SerializableFloat.class)
     private float vy;
 
     public static PlayerMovePacket from(Player player, int seq, float vx, float vy) throws Exception {
-    	final PlayerMovePacket read = new PlayerMovePacket(player.getId(), seq, vx, vy);
+    	final PlayerMovePacket read = new PlayerMovePacket(seq, vx, vy);
         return read;
     }
 }

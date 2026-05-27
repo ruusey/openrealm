@@ -5,7 +5,6 @@ import com.openrealm.net.Streamable;
 import com.openrealm.net.core.PacketId;
 import com.openrealm.net.core.SerializableField;
 import com.openrealm.net.core.nettypes.SerializableByte;
-import com.openrealm.net.core.nettypes.SerializableLong;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -29,15 +28,8 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @PacketId(packetId = (byte) 39)
 public class HotbarSwapPacket extends Packet {
-    @SerializableField(order = 0, type = SerializableLong.class)
-    private long playerId;
-    /** Hotbar slot to rotate (0..3). */
-    @SerializableField(order = 1, type = SerializableByte.class)
+    @SerializableField(order = 0, type = SerializableByte.class)
     private byte slot;
-    /**
-     * Direction of cycle: +1 for forward (Shift+N), -1 for backward
-     * (Shift+Alt+N or equivalent if we add it). Server clamps to {+1,-1}.
-     */
-    @SerializableField(order = 2, type = SerializableByte.class)
+    @SerializableField(order = 1, type = SerializableByte.class)
     private byte direction;
 }

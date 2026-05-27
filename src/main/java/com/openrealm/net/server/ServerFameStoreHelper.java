@@ -106,10 +106,10 @@ public class ServerFameStoreHelper {
      */
     public static void handleBuy(RealmManagerServer mgr, Packet packet) {
         final BuyFameItemPacket p = (BuyFameItemPacket) packet;
-        final Realm realm = mgr.findPlayerRealm(p.getPlayerId());
-        if (realm == null) return;
-        final Player player = realm.getPlayer(p.getPlayerId());
+        final Player player = mgr.getPlayerByRemoteAddress(packet.getSrcIp());
         if (player == null) return;
+        final Realm realm = mgr.findPlayerRealm(player.getId());
+        if (realm == null) return;
         try {
             final int itemId = p.getItemId();
             if (!isFameStoreItem(itemId)) {

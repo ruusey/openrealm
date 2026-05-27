@@ -43,6 +43,15 @@ public class Enemy extends Entity {
     private int idleTime = 0;
     private float difficulty = 1.0f;
     private Stats stats;
+    /** PvP team affiliation. 0 = neutral (PvE behavior). Non-zero only meaningful inside a PvP realm
+     *  where it gates friendly-fire on bullets and is used by minion AI to pick opposing targets. */
+    private byte teamId = 0;
+    /** PvP lane assignment (1=top, 2=mid, 3=bottom). 0 for non-lane minions / PvE enemies.
+     *  PvpMinionAi reads this to look up the lane waypoints from the active MapModel. */
+    private transient byte minionLaneId = 0;
+    /** Index into the lane waypoint list, advanced when the minion reaches the next point.
+     *  Team A and team B walk separate (pre-oriented) lists from index 0 → N. */
+    private transient int minionLaneIdx = 0;
 
     // Phase-based state
     private float orbitAngle = 0f;
@@ -704,6 +713,14 @@ public class Enemy extends Entity {
         // Scripted NPCs see hidden admins so friendly scripts still trigger.
         final boolean includeHidden = mgr.getEnemyScript(this.enemyId) != null;
         final Player player = mgr.getClosestPlayer(targetRealm.getRealmId(), this.getPos(), this.chaseRange, includeHidden);
+        this.updateAgainstTarget(targetRealm, player, mgr, time);
+    }
+
+    /** Same AI body as {@link #update} but with an externally-chosen target. PvpMinionAi calls
+     *  this with the closest OPPOSING-team player so PvP minions reuse phase movement + attack
+     *  patterns from the EnemyModel JSON without duplicating ~60 lines of AI scaffolding. */
+    public void updateAgainstTarget(final Realm targetRealm, final Player player,
+            final RealmManagerServer mgr, final double time) {
         super.update(time);
         if (player == null) {
             this.dx = 0;

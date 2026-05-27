@@ -86,7 +86,7 @@ import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 public class ServerGameLogic {
-	public static final String GAME_VERSION = "0.6.0";
+	public static final String GAME_VERSION = "0.8.0";
 
 	/** Per-player throttle for the "invalid weapon equipped" notice (one per 5s). */
 	private static final Map<Long, Long> INVALID_WEAPON_WARN_AT = new ConcurrentHashMap<>();
@@ -151,9 +151,9 @@ public class ServerGameLogic {
 
 	public static void handleUsePortalServer(RealmManagerServer mgr, Packet packet) {
 		final UsePortalPacket usePortalPacket = (UsePortalPacket) packet;
-		if (!validateCallingPlayer(mgr, packet, usePortalPacket.getPlayerId())) {
-			return;
-		}
+		final Player caller = mgr.getPlayerByRemoteAddress(packet.getSrcIp());
+		if (caller == null) return;
+		final long callerId = caller.getId();
 		// MUST release the realm lock in finally — leaked locks deadlock the next tick.
 		mgr.acquireRealmLock();
 		try {
@@ -164,7 +164,7 @@ public class ServerGameLogic {
 				return;
 			}
 
-			final Player user = currentRealm.getPlayers().remove(usePortalPacket.getPlayerId());
+			final Player user = currentRealm.getPlayers().remove(callerId);
 
 			final MapModel mapModel = GameDataManager.MAPS.get(Realm.VAULT_MAP_ID);
 			final Realm generatedRealm = new Realm(true, Realm.VAULT_MAP_ID, "vault");
@@ -198,7 +198,7 @@ public class ServerGameLogic {
 			if (nexus == null || nexus.getRealmId() == currentRealm.getRealmId()) {
 				return;
 			}
-			final Player user = currentRealm.getPlayers().remove(usePortalPacket.getPlayerId());
+			final Player user = currentRealm.getPlayers().remove(callerId);
 			if (user == null) { return; }
 			currentRealm.removePlayer(user);
 
@@ -257,7 +257,7 @@ public class ServerGameLogic {
 
 		final Realm currentRealm = mgr.getRealms().get(usePortalPacket.getFromRealmId());
 		if (currentRealm == null) { return; }
-		final Player user = currentRealm.getPlayers().remove(usePortalPacket.getPlayerId());
+		final Player user = currentRealm.getPlayers().remove(callerId);
 		if (user == null) { return; }
 		final Portal used = currentRealm.getPortals().get(usePortalPacket.getPortalId());
 		if (used == null) { return; }
@@ -456,11 +456,9 @@ public class ServerGameLogic {
 			log.warn("[SERVER] Heartbeat from unknown player (srcIp={}). Known addresses: {}", packet.getSrcIp(), mgr.getRemoteAddresses().keySet());
 			return;
 		}
-		// Use server time (client timestamp may be clock-skewed).
 		mgr.getPlayerLastHeartbeatTime().put(player.getId(), Instant.now().toEpochMilli());
-		// Echo with original client timestamp so client can measure true RTT.
 		try {
-			mgr.enqueueServerPacket(player, HeartbeatPacket.from(player.getId(), heartbeatPacket.getTimestamp()));
+			mgr.enqueueServerPacket(player, HeartbeatPacket.from(heartbeatPacket.getTimestamp()));
 		} catch (Exception e) {
 			log.debug("Failed to echo heartbeat: {}", e.getMessage());
 		}
@@ -468,7 +466,6 @@ public class ServerGameLogic {
 
 	@PacketHandlerServer(LoginAckPacket.class)
 	public static void handleLoginAckServer(RealmManagerServer mgr, Packet packet) {
-		final LoginAckPacket ackPacket = (LoginAckPacket) packet;
 		final Player player = mgr.getPlayerByRemoteAddress(packet.getSrcIp());
 		if (player == null) {
 			log.debug("Failed to process LoginAck. Player does not exist for {}", packet.getSrcIp());
@@ -483,41 +480,30 @@ public class ServerGameLogic {
 
 	public static void handlePlayerMoveServer(RealmManagerServer mgr, Packet packet) {
 		final PlayerMovePacket playerMovePacket = (PlayerMovePacket) packet;
-		if (!validateCallingPlayer(mgr, packet, playerMovePacket.getEntityId())) {
-			return;
-		}
-		final Realm realm = mgr.findPlayerRealm(playerMovePacket.getEntityId());
-		if (realm == null) {
-			ServerGameLogic.log.error("Failed to get realm for player {}", playerMovePacket.getEntityId());
-			return;
-		}
-		final Player toMove = realm.getPlayer(playerMovePacket.getEntityId());
-		// Queue the input for processing in movePlayer() on the next tick
+		final Player toMove = mgr.getPlayerByRemoteAddress(packet.getSrcIp());
+		if (toMove == null) return;
 		toMove.queueInput(playerMovePacket.getSeq(), playerMovePacket.getVx(), playerMovePacket.getVy());
 	}
 
 	public static void handleUseAbilityServer(RealmManagerServer mgr, Packet packet) {
 		final UseAbilityPacket useAbilityPacket = (UseAbilityPacket) packet;
-		if (!validateCallingPlayer(mgr, packet, useAbilityPacket.getPlayerId())) {
-			return;
-		}
-		final Realm realm = mgr.findPlayerRealm(useAbilityPacket.getPlayerId());
-		mgr.useAbility(realm.getRealmId(), useAbilityPacket.getPlayerId(),
+		final Player player = mgr.getPlayerByRemoteAddress(packet.getSrcIp());
+		if (player == null) return;
+		final Realm realm = mgr.findPlayerRealm(player.getId());
+		if (realm == null) return;
+		mgr.useAbility(realm.getRealmId(), player.getId(),
 				new Vector2f(useAbilityPacket.getPosX(), useAbilityPacket.getPosY()),
 				useAbilityPacket.getAbilityIndex());
-		ServerGameLogic.log.info("[SERVER] Recieved UseAbility Packet For Player {}", useAbilityPacket.getPlayerId());
+		ServerGameLogic.log.info("[SERVER] Recieved UseAbility Packet For Player {}", player.getId());
 	}
 
 	@PacketHandlerServer(InvestSkillPointPacket.class)
 	public static void handleInvestSkillPointServer(RealmManagerServer mgr, Packet packet) {
 		final InvestSkillPointPacket pkt = (InvestSkillPointPacket) packet;
-		if (!validateCallingPlayer(mgr, packet, pkt.getPlayerId())) {
-			return;
-		}
-		final Realm realm = mgr.findPlayerRealm(pkt.getPlayerId());
-		if (realm == null) return;
-		final Player player = realm.getPlayer(pkt.getPlayerId());
+		final Player player = mgr.getPlayerByRemoteAddress(packet.getSrcIp());
 		if (player == null) return;
+		final Realm realm = mgr.findPlayerRealm(player.getId());
+		if (realm == null) return;
 		final int slot = pkt.getSlot() & 0xff;
 		if (slot < 0 || slot >= 4) return;
 		final int abilityId = player.getHotbarId(slot);
@@ -547,16 +533,13 @@ public class ServerGameLogic {
 
 	public static void handlePlayerShootServer(RealmManagerServer mgr, Packet packet) {
 		final PlayerShootPacket shootPacket = (PlayerShootPacket) packet;
-		if (!validateCallingPlayer(mgr, packet, shootPacket.getEntityId())) {
-			return;
-		}
-
-		final Realm realm = mgr.findPlayerRealm(shootPacket.getEntityId());
+		final Player player = mgr.getPlayerByRemoteAddress(packet.getSrcIp());
+		if (player == null) return;
+		final Realm realm = mgr.findPlayerRealm(player.getId());
 		if (realm == null) {
-			ServerGameLogic.log.error("Failed to get realm for player {}", shootPacket.getEntityId());
+			ServerGameLogic.log.error("Failed to get realm for player {}", player.getId());
 			return;
 		}
-		final Player player = realm.getPlayer(shootPacket.getEntityId());
 		boolean canShoot = false;
 		if (realm.getPlayerLastShotTime().get(player.getId()) != null) {
 			double dex = (int) ((6.5 * (player.getComputedStats().getDex() + 17.3)) / 75);
@@ -808,16 +791,14 @@ public class ServerGameLogic {
 	}
 
 	public static void handleMoveItemServer(RealmManagerServer mgr, Packet packet) {
-		final MoveItemPacket moveItemPacket = (MoveItemPacket) packet;
-		if (!validateCallingPlayer(mgr, packet, moveItemPacket.getPlayerId())) {
-			return;
-		}
+		final Player caller = mgr.getPlayerByRemoteAddress(packet.getSrcIp());
+		if (caller == null) return;
 		try {
 			ServerItemHelper.handleMoveItemPacket(mgr, packet);
 			// Push inventory + container update immediately so client doesn't wait up to 62ms for next tick.
-			final Realm realm = mgr.findPlayerRealm(moveItemPacket.getPlayerId());
+			final Realm realm = mgr.findPlayerRealm(caller.getId());
 			if (realm != null) {
-				final Player player = realm.getPlayer(moveItemPacket.getPlayerId());
+				final Player player = realm.getPlayer(caller.getId());
 				if (player != null) {
 					final UpdatePacket update = realm.getPlayerAsPacket(player.getId());
 					if (update != null) {
@@ -901,18 +882,10 @@ public class ServerGameLogic {
 
 	@PacketHandlerServer(DeathAckPacket.class)
 	public static void handleDeathAckServer(RealmManagerServer mgr, Packet packet) {
-		final DeathAckPacket deathPacket = (DeathAckPacket) packet;
-		final Player real = mgr.getPlayerByRemoteAddress(packet.getSrcIp());
-		if (!validateCallingPlayer(mgr, packet, deathPacket.getPlayerId())) {
-			log.error("**DEATH ACK PLAYER ID DID NOT MATCH, REAL={}, attempted={}, BAN THEM**", real, deathPacket.getPlayerId());
-			return;
-		}
-		final Player player = mgr.getPlayerById(deathPacket.getPlayerId());
-
+		final Player player = mgr.getPlayerByRemoteAddress(packet.getSrcIp());
+		if (player == null) return;
 		log.info("Handling death ack for player {}", player.getName());
-		//final Realm playerRealm = mgr.findPlayerRealm(deathPacket.getPlayerId());
 		mgr.disconnectPlayer(player, "death ack received (permadeath)");
-
 	}
 
 	private static void doLogin(RealmManagerServer mgr, LoginRequestMessage request, CommandPacket command) {

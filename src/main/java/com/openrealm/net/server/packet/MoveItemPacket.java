@@ -9,7 +9,6 @@ import com.openrealm.net.core.PacketId;
 import com.openrealm.net.core.SerializableField;
 import com.openrealm.net.core.nettypes.SerializableBoolean;
 import com.openrealm.net.core.nettypes.SerializableByte;
-import com.openrealm.net.core.nettypes.SerializableLong;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -36,20 +35,18 @@ public class MoveItemPacket extends Packet {
 	public static final int HP_POTION_SLOT = 29;
 	public static final int MP_POTION_SLOT = 30;
 
-	@SerializableField(order = 0, type = SerializableLong.class)
-	private long playerId;
-	@SerializableField(order = 1, type = SerializableByte.class)
+	@SerializableField(order = 0, type = SerializableByte.class)
 	private byte targetSlotIndex;
-	@SerializableField(order = 2, type = SerializableByte.class)
+	@SerializableField(order = 1, type = SerializableByte.class)
 	private byte fromSlotIndex;
-	@SerializableField(order = 3, type = SerializableBoolean.class)
+	@SerializableField(order = 2, type = SerializableBoolean.class)
 	private boolean drop;
-	@SerializableField(order = 4, type = SerializableBoolean.class)
+	@SerializableField(order = 3, type = SerializableBoolean.class)
 	private boolean consume;
-	
-	public static MoveItemPacket from(long playerId, byte targetSlot, byte fromSlot, boolean drop, boolean consume)
+
+	public static MoveItemPacket from(byte targetSlot, byte fromSlot, boolean drop, boolean consume)
 			throws Exception {
-		MoveItemPacket packet = new MoveItemPacket(playerId, targetSlot, fromSlot, drop, consume);
+		MoveItemPacket packet = new MoveItemPacket(targetSlot, fromSlot, drop, consume);
 		return packet;
 	}
 

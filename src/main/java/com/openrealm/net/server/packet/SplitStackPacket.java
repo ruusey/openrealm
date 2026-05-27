@@ -5,7 +5,6 @@ import com.openrealm.net.Streamable;
 import com.openrealm.net.core.PacketId;
 import com.openrealm.net.core.SerializableField;
 import com.openrealm.net.core.nettypes.SerializableInt;
-import com.openrealm.net.core.nettypes.SerializableLong;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -26,8 +25,6 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 @PacketId(packetId = (byte) 37)
 public class SplitStackPacket extends Packet {
-    @SerializableField(order = 0, type = SerializableLong.class)
-    private long playerId;
-    @SerializableField(order = 1, type = SerializableInt.class)
+    @SerializableField(order = 0, type = SerializableInt.class)
     private int fromSlot;
 }

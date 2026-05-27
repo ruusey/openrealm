@@ -491,6 +491,8 @@ public final class ServerAbilityHelper {
 				final List<Enemy> dead = new ArrayList<>();
 				for (final Enemy enemy : targetRealm.getEnemies().values()) {
 					if (enemy.getDeath()) continue;
+					// PvP: skip own-side minions — abilities can't damage friendly minions.
+					if (PvpAbilityHandler.shouldSkipAoeEnemy(targetRealm, player, enemy)) continue;
 					final float dx = enemy.getPos().x - pos.x;
 					final float dy = enemy.getPos().y - pos.y;
 					if (dx * dx + dy * dy > aoeRadius * aoeRadius) continue;
@@ -517,6 +519,11 @@ public final class ServerAbilityHelper {
 				for (final Enemy e : dead) {
 					mgr.enemyDeath(targetRealm, e);
 				}
+				// PvP: aoe_targeted is also the path that should hit opposing players. PvE flow
+				// only iterates enemies; PvpAbilityHandler.applyAoeToOpposingPlayers handles the
+				// scaled (×0.1) damage and STATUS_APPLY ENEMIES_HIT debuffs against opposing team.
+				PvpAbilityHandler.applyAoeToOpposingPlayers(mgr, targetRealm, player, pos,
+						aoeRadius, finalDmg, ab);
 			}
 			if (aoeAlly) {
 				int allyBuffBonusMs = 0;
@@ -554,6 +561,8 @@ public final class ServerAbilityHelper {
 				int cleansedSoFar = 0;
 				for (final Player ally : targetRealm.getPlayers().values()) {
 					if (ally == null) continue;
+					// PvP: heals/buffs only apply to same-team players (self always counts as ally).
+					if (PvpAbilityHandler.shouldSkipAoeAlly(targetRealm, player, ally)) continue;
 					final Vector2f ac = ally.getPos().clone(ally.getSize() / 2, ally.getSize() / 2);
 					final float dx = ac.x - effCenter.x;
 					final float dy = ac.y - effCenter.y;

@@ -19,29 +19,27 @@ import lombok.extern.slf4j.Slf4j;
 @NoArgsConstructor
 @PacketId(packetId = (byte)13)
 public class UsePortalPacket extends Packet {
-	@SerializableField(order = 0, type = SerializableLong.class)	
+	@SerializableField(order = 0, type = SerializableLong.class)
     private long portalId;
 	@SerializableField(order = 1, type = SerializableLong.class)
     private long fromRealmId;
-	@SerializableField(order = 2, type = SerializableLong.class)
-    private long playerId;
-	@SerializableField(order = 3, type = SerializableByte.class)
+	@SerializableField(order = 2, type = SerializableByte.class)
     private byte toVault;
-	@SerializableField(order = 4, type = SerializableByte.class)
+	@SerializableField(order = 3, type = SerializableByte.class)
     private byte toNexus;
 
-    public static UsePortalPacket from(long portalId, long fromRealmId, long playerId) throws Exception {
-    	final UsePortalPacket packet = new UsePortalPacket(portalId, fromRealmId, playerId, (byte)-1, (byte)-1);
+    public static UsePortalPacket from(long portalId, long fromRealmId) throws Exception {
+    	final UsePortalPacket packet = new UsePortalPacket(portalId, fromRealmId, (byte)-1, (byte)-1);
         return packet;
     }
 
-    public static UsePortalPacket toNexus(long fromRealmId, long playerId) throws Exception {
-    	final UsePortalPacket packet = new UsePortalPacket(-1, fromRealmId, playerId, (byte)-1, (byte)1);
+    public static UsePortalPacket toNexus(long fromRealmId) throws Exception {
+    	final UsePortalPacket packet = new UsePortalPacket(-1, fromRealmId, (byte)-1, (byte)1);
         return packet;
     }
 
-    public static UsePortalPacket toVault(long fromRealmId, long playerId) throws Exception {
-    	final UsePortalPacket packet = new UsePortalPacket(-1, fromRealmId, playerId, (byte)1, (byte)-1);
+    public static UsePortalPacket toVault(long fromRealmId) throws Exception {
+    	final UsePortalPacket packet = new UsePortalPacket(-1, fromRealmId, (byte)1, (byte)-1);
         return packet;
     }
     

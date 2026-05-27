@@ -21,11 +21,9 @@ import lombok.extern.slf4j.Slf4j;
 @PacketId(packetId = (byte)5)
 public class HeartbeatPacket extends Packet {
 	@SerializableField(order = 0, type = SerializableLong.class)
-    private long playerId;
-	@SerializableField(order = 1, type = SerializableLong.class)
     private long timestamp;
 
-    public static HeartbeatPacket from(long playerId, long timestamp) throws Exception {
-        return new HeartbeatPacket(playerId, timestamp);
+    public static HeartbeatPacket from(long timestamp) throws Exception {
+        return new HeartbeatPacket(timestamp);
     }
 }

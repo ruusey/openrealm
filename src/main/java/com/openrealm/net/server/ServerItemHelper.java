@@ -127,10 +127,10 @@ public class ServerItemHelper {
     public static void handleSplitStackPacket(RealmManagerServer mgr, Packet packet) {
         try {
             final SplitStackPacket p = (SplitStackPacket) packet;
-            final Realm realm = mgr.findPlayerRealm(p.getPlayerId());
-            if (realm == null) return;
-            final Player player = realm.getPlayer(p.getPlayerId());
+            final Player player = mgr.getPlayerByRemoteAddress(packet.getSrcIp());
             if (player == null) return;
+            final Realm realm = mgr.findPlayerRealm(player.getId());
+            if (realm == null) return;
             final int fromSlot = p.getFromSlot();
             if (fromSlot < Player.EQUIPMENT_SLOT_COUNT || fromSlot >= player.getInventory().length) {
                 log.warn("[SplitStack] Player {} sent out-of-range slot {}", player.getId(), fromSlot);
@@ -207,13 +207,15 @@ public class ServerItemHelper {
     public static void handleMoveItemPacket(RealmManagerServer mgr, Packet packet) throws Exception {
         final MoveItemPacket moveItemPacket = (MoveItemPacket) packet;
 
-        final Realm realm = mgr.findPlayerRealm(moveItemPacket.getPlayerId());
-        final Player player = realm.getPlayer(moveItemPacket.getPlayerId());
+        final Player caller = mgr.getPlayerByRemoteAddress(packet.getSrcIp());
+        if (caller == null) return;
+        final Realm realm = mgr.findPlayerRealm(caller.getId());
+        final Player player = realm.getPlayer(caller.getId());
 
         final int fromIdx = moveItemPacket.getFromSlotIndex();
         final int targetIdx = moveItemPacket.getTargetSlotIndex();
         ServerItemHelper.log.info("[ItemMove] player={} from={} target={} drop={} consume={} pos=({}, {})",
-                moveItemPacket.getPlayerId(), fromIdx, targetIdx,
+                caller.getId(), fromIdx, targetIdx,
                 moveItemPacket.isDrop(), moveItemPacket.isConsume(),
                 player != null ? player.getPos().x : -1f,
                 player != null ? player.getPos().y : -1f);

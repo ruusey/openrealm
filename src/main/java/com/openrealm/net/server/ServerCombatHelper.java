@@ -34,6 +34,11 @@ public final class ServerCombatHelper {
 
     private static final int PRECISION_STRIKER_DEX_DIVISOR = 10;
 
+    /** Player-vs-player damage scaling inside a PvP realm. Mirrors the design spec
+     *  "all weapon/ability damage scaled to 1/10th" so PvP fights last long enough
+     *  to be tactical rather than a one-shot exchange. */
+    private static final float PVP_DAMAGE_SCALE = 0.1f;
+
     private ServerCombatHelper() {}
 
     public static void processPlayerHit(final RealmManagerServer mgr,
@@ -41,7 +46,28 @@ public final class ServerCombatHelper {
         final Realm targetRealm = mgr.getRealms().get(realmId);
         final Player player = targetRealm.getPlayer(p.getId());
         if (player == null) return;
-        if (!(RealmManagerServer.circleHit(b, player) && b.isEnemy() && !b.isPlayerHit())) return;
+        if (!RealmManagerServer.circleHit(b, player) || b.isPlayerHit()) return;
+
+        // PvP player-vs-player path: bullet originated from another player. PvE bullets
+        // from players never hit other players (gated on b.isEnemy() below).
+        if (!b.isEnemy()) {
+            if (!targetRealm.isPvp()) return;
+            processPvpPlayerHit(mgr, targetRealm, b, player);
+            return;
+        }
+
+        // Enemy → player path: in a PvP realm, swallow bullets fired by a friendly
+        // minion (same team as the target) so own-side waves can't team-kill.
+        if (targetRealm.isPvp() && b.getSrcEntityId() != 0L && player.getPvpTeamId() != 0) {
+            final Enemy srcEnemy = targetRealm.getEnemies().get(b.getSrcEntityId());
+            if (srcEnemy != null && srcEnemy.getTeamId() != 0
+                    && srcEnemy.getTeamId() == player.getPvpTeamId()) {
+                b.setPlayerHit(true);
+                targetRealm.getExpiredBullets().add(b.getId());
+                targetRealm.removeBullet(b);
+                return;
+            }
+        }
 
         if (tryDeflect(mgr, targetRealm, b, player)) return;
 
@@ -134,6 +160,20 @@ public final class ServerCombatHelper {
                 || targetRealm.getExpiredEnemies().contains(e.getId())) return;
         if (e.hasEffect(StatusEffectType.STASIS) || e.hasEffect(StatusEffectType.INVINCIBLE)) return;
         if (!(RealmManagerServer.circleHit(b, e) && !b.isEnemy())) return;
+
+        // PvP friendly-fire: player bullet hitting an allied minion (same teamId) is a no-op.
+        if (targetRealm.isPvp() && e.getTeamId() != 0 && b.getSrcEntityId() != 0L) {
+            final Player srcPlayer = mgr.getPlayerById(b.getSrcEntityId());
+            if (srcPlayer != null && srcPlayer.getPvpTeamId() != 0
+                    && srcPlayer.getPvpTeamId() == e.getTeamId()) {
+                targetRealm.hitEnemy(b.getId(), e.getId());
+                if (!b.hasFlag(ProjectileFlag.PASS_THROUGH_ENEMIES)) {
+                    targetRealm.getExpiredBullets().add(b.getId());
+                    targetRealm.removeBullet(b);
+                }
+                return;
+            }
+        }
 
         final boolean armorPiercing = b.hasFlag(ProjectileFlag.ARMOR_PIERCING);
         final boolean armorBroken = e.hasEffect(StatusEffectType.ARMOR_BROKEN);
@@ -399,5 +439,49 @@ public final class ServerCombatHelper {
                         spawnCenter.x, spawnCenter.y, 40f, (short) 600));
         mgr.sendTextEffectToPlayer(player, TextEffect.PLAYER_INFO, "BUNSHIN");
         return true;
+    }
+
+    /** Player-vs-player damage path used only inside a PvP realm. Applies the
+     *  {@link #PVP_DAMAGE_SCALE} multiplier, skips friendly fire on self/teammates,
+     *  bypasses defense (raw scaled damage is the design intent), and routes lethal
+     *  hits through {@link RealmManagerServer#playerDeath} so the PvP no-permadeath
+     *  short-circuit there can hand off to {@code PvpMatchManager}. */
+    private static void processPvpPlayerHit(final RealmManagerServer mgr,
+            final Realm targetRealm, final Bullet b, final Player player) {
+        if (b.getSrcEntityId() == player.getId()) return;
+        final Player srcPlayer = mgr.getPlayerById(b.getSrcEntityId());
+        if (srcPlayer != null && srcPlayer.getPvpTeamId() != 0
+                && srcPlayer.getPvpTeamId() == player.getPvpTeamId()) {
+            return;
+        }
+        if (player.hasEffect(StatusEffectType.INVINCIBLE)) return;
+
+        b.setPlayerHit(true);
+        short dmgToInflict = (short) Math.max(1, Math.round(b.getDamage() * PVP_DAMAGE_SCALE));
+        mgr.sendTextEffectToPlayer(player, TextEffect.DAMAGE, "-" + dmgToInflict);
+        player.setHealth(player.getHealth() - dmgToInflict);
+        player.setLastDamageTakenMs(Instant.now().toEpochMilli());
+
+        // Apply projectile-borne debuffs (ability STATUS_APPLY ENEMIES_HIT lands here too).
+        if (b.getEffects() != null) {
+            for (final ProjectileEffect pe : b.getEffects()) {
+                final StatusEffectType effectType = StatusEffectType.valueOf(pe.getEffectId());
+                if (effectType != null) {
+                    player.addEffect(effectType, pe.getDuration());
+                    if (effectType == StatusEffectType.PARALYZED) {
+                        player.setDx(0); player.setDy(0);
+                    }
+                    mgr.sendTextEffectToPlayer(player, TextEffect.PLAYER_INFO, effectType.name());
+                }
+            }
+        }
+
+        mgr.invalidatePlayerStateCache(player.getId());
+        targetRealm.getExpiredBullets().add(b.getId());
+        targetRealm.removeBullet(b);
+
+        if (player.getDeath()) {
+            mgr.playerDeath(targetRealm, player);
+        }
     }
 }

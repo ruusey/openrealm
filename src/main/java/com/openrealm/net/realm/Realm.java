@@ -80,6 +80,8 @@ public class Realm {
     private long sourceRealmId;
     // Designated dungeon boss enemyId — drops the exit portal even with no loot table.
     private int dungeonBossEnemyId;
+    // Mirrored from MapModel.isPvp at loadMap. Gates friendly-fire checks + no-permadeath in playerDeath.
+    private boolean isPvp;
     private Map<Long, Player> players;
     private Map<Long, Bullet> bullets;
     private Map<Long, List<Long>> bulletHits;
@@ -335,6 +337,8 @@ public class Realm {
         } else {
             this.tileManager = new TileManager(GameDataManager.MAPS.get(mapId));
         }
+        final MapModel model = GameDataManager.MAPS.get(mapId);
+        this.isPvp = model != null && model.isPvp();
     }
     
     public void clearData() {

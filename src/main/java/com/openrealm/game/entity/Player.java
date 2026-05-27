@@ -110,6 +110,10 @@ public class Player extends Entity {
 	@Builder.Default
 	private Map<Integer, Integer> abilitySkillPoints = new HashMap<>();
 
+	/** PvP team affiliation. 0 = not in a PvP match (no friendly-fire gating).
+	 *  Non-zero only set by PvpMatchManager on match start and cleared on match end. */
+	private transient byte pvpTeamId = 0;
+
 	public Player() {
 		super(0, null, 0);
 	}
@@ -123,7 +127,8 @@ public class Player extends Entity {
 			long[] abilityCooldowns, CastState currentCast,
 			PlayerMetrics metrics,
 			int[] hotbarBindings, int basicAttackCounter,
-			int availableSkillPoints, Map<Integer, Integer> abilitySkillPoints) {
+			int availableSkillPoints, Map<Integer, Integer> abilitySkillPoints,
+			byte pvpTeamId) {
 		super(0, null, 0);
 		this.inventory = inventory;
 		this.lastStatsTime = lastStatsTime;
@@ -156,6 +161,7 @@ public class Player extends Entity {
 		this.basicAttackCounter = basicAttackCounter;
 		this.availableSkillPoints = availableSkillPoints;
 		this.abilitySkillPoints = abilitySkillPoints != null ? abilitySkillPoints : new HashMap<>();
+		this.pvpTeamId = pvpTeamId;
 		// Re-seed hotbar bindings from class default when transient state is empty (post-login).
 		boolean hotbarEmpty = true;
 		for (int v : this.hotbarBindings) { if (v != 0) { hotbarEmpty = false; break; } }

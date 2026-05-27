@@ -37,6 +37,15 @@ public class MapModel {
     private List<float[]> spawnPoints; // [[x,y], [x,y], ...] — player spawn positions, picked randomly
     private List<PortalModel> staticPortals; // Permanent portals placed on the map
     private float difficulty; // Map-level difficulty for static maps (fallback when no terrain)
+    private boolean isPvp;
+    private List<float[]> teamASpawnPoints;
+    private List<float[]> teamBSpawnPoints;
+    /** PvP lane waypoints walked by team A (in order A-spawn → B-spawn).
+     *  Each lane is List<float[]> of [x,y] in pixel coords; outer list = lanes. */
+    private List<List<float[]>> pvpLanesTeamA;
+    /** Team B walks the same lanes but in the reverse direction; populated explicitly
+     *  in the map JSON so designers can place asymmetric waypoints per side if needed. */
+    private List<List<float[]>> pvpLanesTeamB;
     /**
      * Phase 4 — dungeon/party scoping. How many parties may simultaneously
      * occupy this map instance.
