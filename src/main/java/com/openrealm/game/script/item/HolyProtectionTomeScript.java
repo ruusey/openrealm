@@ -54,9 +54,12 @@ public class HolyProtectionTomeScript extends UseableItemScriptBase {
         this.mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.aoeEffect(
                 CreateEffectPacket.EFFECT_HEAL_RADIUS, center.x, center.y, 224.0f, (short) 1500));
 
-        // Heal all players in range (lesser heal than normal tomes)
-        final Player[] targets = targetRealm
+        // Heal all players in range (lesser heal than normal tomes). Wrapped with
+        // PvpAbilityHandler.filterAllies so PvP arenas only heal same-team players.
+        final Player[] candidates = targetRealm
                 .getPlayersInBounds(targetRealm.getTileManager().getRenderViewPort(player, 7));
+        final Player[] targets = com.openrealm.net.server.PvpAbilityHandler
+                .filterAllies(targetRealm, player, candidates);
         for (final Player target : targets) {
             target.addEffect(effect.getEffectId(), effect.getDuration());
             int maxHp = target.getComputedStats().getHp();

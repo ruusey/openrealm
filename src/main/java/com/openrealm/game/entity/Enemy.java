@@ -52,6 +52,10 @@ public class Enemy extends Entity {
     /** Index into the lane waypoint list, advanced when the minion reaches the next point.
      *  Team A and team B walk separate (pre-oriented) lists from index 0 → N. */
     private transient int minionLaneIdx = 0;
+    /** Consecutive tickMove invocations where both axes were blocked. Drives the
+     *  corner-escape nudge so enemies don't freeze when wedged into wall intersections.
+     *  Applies to both PvE and PvP — fixes a long-standing pathing bug. */
+    private transient int stuckTicks = 0;
 
     // Phase-based state
     private float orbitAngle = 0f;
@@ -779,18 +783,48 @@ public class Enemy extends Entity {
         if (System.currentTimeMillis() < this.phaseTransitionUntil) return;
         if (this.hasEffect(StatusEffectType.PARALYZED) || this.hasEffect(StatusEffectType.STASIS)) return;
 
-        if (!targetRealm.getTileManager().collisionTile(this, this.dx, 0)
-                && !targetRealm.getTileManager().collidesXLimit(this, this.dx)
-                && !targetRealm.getTileManager().isVoidTile(
-                        this.pos.clone(this.getSize() / 2, this.getSize() / 2), this.dx, 0)) {
-            this.pos.x += this.dx;
+        final boolean xMoved = tryMoveAxis(targetRealm, this.dx, 0f);
+        final boolean yMoved = tryMoveAxis(targetRealm, 0f, this.dy);
+
+        if (xMoved || yMoved) {
+            this.stuckTicks = 0;
+            return;
         }
-        if (!targetRealm.getTileManager().collisionTile(this, 0, this.dy)
-                && !targetRealm.getTileManager().collidesYLimit(this, this.dy)
-                && !targetRealm.getTileManager().isVoidTile(
-                        this.pos.clone(this.getSize() / 2, this.getSize() / 2), 0, this.dy)) {
-            this.pos.y += this.dy;
+        // Both axes blocked — enemy is wedged into an interior corner. After a short
+        // run of stuck ticks, try perpendicular escape directions so the AI doesn't
+        // freeze forever on wall intersections. Mirrors what a human player would do
+        // by reflex: turn 90° and try to slide along the obstacle.
+        this.stuckTicks++;
+        if (this.stuckTicks > 3) {
+            // Nudge magnitude = ~half a tile so we clear the corner geometry in a few
+            // ticks instead of crawling a pixel at a time (the original micro-nudge
+            // wasn't enough to escape inside corners). Sign is taken from velocity.
+            final float NUDGE = 16f;
+            final float sgnX = this.dx > 0 ? 1f : this.dx < 0 ? -1f : 1f;
+            final float sgnY = this.dy > 0 ? 1f : this.dy < 0 ? -1f : 1f;
+            // Try four perpendicular escape candidates in order: ±perpX, ±perpY.
+            final float[][] tries = {
+                { -sgnY * NUDGE, 0f }, { sgnY * NUDGE, 0f },
+                { 0f,  sgnX * NUDGE }, { 0f, -sgnX * NUDGE },
+            };
+            boolean escaped = false;
+            for (final float[] t : tries) {
+                if (tryMoveAxis(targetRealm, t[0], t[1])) { escaped = true; break; }
+            }
+            if (escaped || this.stuckTicks > 30) this.stuckTicks = 0;
         }
+    }
+
+    private boolean tryMoveAxis(final Realm targetRealm, final float deltaX, final float deltaY) {
+        if (deltaX == 0f && deltaY == 0f) return false;
+        if (targetRealm.getTileManager().collisionTile(this, deltaX, deltaY)) return false;
+        if (deltaX != 0f && targetRealm.getTileManager().collidesXLimit(this, deltaX)) return false;
+        if (deltaY != 0f && targetRealm.getTileManager().collidesYLimit(this, deltaY)) return false;
+        if (targetRealm.getTileManager().isVoidTile(
+                this.pos.clone(this.getSize() / 2, this.getSize() / 2), deltaX, deltaY)) return false;
+        this.pos.x += deltaX;
+        this.pos.y += deltaY;
+        return true;
     }
 
     public void idle(boolean applyMovement) {

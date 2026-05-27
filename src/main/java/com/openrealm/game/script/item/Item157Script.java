@@ -50,9 +50,12 @@ public class Item157Script extends UseableItemScriptBase {
             CreateEffectPacket.EFFECT_HEAL_RADIUS, center.x, center.y, 224.0f, (short) 1500,
             (byte) Math.max(0, tier)));
 
-        // Heal ALL players in range (including self) and apply healing effect
-        final Player[] targets = targetRealm
+        // Heal ALL players in range (including self) and apply healing effect.
+        // Wrapped with PvpAbilityHandler.filterAllies so PvP heals stay on-team.
+        final Player[] candidates = targetRealm
                 .getPlayersInBounds(targetRealm.getTileManager().getRenderViewPort(player, 7));
+        final Player[] targets = com.openrealm.net.server.PvpAbilityHandler
+                .filterAllies(targetRealm, player, candidates);
         for (final Player target : targets) {
             target.addEffect(effect.getEffectId(), effect.getDuration());
             int maxHp = target.getComputedStats().getHp();

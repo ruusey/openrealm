@@ -1553,6 +1553,8 @@ public class RealmManagerServer implements Runnable {
 			this.tickRealmPlayers(realm, time);
 			this.tickRealmEnemies(realm, time);
 			this.tickRealmBullets(realm);
+			// PvP-only pass — all logic lives in PvpMinionAi; PvE realms short-circuit on isPvp() check.
+			PvpMinionAi.processBulletVsMinionHits(realm, this);
 		}
 
 		final long globalStart = System.nanoTime();
@@ -1610,6 +1612,8 @@ public class RealmManagerServer implements Runnable {
 		final Player[] activePlayers = realm.getPlayers().values().toArray(new Player[0]);
 
 		final Set<Long> candidates = collectAwakeCandidates(realm, activePlayers);
+		// PvP realms tick every minion regardless of player proximity. No-op on PvE realms.
+		PvpMinionAi.expandTickCandidates(realm, candidates);
 		for (final long cid : candidates) {
 			final Enemy enemy = realm.getEnemies().get(cid);
 			if (enemy == null) continue;

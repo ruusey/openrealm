@@ -238,12 +238,28 @@ public class StressTestClient implements Runnable {
             float[][] dirs = { {0f, -1f}, {1f, 0f}, {0f, 1f}, {-1f, 0f} };
             float vx = dirs[dirIdx][0];
             float vy = dirs[dirIdx][1];
-            // NOTE: stress-test packet-emit calls disabled — packet constructor signatures
-            // drifted from this client and a clean build can't resolve them. Wire-up is out
-            // of scope for the PvP demo; revisit when refreshing the stress test harness.
-            // PlayerMovePacket movePacket = new PlayerMovePacket(this.moveTick, vx, vy);
-            // this.outboundPacketQueue.add(movePacket);
-            // ... (shoot/ability/heartbeat emits omitted)
+            // Default behavior: emit a PlayerMovePacket every tick so the bot
+            // walks in the random-square pattern computed above. Without this,
+            // the bot looks stationary even though its `vx`/`vy` are non-zero.
+            final PlayerMovePacket movePacket = new PlayerMovePacket(this.moveTick, vx, vy);
+            this.outboundPacketQueue.add(movePacket);
+
+            // Spam flag (/spawnbots N spam): continuously cast wizard ability 1.
+            // Servers' cooldown gate (handled in handleUseAbilityServer) ignores
+            // any extras that arrive while the slot is still on CD, so spamming
+            // every tick is safe — the cast lands as fast as the cooldown allows.
+            if (this.spamMode) {
+                final float angle = RANDOM.nextFloat() * (float) (2 * Math.PI);
+                final float range = 80 + RANDOM.nextFloat() * 120;
+                final float abilityX = this.spawnX + (float) Math.cos(angle) * range;
+                final float abilityY = this.spawnY + (float) Math.sin(angle) * range;
+                this.outboundPacketQueue.add(new UseAbilityPacket(abilityX, abilityY, (byte) 0));
+            }
+
+            // Periodic heartbeat keeps the server from reaping the connection.
+            if (RANDOM.nextInt(20) == 0) {
+                this.outboundPacketQueue.add(HeartbeatPacket.from(System.currentTimeMillis()));
+            }
         } catch (Exception e) {
             log.error("[Client-{}] Gameplay sim error: {}", this.clientIndex, e.getMessage());
         }

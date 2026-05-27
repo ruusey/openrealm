@@ -31,6 +31,9 @@ public class PvpMatchManager {
     public static final int MINION_STRONG_ENEMY_ID = 8;
     public static final int MINION_BASIC_SIZE = 32;
     public static final int MINION_STRONG_SIZE = 32;
+    /** Tick the match-state worker also detects empty arenas and tears them down,
+     *  so a desync where players exit by means other than match-end doesn't leak realms. */
+    public static final long EMPTY_ARENA_GRACE_MS = 5_000L;
     public static final long CHALLENGE_TTL_MS = 30_000L;
     public static final long WAVE_INTERVAL_MS = 30_000L;
     public static final long FIRST_WAVE_DELAY_MS = 10_000L;
@@ -96,6 +99,18 @@ public class PvpMatchManager {
                     }
                     for (final PvpMatch match : activeMatches.values()) {
                         if (match.winnerTeam != 0) continue;
+                        // Empty-arena reaper: if no human players remain in the arena, tear it down.
+                        // Skip during the start-of-match grace window so we don't reap before LoadPacket
+                        // round-trips finish.
+                        if (now - match.startedAtMs > EMPTY_ARENA_GRACE_MS) {
+                            final Realm arena = mgr.getRealms().get(match.realmId);
+                            if (arena == null || arena.getPlayers().isEmpty()) {
+                                log.info("[PVP] Reaping empty arena realmId={} (no players left)", match.realmId);
+                                match.winnerTeam = -1; // sentinel "no winner / reaped"
+                                endMatch(match);
+                                continue;
+                            }
+                        }
                         if (now - match.startedAtMs < FIRST_WAVE_DELAY_MS) continue;
                         if (now - match.lastWaveAtMs >= WAVE_INTERVAL_MS) {
                             spawnMinionWave(match);
@@ -199,6 +214,12 @@ public class PvpMatchManager {
 
                 final Vector2f spawnA = pickSpawn(mapModel.getTeamASpawnPoints(), mapModel);
                 final Vector2f spawnB = pickSpawn(mapModel.getTeamBSpawnPoints(), mapModel);
+                log.info("[PVP] startMatch resolved spawns — teamA={} (from {} pts), teamB={} (from {} pts), pvpFlag={}, lanesA={}, lanesB={}",
+                        spawnA, mapModel.getTeamASpawnPoints() == null ? "null" : mapModel.getTeamASpawnPoints().size(),
+                        spawnB, mapModel.getTeamBSpawnPoints() == null ? "null" : mapModel.getTeamBSpawnPoints().size(),
+                        mapModel.isPvp(),
+                        mapModel.getPvpLanesTeamA() == null ? "null" : mapModel.getPvpLanesTeamA().size(),
+                        mapModel.getPvpLanesTeamB() == null ? "null" : mapModel.getPvpLanesTeamB().size());
 
                 preparePlayerForMatch(playerA, spawnA, TEAM_A);
                 preparePlayerForMatch(playerB, spawnB, TEAM_B);
@@ -273,8 +294,16 @@ public class PvpMatchManager {
     private static void spawnLaneMinions(Realm arena, MapModel mapModel, byte teamId) {
         final List<List<float[]>> lanes = (teamId == TEAM_A)
                 ? mapModel.getPvpLanesTeamA() : mapModel.getPvpLanesTeamB();
-        if (lanes == null) return;
+        if (lanes == null) {
+            log.warn("[PVP] spawnLaneMinions team={} has NULL lanes — maps.json missing pvpLanesTeam{} field "
+                    + "(or server cached an older copy). No minions will spawn until restart with new data.",
+                    teamId, teamId == TEAM_A ? "A" : "B");
+            return;
+        }
         final int totalPerLane = BASIC_PER_LANE + STRONG_PER_LANE;
+        int spawned = 0;
+        long firstId = 0L;
+        float firstX = 0f, firstY = 0f;
         for (int laneIdx = 0; laneIdx < Math.min(LANES_PER_TEAM, lanes.size()); laneIdx++) {
             final List<float[]> waypoints = lanes.get(laneIdx);
             if (waypoints == null || waypoints.isEmpty()) continue;
@@ -288,13 +317,22 @@ public class PvpMatchManager {
                 final Vector2f pos = new Vector2f(
                         startWp[0] + (float) Math.cos(angle) * radius,
                         startWp[1] + (float) Math.sin(angle) * radius);
-                final Enemy minion = new Enemy(Realm.RANDOM.nextLong(), enemyId, pos, size, -1);
+                // weaponId MUST equal the model's attackId — fireLegacyAttack looks up
+                // PROJECTILE_GROUPS by weaponId, so passing -1 here means the minion silently
+                // never fires (was the original "minions don't attack opposing players" bug).
+                final int attackId = (com.openrealm.game.data.GameDataManager.ENEMIES.get(enemyId) != null)
+                        ? com.openrealm.game.data.GameDataManager.ENEMIES.get(enemyId).getAttackId() : -1;
+                final Enemy minion = new Enemy(Realm.RANDOM.nextLong(), enemyId, pos, size, attackId);
                 minion.setTeamId(teamId);
                 minion.setMinionLaneId((byte) (laneIdx + 1));
                 minion.setMinionLaneIdx(0);
                 arena.addEnemy(minion);
+                if (spawned == 0) { firstId = minion.getId(); firstX = pos.x; firstY = pos.y; }
+                spawned++;
             }
         }
+        log.info("[PVP] spawnLaneMinions team={} added {} minions (firstId={} pos=({},{}))",
+                teamId, spawned, firstId, firstX, firstY);
     }
 
     /** ServerCombatHelper calls this in place of mgr.playerDeath when a player's HP hits 0

@@ -52,6 +52,33 @@ public final class PvpAbilityHandler {
         return source.getPvpTeamId() != ally.getPvpTeamId();
     }
 
+    /**
+     * Filter a candidate list of players down to those that should receive an ally-targeted
+     * effect (heal/buff/passive) from {@code source}. PvE realms pass everyone through; PvP
+     * realms keep self + same-team players only.
+     *
+     * Item scripts (Priest Tome, Holy Protection, Berserk, Seal of Blasphemous Prayer, etc.)
+     * call this around their {@code realm.getPlayersInBounds(...)} iteration so a single PvP
+     * decision controls who gets buffed — no per-script PvP branching.
+     */
+    public static Player[] filterAllies(final Realm realm, final Player source, final Player[] candidates) {
+        if (candidates == null || candidates.length == 0) return candidates;
+        if (realm == null || !realm.isPvp() || source == null) return candidates;
+        int kept = 0;
+        final Player[] tmp = new Player[candidates.length];
+        for (final Player p : candidates) {
+            if (p == null) continue;
+            if (p.getId() == source.getId()) { tmp[kept++] = p; continue; }
+            if (p.getPvpTeamId() != 0 && p.getPvpTeamId() == source.getPvpTeamId()) {
+                tmp[kept++] = p;
+            }
+        }
+        if (kept == candidates.length) return candidates;
+        final Player[] out = new Player[kept];
+        System.arraycopy(tmp, 0, out, 0, kept);
+        return out;
+    }
+
     /** Applies a damaging/debuffing AoE to opposing-team players in radius. No-op outside PvP.
      *  Mirrors the relevant subset of {@code aoeTargeted} but targeted at players instead of enemies. */
     public static void applyAoeToOpposingPlayers(final RealmManagerServer mgr, final Realm realm,
