@@ -106,7 +106,12 @@ public enum StatusEffectType {
      *  ONLY from sources whose party (or self) matches the caster's party at
      *  apply time. Caster's party id is carried per-instance on the
      *  ProjectileEffect so cross-party fights don't share the debuff window. */
-    WITHER((short) 38);
+    WITHER((short) 38),
+    /** Marker on the attacker: while active, basic-attack projectiles
+     *  from this entity apply POISONED + register a poison DoT on the
+     *  enemy they hit. Applied by Assassin's Imbue Poison ability;
+     *  attacker-side only — does NOT damage the carrier. */
+    IMBUED_POISON((short) 39);
 
     public static Map<Short, StatusEffectType> map = new HashMap<>();
     static {

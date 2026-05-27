@@ -548,8 +548,8 @@ public class ServerGameLogic {
 			if (archForRate != null && archForRate.getAttackSpeedMul() > 0f) {
 				dex = dex * archForRate.getAttackSpeedMul();
 			}
-			// BERSERK = +50% fire rate; SPEEDY is movement-only.
-			if (player.hasEffect(StatusEffectType.BERSERK)) {
+			// BERSERK or FURY = +50% fire rate; SPEEDY is movement-only.
+			if (player.hasEffect(StatusEffectType.BERSERK) || player.hasEffect(StatusEffectType.FURY)) {
 				dex = dex * 1.5;
 			}else if(player.hasEffect(StatusEffectType.DAZED)) {
 				dex = 1.0;
@@ -660,11 +660,20 @@ public class ServerGameLogic {
 				final int totalBullets = archCount + ctx.getExtraProjectiles();
 				final float SPREAD = ((arch != null && arch.getSpreadRad() > 0f)
 						? arch.getSpreadRad() : 0.12f) + ctx.getExtraSpread();
+				if (ctx.getExtraProjectiles() > 0) {
+					log.info("[SHOOT-MULTI] player={} weapon.gemType={} archCount={} extraProjectiles={} totalBullets={} SPREAD={}",
+							player.getName(),
+							player.getInventory()[0] != null ? player.getInventory()[0].getGemstoneType() : "no-weapon",
+							archCount, ctx.getExtraProjectiles(), totalBullets, SPREAD);
+				}
 				for (int i = 0; i < totalBullets; i++) {
 					final float deltaA = (i - (totalBullets - 1) / 2f) * SPREAD;
-					final short dmg = (i == 0) ? rolledDamage : CombatMath.applyShotDamageMods(rolledDamage, ctx);
+					// Re-rolling damage mods per bullet was a latent bug — i=0 used pre-rolled
+					// damage (correct), i>0 re-rolled crit independently which gave the spread
+					// bullets a DIFFERENT damage value than the center. Apply the pre-rolled
+					// damage uniformly so all multishot bullets land with consistent values.
 					spawnPlayerBullet(mgr, realm.getRealmId(), player, weaponPgId, proj,
-							source.clone(-offset, -offset), shootAngle + deltaA, dmg, ctx, arch);
+							source.clone(-offset, -offset), shootAngle + deltaA, rolledDamage, ctx, arch);
 				}
 			}
 		}

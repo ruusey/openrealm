@@ -34,6 +34,14 @@ public final class ServerCombatHelper {
 
     private static final int PRECISION_STRIKER_DEX_DIVISOR = 10;
 
+    /** Assassin Imbue Poison: per-hit DoT magnitude = BASE + attacker DEX.
+     *  Tuned lighter than the throw-vial poison (T0=150+str over 3s) and
+     *  the BLEEDING DoT — meant to chip steadily through a basic-attack
+     *  rotation, not nuke. Total damage spreads across the duration in
+     *  200ms ticks. */
+    private static final int  IMBUE_POISON_BASE         = 80;
+    private static final long IMBUE_POISON_DURATION_MS  = 5000L;
+
     /** Player-vs-player damage scaling inside a PvP realm. Mirrors the design spec
      *  "all weapon/ability damage scaled to 1/10th" so PvP fights last long enough
      *  to be tactical rather than a one-shot exchange. */
@@ -208,6 +216,15 @@ public final class ServerCombatHelper {
             }
             if (fromPlayer != null && fromPlayer.hasEffect(StatusEffectType.WEAKEN)) {
                 dmgToInflict = (short) (dmgToInflict * 0.65);
+            }
+            // Assassin Imbue Poison: every basic-attack hit lays a fresh
+            // poison DoT on the target. Skip if already POISONED so rapid
+            // fire doesn't stack 30 overlapping ticks per second.
+            if (fromPlayer != null && fromPlayer.hasEffect(StatusEffectType.IMBUED_POISON)
+                    && !e.hasEffect(StatusEffectType.POISONED)) {
+                final int dot = IMBUE_POISON_BASE + fromPlayer.getComputedStats().getDex();
+                e.addEffect(StatusEffectType.POISONED, IMBUE_POISON_DURATION_MS);
+                targetRealm.registerPoisonDot(e.getId(), dot, IMBUE_POISON_DURATION_MS, fromPlayer.getId());
             }
         }
         if (e.hasEffect(StatusEffectType.CURSED)) {
@@ -458,7 +475,16 @@ public final class ServerCombatHelper {
 
         b.setPlayerHit(true);
         short dmgToInflict = (short) Math.max(1, Math.round(b.getDamage() * PVP_DAMAGE_SCALE));
-        mgr.sendTextEffectToPlayer(player, TextEffect.DAMAGE, "-" + dmgToInflict);
+        // Broadcast (not just-to-target) so the SHOOTER sees the damage number — PvE flow
+        // uses broadcastTextEffect for the same reason on enemy hits.
+        final float impactX = b.getPos().x + b.getSize() * 0.5f;
+        final float impactY = b.getPos().y + b.getSize() * 0.5f;
+        mgr.broadcastTextEffect(targetRealm, EntityType.PLAYER, player,
+                TextEffect.DAMAGE, "-" + dmgToInflict, impactX, impactY);
+        // Visual impact effect so the bullet doesn't look like it passes through.
+        mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.aoeEffect(
+                CreateEffectPacket.EFFECT_WIZARD_BURST,
+                impactX, impactY, 24f, (short) 280, (byte) 1));
         player.setHealth(player.getHealth() - dmgToInflict);
         player.setLastDamageTakenMs(Instant.now().toEpochMilli());
 
