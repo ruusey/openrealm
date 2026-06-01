@@ -127,11 +127,6 @@ public class ServerGameLogic {
 		TextPacket text = TextPacket.create("SYSTEM", player.getName(), zoneName);
 		mgr.enqueueServerPacket(player, text);
 
-		// Overseer welcome message
-		if (realm.getOverseer() != null) {
-			realm.getOverseer().welcomePlayer(player);
-		}
-
 		// Show online player list when joining the overworld (beach entry node)
 		if (realm.getNodeId() != null && realm.getNodeId().startsWith("beach")) {
 			final StringBuilder sb = new StringBuilder("Players online: ");

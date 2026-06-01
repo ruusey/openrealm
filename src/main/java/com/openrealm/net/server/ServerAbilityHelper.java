@@ -503,8 +503,15 @@ public final class ServerAbilityHelper {
 							final StatusEffectType st = StatusEffectType.map.get(
 									Short.parseShort(String.valueOf(aoeEff.getStatusId()).trim()));
 							if (st != null) {
-								mgr.applyStatusWithFeedback(targetRealm, enemy, EntityType.ENEMY,
-										st, aoeEff.getBaseDurationMs() + debuffBonusMs);
+								final long stDur = aoeEff.getBaseDurationMs() + debuffBonusMs;
+								mgr.applyStatusWithFeedback(targetRealm, enemy, EntityType.ENEMY, st, stDur);
+								// Poison/bleed AoE abilities tick damage over time, scaled off this hit.
+								if (finalDmg > 0 && (st == StatusEffectType.POISONED
+										|| st == StatusEffectType.BLEEDING)) {
+									final int dotTotal = Math.max(1,
+											Math.round(finalDmg * ServerCombatHelper.ON_HIT_DOT_FRACTION));
+									targetRealm.registerDot(enemy.getId(), st, dotTotal, stDur, player.getId());
+								}
 							}
 						} catch (NumberFormatException ignore) { }
 					}

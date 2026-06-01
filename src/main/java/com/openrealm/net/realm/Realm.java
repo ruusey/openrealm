@@ -54,6 +54,7 @@ import com.openrealm.net.client.packet.LoadPacket;
 import com.openrealm.net.client.packet.ObjectMovePacket;
 import com.openrealm.net.client.packet.UpdatePacket;
 import com.openrealm.net.entity.NetObjectMovement;
+import com.openrealm.net.server.PvpEffectsManager;
 import com.openrealm.net.server.ServerGameLogic;
 import com.openrealm.util.GameObjectUtils;
 import com.openrealm.util.WorkerThread;
@@ -113,9 +114,11 @@ public class Realm {
     private transient Map<Long, NetObjectMovement> tickMovementCache;
     private transient Map<Long, UpdatePacket> tickStrippedUpdateCache;
 
-    private transient RealmOverseer overseer;
+    // Per-enemy damage accounting for soulbound loot; keyed enemyId -> (playerId -> damage).
+    // Logic lives in ServerSoulboundHelper.
+    private final transient Map<Long, Map<Long, Integer>> damageTracker = new ConcurrentHashMap<>();
 
-    private final List<PoisonDotState> activePoisonDots = new ArrayList<>();
+    private final List<DotState> activeDots = new ArrayList<>();
 
     private final List<PoisonThrowState> pendingPoisonThrows = new ArrayList<>();
     private final List<TrapState> activeTraps = new ArrayList<>();
@@ -1412,8 +1415,8 @@ public class Realm {
     public void respawnEnemies(int batchSize) {
         final TerrainGenerationParameters params = this.tileManager.getTerrainParams();
         if (params == null) return;
-        final boolean hasZones = params.getZones() != null && !params.getZones().isEmpty();
-        if (!hasZones) return;
+        final List<OverworldZone> zones = params.getZones();
+        if (zones == null || zones.isEmpty()) return;
 
         // Only respawn if enemy count has dropped below 75% of the initial population
         final int threshold = (int) (this.initialEnemyCount * 0.75);
@@ -1423,7 +1426,9 @@ public class Realm {
         batchSize = Math.min(batchSize, this.initialEnemyCount - this.enemies.size());
         if (batchSize <= 0) return;
 
-        // Pre-build enemy lists per zone
+        // Roster per zone, drawn straight from the terrain's enemy groups. A zone's
+        // spawns ONLY ever come from its own group — there is no cross-zone fallback,
+        // so an inner-tier roster can never leak into an outer zone (and vice versa).
         final Map<Integer, List<EnemyModel>> enemiesByGroup = new HashMap<>();
         for (EnemyGroup group : params.getEnemyGroups()) {
             List<EnemyModel> models = new ArrayList<>();
@@ -1433,12 +1438,6 @@ public class Realm {
             }
             enemiesByGroup.put(group.getOrdinal(), models);
         }
-        final List<EnemyModel> defaultEnemies = enemiesByGroup.getOrDefault(0, new ArrayList<>());
-        if (defaultEnemies.isEmpty() && enemiesByGroup.isEmpty()) return;
-
-        final int tileSize = this.tileManager.getMapLayers().get(0).getTileSize();
-        final int mapHeight = this.tileManager.getMapLayers().get(0).getHeight();
-        final int mapWidth = this.tileManager.getMapLayers().get(0).getWidth();
 
         // Don't spawn within player viewport radius (10 tiles = 320px)
         final float viewportRadius = 10f * GlobalConstants.BASE_TILE_SIZE;
@@ -1448,71 +1447,84 @@ public class Realm {
             playerPositions.add(p.getPos());
         }
 
+        // Spread the batch evenly across the zones so no single zone (typically the
+        // large outer ring) dominates and the inner tiers are left starved.
+        final int zoneCount = zones.size();
         int spawned = 0;
-        int attempts = 0;
-        final int maxAttempts = batchSize * 10;
+        for (int z = 0; z < zoneCount && spawned < batchSize; z++) {
+            final OverworldZone zone = zones.get(z);
+            final List<EnemyModel> spawnList = enemiesByGroup.get(zone.getEnemyGroupOrdinal());
+            if (spawnList == null || spawnList.isEmpty()) continue;
+            final float diff = Math.max(1.0f, zone.getDifficulty());
 
-        while (spawned < batchSize && attempts < maxAttempts) {
-            attempts++;
-            final int col = 1 + Realm.RANDOM.nextInt(mapWidth - 2);
-            final int row = 1 + Realm.RANDOM.nextInt(mapHeight - 2);
-            final Vector2f spawnPos = new Vector2f(col * tileSize, row * tileSize);
+            // Even share; the leftover from an uneven split goes to the first zones.
+            int zoneQuota = batchSize / zoneCount;
+            if (z < batchSize % zoneCount) zoneQuota++;
 
-            if (this.tileManager.isVoidTile(spawnPos, 0, 0)) continue;
+            int zoneSpawned = 0;
+            int attempts = 0;
+            final int maxAttempts = Math.max(1, zoneQuota) * 10;
+            while (zoneSpawned < zoneQuota && spawned < batchSize && attempts < maxAttempts) {
+                attempts++;
+                final Vector2f spawnPos = this.tileManager.getSafePositionInZone(zone);
+                if (spawnPos == null) break;
+                if (this.tileManager.isVoidTile(spawnPos, 0, 0)) continue;
 
-            // Don't spawn near players
-            boolean nearPlayer = false;
-            for (Vector2f pp : playerPositions) {
-                float dx = spawnPos.x - pp.x, dy = spawnPos.y - pp.y;
-                if (dx * dx + dy * dy < minPlayerDistSq) {
-                    nearPlayer = true;
-                    break;
+                // getSafePositionInZone can fall back to an arbitrary safe tile when the
+                // band is hard to hit; confirm the tile really sits in this zone so a
+                // hard zone's enemy can't end up stamped onto an easy zone's ground.
+                final OverworldZone actual = this.tileManager.getZoneForPosition(spawnPos.x, spawnPos.y);
+                if (actual == null || actual.getEnemyGroupOrdinal() != zone.getEnemyGroupOrdinal()) continue;
+
+                boolean nearPlayer = false;
+                for (Vector2f pp : playerPositions) {
+                    float dx = spawnPos.x - pp.x, dy = spawnPos.y - pp.y;
+                    if (dx * dx + dy * dy < minPlayerDistSq) {
+                        nearPlayer = true;
+                        break;
+                    }
                 }
+                if (nearPlayer) continue;
+
+                final EnemyModel toSpawn = spawnList.get(Realm.RANDOM.nextInt(spawnList.size()));
+                if (this.tileManager.collidesAtPosition(spawnPos, toSpawn.getSize())) continue;
+
+                final Enemy enemy = new Enemy(Realm.RANDOM.nextLong(), toSpawn.getEnemyId(),
+                        spawnPos.clone(), toSpawn.getSize(), toSpawn.getAttackId());
+                enemy.setDifficulty(diff);
+                enemy.setHealth((int) (enemy.getHealth() * diff));
+                enemy.getStats().setHp((short) (enemy.getStats().getHp() * diff));
+                enemy.setPos(spawnPos);
+                this.addEnemy(enemy);
+                zoneSpawned++;
+                spawned++;
             }
-            if (nearPlayer) continue;
-
-            // Select enemy list based on zone
-            List<EnemyModel> spawnList = defaultEnemies;
-            float diff = this.getDifficulty();
-            OverworldZone zone = this.tileManager.getZoneForPosition(spawnPos.x, spawnPos.y);
-            if (zone != null) {
-                spawnList = enemiesByGroup.getOrDefault(zone.getEnemyGroupOrdinal(), defaultEnemies);
-                diff = Math.max(1.0f, zone.getDifficulty());
-            }
-            if (spawnList.isEmpty()) continue;
-
-            final EnemyModel toSpawn = spawnList.get(Realm.RANDOM.nextInt(spawnList.size()));
-            if (this.tileManager.collidesAtPosition(spawnPos, toSpawn.getSize())) continue;
-
-            final Enemy enemy = new Enemy(Realm.RANDOM.nextLong(), toSpawn.getEnemyId(),
-                    spawnPos.clone(), toSpawn.getSize(), toSpawn.getAttackId());
-            enemy.setDifficulty(diff);
-            enemy.setHealth((int) (enemy.getHealth() * diff));
-            enemy.getStats().setHp((short) (enemy.getStats().getHp() * diff));
-            enemy.setPos(spawnPos);
-            this.addEnemy(enemy);
-            spawned++;
         }
 
         if (spawned > 0) {
-            log.info("[REALM] Respawned {} enemies in overworld (total: {})", spawned, this.enemies.size());
+            log.info("[REALM] Respawned {} enemies across {} zones (total: {})",
+                    spawned, zoneCount, this.enemies.size());
         }
     }
 
-    public void registerPoisonDot(long enemyId, int totalDamage, long duration, long sourcePlayerId) {
-        this.activePoisonDots.add(new PoisonDotState(enemyId, totalDamage, duration, sourcePlayerId));
+    /** Register a damage-over-time effect (poison or bleed) on an enemy. Refreshes
+     *  rather than stacks: an enemy carries at most one DoT per status type. */
+    public void registerDot(long enemyId, StatusEffectType status, int totalDamage,
+            long duration, long sourcePlayerId) {
+        this.activeDots.removeIf(dot -> dot.enemyId == enemyId && dot.status == status);
+        this.activeDots.add(new DotState(enemyId, status, totalDamage, duration, sourcePlayerId));
     }
 
-    public void removePlayerPoisonDots(long playerId) {
-        this.activePoisonDots.removeIf(dot -> dot.sourcePlayerId == playerId);
+    public void removePlayerDots(long playerId) {
+        this.activeDots.removeIf(dot -> dot.sourcePlayerId == playerId);
     }
 
-    public void processPoisonDots(RealmManagerServer mgr) {
-        if (this.activePoisonDots.isEmpty()) return;
+    public void processDots(RealmManagerServer mgr) {
+        if (this.activeDots.isEmpty()) return;
         final long now = Instant.now().toEpochMilli();
-        final Iterator<PoisonDotState> it = this.activePoisonDots.iterator();
+        final Iterator<DotState> it = this.activeDots.iterator();
         while (it.hasNext()) {
-            final PoisonDotState dot = it.next();
+            final DotState dot = it.next();
             final Enemy enemy = this.getEnemy(dot.enemyId);
             if (enemy == null || enemy.getDeath()) { it.remove(); continue; }
             if (dot.isExpired()) { it.remove(); continue; }
@@ -1629,7 +1641,7 @@ public class Realm {
                         if (effectType != null) {
                             enemy.addEffect(effectType, trap.effectDuration);
                             mgr.broadcastTextEffect(this, EntityType.ENEMY, enemy,
-                                    TextEffect.PLAYER_INFO, "SLOWED");
+                                    TextEffect.PLAYER_INFO, effectType.name());
                         }
                         if (trap.damage > 0) {
                             enemy.setHealth(enemy.getHealth() - trap.damage);
@@ -1679,10 +1691,18 @@ public class Realm {
                 float dy = enemy.getPos().y - t.landY;
                 if (dx * dx + dy * dy <= radiusSq) {
                     enemy.addEffect(StatusEffectType.POISONED, t.poisonDuration);
-                    this.registerPoisonDot(enemy.getId(), t.totalDamage, t.poisonDuration, t.sourcePlayerId);
+                    this.registerDot(enemy.getId(), StatusEffectType.POISONED, t.totalDamage,
+                            t.poisonDuration, t.sourcePlayerId);
                     mgr.broadcastTextEffect(EntityType.ENEMY, enemy,
                             TextEffect.DAMAGE, "POISONED");
                 }
+            }
+
+            // PvP: the same cloud poisons opposing-team players (enemy DoTs live on the
+            // realm; player DoTs are owned by PvpEffectsManager).
+            if (this.isPvp()) {
+                PvpEffectsManager.applyPoisonAoe(mgr, this, t.sourcePlayerId,
+                        t.landX, t.landY, t.radius, t.poisonDuration);
             }
         }
     }

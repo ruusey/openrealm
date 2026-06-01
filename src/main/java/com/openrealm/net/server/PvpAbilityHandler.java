@@ -86,6 +86,7 @@ public final class PvpAbilityHandler {
             final short rawDamage, final Ability ab) {
         if (realm == null || !realm.isPvp() || source == null || ab == null) return;
         final short scaledDamage = (short) Math.max(0, Math.round(rawDamage * PVP_ABILITY_DAMAGE_SCALE));
+        final boolean armorPierce = ab.getTags() != null && ab.getTags().contains("armor_pierce");
         final float radSq = radius * radius;
         final List<StatusEffectType> debuffs = collectEnemyHitStatuses(ab);
         final int durationMs = collectDebuffDuration(ab);
@@ -100,9 +101,23 @@ public final class PvpAbilityHandler {
             if (dx * dx + dy * dy > radSq) continue;
             if (scaledDamage > 0) {
                 target.setHealth(target.getHealth() - scaledDamage);
-                mgr.sendTextEffectToPlayer(target, TextEffect.DAMAGE, "-" + scaledDamage);
+                // Mirror the enemy AoE path: a victim's ARMOR_BROKEN (or an armor-pierce
+                // ability) shows the blue ARMOR_BREAK text instead of plain DAMAGE.
+                final TextEffect dmgFx = (armorPierce || target.hasEffect(StatusEffectType.ARMOR_BROKEN))
+                        ? TextEffect.ARMOR_BREAK : TextEffect.DAMAGE;
+                mgr.sendTextEffectToPlayer(target, dmgFx, "-" + scaledDamage);
             }
             for (final StatusEffectType st : debuffs) {
+                // POISONED/BLEEDING become ticking DoTs (PvpEffectsManager owns the
+                // player side); every other debuff applies as a plain status.
+                if (st == StatusEffectType.POISONED) {
+                    PvpEffectsManager.applyPoison(mgr, realm, target, source, durationMs);
+                    continue;
+                }
+                if (st == StatusEffectType.BLEEDING) {
+                    PvpEffectsManager.applyBleed(mgr, realm, target, source, durationMs);
+                    continue;
+                }
                 mgr.applyStatusWithFeedback(realm, target, EntityType.PLAYER, st, durationMs);
             }
             mgr.invalidatePlayerStateCache(target.getId());

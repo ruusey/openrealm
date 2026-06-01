@@ -62,7 +62,6 @@ import com.openrealm.net.entity.NetPortal;
 import com.openrealm.net.party.PartyManager;
 import com.openrealm.net.realm.Realm;
 import com.openrealm.net.realm.RealmManagerServer;
-import com.openrealm.net.realm.RealmOverseer;
 import com.openrealm.net.server.packet.CommandPacket;
 import com.openrealm.net.server.packet.TextPacket;
 import com.openrealm.util.AdminRestrictedCommand;
@@ -648,7 +647,7 @@ public class ServerCommandHandler {
         // Snapshot so we can safely call enemyDeath on the natural code path
         // without mutating the enemies map mid-iteration. Unlike /kill we
         // intentionally use the full enemyDeath() flow so loot, XP, level-ups,
-        // and overseer notifications fire — that's the whole point of /damage
+        // and realm-event completion fire — that's the whole point of /damage
         // versus /kill (combat testing vs stress-test wipe).
         final List<Enemy> targets = new ArrayList<>();
         for (final Enemy e : realm.getEnemies().values()) {
@@ -998,15 +997,15 @@ public class ServerCommandHandler {
                     + " — run /event with no args to list available ids");
         }
 
-        // Overseer owns the spawn flow; static maps (nexus/vault) have none.
+        // Realm events need a terrain-generated map; static maps (nexus/vault) have none.
         final Realm playerRealm = mgr.findPlayerRealm(target.getId());
         if (playerRealm == null) {
             throw new IllegalStateException("No realm for player " + target.getName());
         }
-        final RealmOverseer overseer = playerRealm.getOverseer();
-        if (overseer == null) {
+        if (playerRealm.getTileManager() == null
+                || playerRealm.getTileManager().getTerrainParams() == null) {
             throw new IllegalStateException(
-                    "Current realm has no overseer (nexus/vault/static map) — run from an outdoor realm");
+                    "Current realm has no terrain (nexus/vault/static map) — run from an outdoor realm");
         }
 
         log.info("Player {} (admin) /event {} ({}) in realm {}",
@@ -1015,7 +1014,7 @@ public class ServerCommandHandler {
         final int tileSize = GlobalConstants.BASE_TILE_SIZE;
         final Vector2f spawnAt = target.getPos().clone();
         spawnAt.y -= 6 * tileSize;
-        final boolean ok = overseer.spawnRealmEvent(eventModel, spawnAt);
+        final boolean ok = ServerRealmEventHelper.spawnRealmEvent(mgr, playerRealm, eventModel, spawnAt);
         if (!ok) {
             throw new IllegalStateException("Failed to spawn event " + eventId
                     + " — see server logs for the underlying reason");

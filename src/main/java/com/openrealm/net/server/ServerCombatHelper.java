@@ -10,6 +10,7 @@ import com.openrealm.game.contants.StatusEffectType;
 import com.openrealm.game.contants.TextEffect;
 import com.openrealm.game.entity.Bullet;
 import com.openrealm.game.entity.Enemy;
+import com.openrealm.game.entity.Entity;
 import com.openrealm.game.entity.Player;
 import com.openrealm.game.entity.item.GameItem;
 import com.openrealm.game.entity.item.Stats;
@@ -47,7 +48,30 @@ public final class ServerCombatHelper {
      *  to be tactical rather than a one-shot exchange. */
     private static final float PVP_DAMAGE_SCALE = 0.1f;
 
+    /** Fraction of a hit's damage re-dealt as a damage-over-time effect when that hit
+     *  applies POISONED/BLEEDING (Venom gem, bleed weapons/abilities). Scaled off the
+     *  hit rather than the target's max HP so it never melts high-HP bosses. */
+    static final float ON_HIT_DOT_FRACTION = 0.5f;
+
     private ServerCombatHelper() {}
+
+    /** Applies the combat status-effect damage modifiers in the canonical order:
+     *  attacker DAMAGING (×1.5) then WEAKEN (×0.65), then target CURSED (×1.25)
+     *  then VULNERABLE (×1.40). Centralized so a hit landing on a player and a hit
+     *  landing on an enemy modify damage identically — attacker/target may be either
+     *  an {@link Enemy} or a {@link Player}. Pass null where there is no attacker. */
+    static short applyStatusDamageModifiers(final short base, final Entity attacker, final Entity target) {
+        short dmg = base;
+        if (attacker != null) {
+            if (attacker.hasEffect(StatusEffectType.DAMAGING)) dmg = (short) (dmg * 1.5);
+            if (attacker.hasEffect(StatusEffectType.WEAKEN))   dmg = (short) (dmg * 0.65);
+        }
+        if (target != null) {
+            if (target.hasEffect(StatusEffectType.CURSED))     dmg = (short) (dmg * 1.25);
+            if (target.hasEffect(StatusEffectType.VULNERABLE)) dmg = (short) (dmg * 1.40);
+        }
+        return dmg;
+    }
 
     public static void processPlayerHit(final RealmManagerServer mgr,
             final long realmId, final Bullet b, final Player p) {
@@ -151,7 +175,10 @@ public final class ServerCombatHelper {
                     if (effectType == StatusEffectType.PARALYZED) {
                         p.setDx(0); p.setDy(0);
                     }
-                    mgr.sendTextEffectToPlayer(player, TextEffect.PLAYER_INFO, effectType.name());
+                    // Broadcast so nearby players see the debuff land, mirroring how
+                    // enemy debuffs are surfaced — not just to the player who was hit.
+                    mgr.broadcastTextEffect(targetRealm, EntityType.PLAYER, player,
+                            TextEffect.PLAYER_INFO, effectType.name());
                 }
             }
         }
@@ -205,33 +232,22 @@ public final class ServerCombatHelper {
             if (dmgToInflict < minDmg) dmgToInflict = minDmg;
         }
 
-        if (b.getSrcEntityId() != 0L && targetRealm.getOverseer() != null) {
-            targetRealm.getOverseer().trackDamage(e.getId(), b.getSrcEntityId(), dmgToInflict);
+        final Player fromPlayer = b.getSrcEntityId() != 0L ? mgr.getPlayerById(b.getSrcEntityId()) : null;
+        if (b.getSrcEntityId() != 0L) {
+            ServerSoulboundHelper.trackDamage(targetRealm, e.getId(), b.getSrcEntityId(), dmgToInflict);
         }
 
-        if (b.getSrcEntityId() != 0L) {
-            final Player fromPlayer = mgr.getPlayerById(b.getSrcEntityId());
-            if (fromPlayer != null && fromPlayer.hasEffect(StatusEffectType.DAMAGING)) {
-                dmgToInflict = (short) (dmgToInflict * 1.5);
-            }
-            if (fromPlayer != null && fromPlayer.hasEffect(StatusEffectType.WEAKEN)) {
-                dmgToInflict = (short) (dmgToInflict * 0.65);
-            }
-            // Assassin Imbue Poison: every basic-attack hit lays a fresh
-            // poison DoT on the target. Skip if already POISONED so rapid
-            // fire doesn't stack 30 overlapping ticks per second.
-            if (fromPlayer != null && fromPlayer.hasEffect(StatusEffectType.IMBUED_POISON)
-                    && !e.hasEffect(StatusEffectType.POISONED)) {
-                final int dot = IMBUE_POISON_BASE + fromPlayer.getComputedStats().getDex();
-                e.addEffect(StatusEffectType.POISONED, IMBUE_POISON_DURATION_MS);
-                targetRealm.registerPoisonDot(e.getId(), dot, IMBUE_POISON_DURATION_MS, fromPlayer.getId());
-            }
-        }
-        if (e.hasEffect(StatusEffectType.CURSED)) {
-            dmgToInflict = (short) (dmgToInflict * 1.25);
-        }
-        if (e.hasEffect(StatusEffectType.VULNERABLE)) {
-            dmgToInflict = (short) (dmgToInflict * 1.40);
+        dmgToInflict = applyStatusDamageModifiers(dmgToInflict, fromPlayer, e);
+
+        // Assassin Imbue Poison: every basic-attack hit lays a fresh poison DoT on
+        // the target. Skip if already POISONED so rapid fire doesn't stack 30
+        // overlapping ticks per second.
+        if (fromPlayer != null && fromPlayer.hasEffect(StatusEffectType.IMBUED_POISON)
+                && !e.hasEffect(StatusEffectType.POISONED)) {
+            final int dot = IMBUE_POISON_BASE + fromPlayer.getComputedStats().getDex();
+            e.addEffect(StatusEffectType.POISONED, IMBUE_POISON_DURATION_MS);
+            targetRealm.registerDot(e.getId(), StatusEffectType.POISONED, dot,
+                    IMBUE_POISON_DURATION_MS, fromPlayer.getId());
         }
 
         targetRealm.hitEnemy(b.getId(), e.getId());
@@ -309,6 +325,14 @@ public final class ServerCombatHelper {
                     e.addEffect(effectType, pe.getDuration());
                     mgr.broadcastTextEffect(targetRealm, EntityType.ENEMY, e,
                             TextEffect.PLAYER_INFO, effectType.name());
+                    // Poison/bleed projectiles (Venom gem, bleed weapons) tick damage
+                    // over time, scaled off this hit. Refresh-guarded by registerDot.
+                    if (dmgToInflict > 0 && (effectType == StatusEffectType.POISONED
+                            || effectType == StatusEffectType.BLEEDING)) {
+                        final int dotTotal = Math.max(1, Math.round(dmgToInflict * ON_HIT_DOT_FRACTION));
+                        targetRealm.registerDot(e.getId(), effectType, dotTotal,
+                                pe.getDuration(), b.getSrcEntityId());
+                    }
                 }
             }
         }
@@ -475,12 +499,20 @@ public final class ServerCombatHelper {
 
         b.setPlayerHit(true);
         short dmgToInflict = (short) Math.max(1, Math.round(b.getDamage() * PVP_DAMAGE_SCALE));
+        // Status effects modify the hit exactly as they do on an enemy target:
+        // attacker DAMAGING/WEAKEN, victim CURSED/VULNERABLE. PvP already bypasses
+        // DEF, so a victim's ARMOR_BROKEN adds no extra damage — only its blue
+        // ARMOR_BREAK text, which must still appear.
+        dmgToInflict = applyStatusDamageModifiers(dmgToInflict, srcPlayer, player);
+        if (dmgToInflict < 1) dmgToInflict = 1;
+        final TextEffect dmgFx = player.hasEffect(StatusEffectType.ARMOR_BROKEN)
+                ? TextEffect.ARMOR_BREAK : TextEffect.DAMAGE;
         // Broadcast (not just-to-target) so the SHOOTER sees the damage number — PvE flow
         // uses broadcastTextEffect for the same reason on enemy hits.
         final float impactX = b.getPos().x + b.getSize() * 0.5f;
         final float impactY = b.getPos().y + b.getSize() * 0.5f;
         mgr.broadcastTextEffect(targetRealm, EntityType.PLAYER, player,
-                TextEffect.DAMAGE, "-" + dmgToInflict, impactX, impactY);
+                dmgFx, "-" + dmgToInflict, impactX, impactY);
         // Visual impact effect so the bullet doesn't look like it passes through.
         mgr.enqueueServerPacketToRealm(targetRealm, CreateEffectPacket.aoeEffect(
                 CreateEffectPacket.EFFECT_WIZARD_BURST,
@@ -489,16 +521,51 @@ public final class ServerCombatHelper {
         player.setLastDamageTakenMs(Instant.now().toEpochMilli());
 
         // Apply projectile-borne debuffs (ability STATUS_APPLY ENEMIES_HIT lands here too).
+        // POISONED/BLEEDING become ticking DoTs via PvpEffectsManager; every other
+        // status applies plainly. Broadcast the effect name (not just to the victim) so
+        // the attacker sees the debuff land — matches how enemy debuffs are surfaced.
         if (b.getEffects() != null) {
             for (final ProjectileEffect pe : b.getEffects()) {
                 final StatusEffectType effectType = StatusEffectType.valueOf(pe.getEffectId());
-                if (effectType != null) {
-                    player.addEffect(effectType, pe.getDuration());
-                    if (effectType == StatusEffectType.PARALYZED) {
-                        player.setDx(0); player.setDy(0);
-                    }
-                    mgr.sendTextEffectToPlayer(player, TextEffect.PLAYER_INFO, effectType.name());
+                if (effectType == null) continue;
+                if (effectType == StatusEffectType.POISONED) {
+                    PvpEffectsManager.applyPoison(mgr, targetRealm, player, srcPlayer, pe.getDuration());
+                    continue;
                 }
+                if (effectType == StatusEffectType.BLEEDING) {
+                    PvpEffectsManager.applyBleed(mgr, targetRealm, player, srcPlayer, pe.getDuration());
+                    continue;
+                }
+                player.addEffect(effectType, pe.getDuration());
+                if (effectType == StatusEffectType.PARALYZED) {
+                    player.setDx(0); player.setDy(0);
+                }
+                mgr.broadcastTextEffect(targetRealm, EntityType.PLAYER, player,
+                        TextEffect.PLAYER_INFO, effectType.name());
+            }
+        }
+
+        // Assassin Imbue Poison: an attacker carrying it poisons on every basic hit,
+        // mirroring the enemy path. PvpEffectsManager refreshes rather than stacks.
+        if (srcPlayer != null && srcPlayer.hasEffect(StatusEffectType.IMBUED_POISON)
+                && !player.hasEffect(StatusEffectType.POISONED)) {
+            PvpEffectsManager.applyPoison(mgr, targetRealm, player, srcPlayer, IMBUE_POISON_DURATION_MS);
+        }
+
+        // Gemstone on-hit hooks fire in PvP exactly as in PvE: the attacker's weapon
+        // gem reacts to dealing damage (e.g. Vampiric lifesteal) and the victim's gems
+        // react to taking it (e.g. Thorns reflect).
+        if (dmgToInflict > 0) {
+            final GameItem weapon = srcPlayer != null ? srcPlayer.getInventory()[0] : null;
+            if (weapon != null) {
+                final Gemstone wg = GemstoneRegistry.forItem(weapon);
+                if (wg != null) wg.onHitTarget(srcPlayer, player, b, dmgToInflict, weapon);
+            }
+            for (int slot = 0; slot < Player.EQUIPMENT_SLOT_COUNT; slot++) {
+                final GameItem eq = player.getInventory()[slot];
+                if (eq == null) continue;
+                final Gemstone g = GemstoneRegistry.forItem(eq);
+                if (g != null) g.onPlayerHit(player, dmgToInflict, srcPlayer, eq);
             }
         }
 
@@ -506,6 +573,11 @@ public final class ServerCombatHelper {
         targetRealm.getExpiredBullets().add(b.getId());
         targetRealm.removeBullet(b);
 
+        // A victim gem (e.g. Thorns) can damage the attacker — route a lethal reflect
+        // through playerDeath so PvP death handling fires for them too.
+        if (srcPlayer != null && srcPlayer.getDeath()) {
+            mgr.playerDeath(targetRealm, srcPlayer);
+        }
         if (player.getDeath()) {
             mgr.playerDeath(targetRealm, player);
         }

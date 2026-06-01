@@ -123,6 +123,9 @@ import com.openrealm.net.server.ServerCombatHelper;
 import com.openrealm.net.server.ServerCommandHandler;
 import com.openrealm.net.server.ServerGameLogic;
 import com.openrealm.net.server.ServerPassiveTickHelper;
+import com.openrealm.net.server.ServerRealmEventHelper;
+import com.openrealm.net.server.ServerSoulboundHelper;
+import com.openrealm.net.server.PvpEffectsManager;
 import com.openrealm.net.server.PvpMatchManager;
 import com.openrealm.net.server.PvpMinionAi;
 import com.openrealm.net.server.ServerTradeManager;
@@ -382,7 +385,7 @@ public class RealmManagerServer implements Runnable {
 
 	private void tick() {
 		final long tickStart = System.nanoTime();
-		long tJoins = 0, tTransitions = 0, tPackets = 0, tUpdate = 0, tEnqueue = 0, tSend = 0, tOverseer = 0;
+		long tJoins = 0, tTransitions = 0, tPackets = 0, tUpdate = 0, tEnqueue = 0, tSend = 0;
 		try {
 			long t0 = System.nanoTime();
 			this.processPendingJoins();
@@ -409,12 +412,6 @@ public class RealmManagerServer implements Runnable {
 			t0 = System.nanoTime();
 			this.sendGameData();
 			tSend = System.nanoTime() - t0;
-
-			t0 = System.nanoTime();
-			for (final Realm realm : this.realms.values()) {
-				if (realm.getOverseer() != null) realm.getOverseer().tick();
-			}
-			tOverseer = System.nanoTime() - t0;
 		} catch (Exception e) {
 			log.error("Failed to process server tick", e);
 		}
@@ -446,13 +443,13 @@ public class RealmManagerServer implements Runnable {
 					totalBullets += r.getBullets().size();
 					totalPlayers += r.getPlayers().size();
 				}
-				log.warn("[SERVER] slow tick: total={}ms (joins={}, trans={}, pkts={}, update={}[plyrs={},enems={},blts={},global={}], enqueue={}, send={}, overseer={}) — realms={}, players={}, enemies={}, bullets={}",
+				log.warn("[SERVER] slow tick: total={}ms (joins={}, trans={}, pkts={}, update={}[plyrs={},enems={},blts={},global={}], enqueue={}, send={}) — realms={}, players={}, enemies={}, bullets={}",
 					tickTotal / 1_000_000,
 					tJoins / 1_000_000, tTransitions / 1_000_000, tPackets / 1_000_000,
 					tUpdate / 1_000_000,
 					this.updatePlayersNanos / 1_000_000, this.updateEnemiesNanos / 1_000_000,
 					this.updateBulletsNanos / 1_000_000, this.updateGlobalNanos / 1_000_000,
-					tEnqueue / 1_000_000, tSend / 1_000_000, tOverseer / 1_000_000,
+					tEnqueue / 1_000_000, tSend / 1_000_000,
 					this.realms.size(), totalPlayers, totalEnemies, totalBullets);
 			}
 		}
@@ -1696,11 +1693,13 @@ public class RealmManagerServer implements Runnable {
 		for (final Realm realm : this.realms.values()) {
 			realm.processPoisonThrows(this);
 			realm.processTraps(this);
-			realm.processPoisonDots(this);
+			realm.processDots(this);
 			realm.processDecoys(this);
 			realm.processClones(this);
 		}
 		ServerPassiveTickHelper.tick(this, this.tickCounter);
+		ServerRealmEventHelper.tick(this, this.tickCounter);
+		PvpEffectsManager.tick(this);
 		this.tickPartyRefresh();
 		this.tickPhalanxDomes();
 		this.tickMinimapBroadcast();
@@ -2471,9 +2470,7 @@ public class RealmManagerServer implements Runnable {
 			}
 
 			// Snapshot qualifying players BEFORE clearing damage tracking, so soulbound rolls work.
-			List<Long> qualifyingPlayerIds = (targetRealm.getOverseer() != null)
-					? targetRealm.getOverseer().getQualifyingPlayers(enemy.getId())
-					: new ArrayList<>();
+			List<Long> qualifyingPlayerIds = ServerSoulboundHelper.getQualifyingPlayers(targetRealm, enemy.getId());
 			if (!qualifyingPlayerIds.isEmpty()) {
 				final LinkedHashSet<Long> expanded = new LinkedHashSet<>(qualifyingPlayerIds);
 				for (final Long qid : qualifyingPlayerIds) {
@@ -2489,11 +2486,8 @@ public class RealmManagerServer implements Runnable {
 				}
 				qualifyingPlayerIds = new ArrayList<>(expanded);
 			}
-			if (targetRealm.getOverseer() != null) {
-				long killerId = targetRealm.getOverseer().getTopDamageDealer(enemy.getId());
-				targetRealm.getOverseer().onEnemyKilled(enemy, killerId);
-				targetRealm.getOverseer().clearDamageTracking(enemy.getId());
-			}
+			ServerRealmEventHelper.handleEnemyKilled(this, targetRealm, enemy);
+			ServerSoulboundHelper.clearDamageTracking(targetRealm, enemy.getId());
 
 			targetRealm.getExpiredEnemies().add(enemy.getId());
 			targetRealm.clearHitMap();
@@ -2719,7 +2713,7 @@ public class RealmManagerServer implements Runnable {
 		this.otherPlayerUpdateState.remove(playerId);
 		// Clean up any poison state sourced by this player
 		for (final Realm realm : this.realms.values()) {
-			realm.removePlayerPoisonDots(playerId);
+			realm.removePlayerDots(playerId);
 			realm.removePlayerPoisonThrows(playerId);
 			realm.removePlayerTraps(playerId);
 			realm.removePlayerDecoys(playerId);
@@ -2836,12 +2830,6 @@ public class RealmManagerServer implements Runnable {
 					log.error("[SERVER] Failed to place static portal. Reason: {}", e.getMessage());
 				}
 			}
-		}
-		// Overseer only attaches to map 2 (Beach overworld); each instance gets its own.
-		if (realm.getMapId() == 2 && realm.getOverseer() == null) {
-			realm.setOverseer(new RealmOverseer(realm, this));
-			log.info("[SERVER] Attached RealmOverseer to realm {} (mapId=2)",
-					realm.getRealmId());
 		}
 		this.realms.put(realm.getRealmId(), realm);
 	}
@@ -3205,10 +3193,11 @@ public class RealmManagerServer implements Runnable {
 		}
 	}
 
-	public void registerPoisonDot(long realmId, long enemyId, int totalDamage, long duration, long sourcePlayerId) {
+	public void registerDot(long realmId, long enemyId, StatusEffectType status, int totalDamage,
+			long duration, long sourcePlayerId) {
 		final Realm realm = this.realms.get(realmId);
 		if (realm != null) {
-			realm.registerPoisonDot(enemyId, totalDamage, duration, sourcePlayerId);
+			realm.registerDot(enemyId, status, totalDamage, duration, sourcePlayerId);
 		}
 	}
 

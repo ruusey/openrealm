@@ -1,15 +1,14 @@
 package com.openrealm.game.entity.item.gem.impl;
 
-import com.openrealm.game.entity.Enemy;
 import com.openrealm.game.entity.Entity;
 import com.openrealm.game.entity.Player;
 import com.openrealm.game.entity.item.GameItem;
 import com.openrealm.game.entity.item.gem.Gemstone;
 
 /**
- * Reflects a fraction of damage taken back at the attacker. Only applies
- * when the attacker is an {@link Enemy} (PvP reflection is out of scope until
- * the design calls for it).
+ * Reflects a fraction of damage taken back at the attacker — whether that
+ * attacker is an enemy (PvE) or another player (PvP). Lethal PvP reflects are
+ * routed through playerDeath by the combat caller.
  */
 public class ThornsGem implements Gemstone {
 
@@ -31,9 +30,8 @@ public class ThornsGem implements Gemstone {
 
     @Override
     public void onPlayerHit(Player p, int damageTaken, Entity attacker, GameItem item) {
-        if (damageTaken <= 0 || !(attacker instanceof Enemy)) return;
-        final Enemy e = (Enemy) attacker;
+        if (damageTaken <= 0 || attacker == null) return;
         final int reflect = Math.max(1, (damageTaken * REFLECT_PCT) / 100);
-        e.setHealth(e.getHealth() - reflect);
+        attacker.setHealth(attacker.getHealth() - reflect);
     }
 }
