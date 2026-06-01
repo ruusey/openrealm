@@ -831,10 +831,10 @@ public class RealmManagerServer implements Runnable {
 		}
 
 		if (reconcileDue) {
+			// Loot + enemies excluded: their delta paths cover them, and re-sending
+			// hundreds every interval burned bandwidth while idle.
 			playersToLoad.clear();    playersToLoad.addAll(desired.getPlayers());
-			enemiesToLoad.clear();    enemiesToLoad.addAll(desired.getEnemies());
 			bulletsToLoad.clear();    bulletsToLoad.addAll(desired.getBullets());
-			containersToLoad.clear(); containersToLoad.addAll(desired.getContainers());
 			portalsToLoad.clear();    portalsToLoad.addAll(desired.getPortals());
 			this.playerLastFullSnapshotMs.put(pid, nowMs);
 		}
@@ -2511,7 +2511,7 @@ public class RealmManagerServer implements Runnable {
 					exitPortal.linkPortal(targetRealm, sourceRealm);
 					exitPortal.setNeverExpires();
 					targetRealm.addPortal(exitPortal);
-					log.info("[SERVER] enemyDeath: BOSS EXIT portal spawned in realm {} at ({}, {}) -> source realm {}",
+					log.debug("[SERVER] enemyDeath: BOSS EXIT portal spawned in realm {} at ({}, {}) -> source realm {}",
 							targetRealm.getRealmId(), exitPortal.getPos().x, exitPortal.getPos().y,
 							sourceRealm.getRealmId());
 				}
@@ -2583,7 +2583,7 @@ public class RealmManagerServer implements Runnable {
 						// Store target node info on the portal for lazy realm creation
 						portal.setTargetNodeId(targetNodeId);
 						targetRealm.addPortal(portal);
-						log.info("[SERVER] enemyDeath: SPAWNED portal {} -> node {} at ({}, {})",
+						log.debug("[SERVER] enemyDeath: SPAWNED portal {} -> node {} at ({}, {})",
 								portalId, targetNodeId, portal.getPos().x, portal.getPos().y);
 					}
 				}
@@ -2599,7 +2599,7 @@ public class RealmManagerServer implements Runnable {
 								(short) portalModel.getPortalId(), enemy.getPos().withNoise(64, 64));
 						portal.linkPortal(targetRealm, null);
 						targetRealm.addPortal(portal);
-						log.info("[SERVER] enemyDeath: DIRECT portal {} spawned at ({}, {})",
+						log.debug("[SERVER] enemyDeath: DIRECT portal {} spawned at ({}, {})",
 								portalId, portal.getPos().x, portal.getPos().y);
 					}
 				}

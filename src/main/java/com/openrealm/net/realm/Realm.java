@@ -674,7 +674,7 @@ public class Realm {
         }
         final float radiusSq = radius * radius;
         // Wider bullet radius keeps long-range projectiles visible past the viewport.
-        final float bulletRadius = radius * 2f;
+        final float bulletRadius = radius + 2f * GlobalConstants.BASE_TILE_SIZE;
         final float bulletRadiusSq = bulletRadius * bulletRadius;
         LoadPacket load = null;
         try {
@@ -817,7 +817,7 @@ public class Realm {
         final VisibleIds out = new VisibleIds();
         if (this.spatialGrid == null) return out;
         final float radiusSq = radius * radius;
-        final float bulletRadius = radius * 2f;
+        final float bulletRadius = radius + 2f * GlobalConstants.BASE_TILE_SIZE;
         final float bulletRadiusSq = bulletRadius * bulletRadius;
         // Wall occlusion: hide enemies/players/loot the requesting player can't see
         // through a wall (anti-ESP + can't-see-into-the-next-room). No-op in wall-less
