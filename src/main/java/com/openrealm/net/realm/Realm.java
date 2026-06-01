@@ -689,7 +689,12 @@ public class Realm {
             // see through a wall. Skipped entirely in wall-less realms (the open
             // overworld) so the only cost lands in dungeons/boss rooms. Portals and
             // bullets are never occluded (navigation aids / in-flight projectiles).
-            final boolean occlude = requestingPlayerId >= 0 && this.tileManager != null
+            // requestingPlayerId is a real player here; its sign is meaningless
+            // (player IDs are random longs, negative ~half the time). Gating on
+            // >= 0 silently disabled occlusion for negative-ID viewers, so enemies
+            // they couldn't see/damage still never unloaded. Match the movement and
+            // damage paths: occlude whenever the realm has walls.
+            final boolean occlude = this.tileManager != null
                     && this.tileManager.hasWalls();
 
             for (int i = 0; i < candidates.size(); i++) {
@@ -822,7 +827,10 @@ public class Realm {
         // Wall occlusion: hide enemies/players/loot the requesting player can't see
         // through a wall (anti-ESP + can't-see-into-the-next-room). No-op in wall-less
         // realms so the open overworld pays nothing. Portals/bullets are never occluded.
-        final boolean occlude = requestingPlayerId >= 0 && this.tileManager != null
+        // See getGameObjectsAsPacketsCircular: never gate on requestingPlayerId's
+        // sign — negative (valid) player IDs would skip occlusion and leave
+        // occluded enemies loaded forever. Self is excluded via id compare below.
+        final boolean occlude = this.tileManager != null
                 && this.tileManager.hasWalls();
         final List<Long> innerCandidates = this.spatialGrid.queryRadius(center.x, center.y, radius);
         for (int i = 0; i < innerCandidates.size(); i++) {
