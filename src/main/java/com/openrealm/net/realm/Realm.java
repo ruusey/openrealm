@@ -715,8 +715,9 @@ public class Realm {
                     float dy = e.getPos().y - center.y;
                     final float distSq = dx * dx + dy * dy;
                     if (distSq <= radiusSq) {
-                        if (occlude && !VisibilityHelper.hasLineOfSight(this.tileManager, center.x, center.y,
-                                e.getPos().x + e.getSize() / 2f, e.getPos().y + e.getSize() / 2f)) {
+                        if (occlude && !e.isStaticSpawn()
+                                && !VisibilityHelper.hasLineOfSight(this.tileManager, center.x, center.y,
+                                        e.getPos().x + e.getSize() / 2f, e.getPos().y + e.getSize() / 2f)) {
                             continue;
                         }
                         enemyCandidates.add(new EnemyDist(e, distSq));
@@ -846,8 +847,9 @@ public class Realm {
                 final float dx = e.getPos().x - center.x;
                 final float dy = e.getPos().y - center.y;
                 if (dx * dx + dy * dy <= radiusSq) {
-                    if (occlude && !VisibilityHelper.hasLineOfSight(this.tileManager, center.x, center.y,
-                            e.getPos().x + e.getSize() / 2f, e.getPos().y + e.getSize() / 2f)) {
+                    if (occlude && !e.isStaticSpawn()
+                            && !VisibilityHelper.hasLineOfSight(this.tileManager, center.x, center.y,
+                                    e.getPos().x + e.getSize() / 2f, e.getPos().y + e.getSize() / 2f)) {
                         continue;
                     }
                     out.getEnemies().add(id);
@@ -1021,7 +1023,7 @@ public class Realm {
             if (e != null) {
                 float dx = e.getPos().x - center.x;
                 float dy = e.getPos().y - center.y;
-                if (dx * dx + dy * dy <= radiusSq && (!occlude
+                if (dx * dx + dy * dy <= radiusSq && (!occlude || e.isStaticSpawn()
                         || VisibilityHelper.hasLineOfSight(this.tileManager, center.x, center.y,
                                 e.getPos().x + e.getSize() / 2f, e.getPos().y + e.getSize() / 2f))) {
                     mvts.add(getOrBuildMovement(e));

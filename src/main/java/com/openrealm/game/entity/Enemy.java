@@ -72,6 +72,10 @@ public class Enemy extends Entity {
     /** True for /spawn-created enemies so /clearspawn can target them. Not persisted. */
     private transient boolean adminSpawned = false;
 
+    /** True for fixed static-spawn NPCs (nexus healer, vendors, etc.). They are
+     *  navigation landmarks, so wall occlusion never hides them. Not persisted. */
+    private transient boolean staticSpawn = false;
+
     public Enemy() {
         super(0, null, 0);
     }
