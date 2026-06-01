@@ -99,6 +99,13 @@ public final class PvpAbilityHandler {
             final float dx = tc.x - center.x;
             final float dy = tc.y - center.y;
             if (dx * dx + dy * dy > radSq) continue;
+            // Wall occlusion: a wall between the caster and the target shields them,
+            // so an AoE lobbed over a wall into the next room hits nobody. Gated on
+            // hasWalls() (cached) so wall-less arenas pay nothing.
+            if (realm.getTileManager() != null && realm.getTileManager().hasWalls()
+                    && !VisibilityHelper.hasLineOfSight(realm.getTileManager(),
+                            source.getPos().x + source.getSize() / 2f,
+                            source.getPos().y + source.getSize() / 2f, tc.x, tc.y)) continue;
             if (scaledDamage > 0) {
                 target.setHealth(target.getHealth() - scaledDamage);
                 // Mirror the enemy AoE path: a victim's ARMOR_BROKEN (or an armor-pierce

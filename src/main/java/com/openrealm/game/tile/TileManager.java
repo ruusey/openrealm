@@ -43,6 +43,10 @@ public class TileManager {
     private Vector2f playerSpawnPos;
     private TerrainGenerationParameters terrainParams;
     private int mapId;
+    // Cached "does the collision layer contain any wall tile". Null = not yet
+    // scanned; invalidated on terrain edits. Gates all line-of-sight work so
+    // wall-less realms (open overworld) skip it entirely.
+    private transient Boolean wallsPresent;
 
     public TileManager(int mapId) {
         this.mapId = mapId;
@@ -314,6 +318,35 @@ public class TileManager {
 
     public TileMap getCollisionLayer() {
         return this.mapLayers.get(this.mapLayers.size() - 1);
+    }
+
+    /** Whether the collision layer holds any wall tile. Scanned once and cached;
+     *  {@link #invalidateWallCache()} resets it after a terrain edit. Lets callers
+     *  skip line-of-sight work in realms that have no walls at all. */
+    public boolean hasWalls() {
+        final Boolean cached = this.wallsPresent;
+        if (cached != null) return cached;
+        boolean found = false;
+        final TileMap coll = this.getCollisionLayer();
+        final Tile[][] blocks = coll != null ? coll.getBlocks() : null;
+        if (blocks != null) {
+            scan:
+            for (final Tile[] row : blocks) {
+                if (row == null) continue;
+                for (final Tile t : row) {
+                    if (t != null && t.getData() != null && t.getData().isWall()) {
+                        found = true;
+                        break scan;
+                    }
+                }
+            }
+        }
+        this.wallsPresent = found;
+        return found;
+    }
+
+    public void invalidateWallCache() {
+        this.wallsPresent = null;
     }
 
     public TileMap getBaseLayer() {

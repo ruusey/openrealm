@@ -129,6 +129,7 @@ import com.openrealm.net.server.PvpEffectsManager;
 import com.openrealm.net.server.PvpMatchManager;
 import com.openrealm.net.server.PvpMinionAi;
 import com.openrealm.net.server.ServerTradeManager;
+import com.openrealm.net.server.VisibilityHelper;
 import com.openrealm.net.server.packet.CommandPacket;
 import com.openrealm.net.server.packet.HeartbeatPacket;
 import com.openrealm.net.server.packet.ConsumeShardStackPacket;
@@ -744,11 +745,17 @@ public class RealmManagerServer implements Runnable {
 			this.lastViewerUpdateRefreshMs.put(pid, nowMs);
 		}
 
+		// Occlude peers behind walls server-side (getPlayersInRadiusFast is shared with
+		// gameplay, so gate here rather than inside it). Self is filtered below anyway.
+		final boolean occlude = realm.getTileManager() != null && realm.getTileManager().hasWalls();
 		final Player[] otherPlayers = realm.getPlayersInRadiusFast(player.getPos(), viewportRadius);
 		final int max = Math.min(otherPlayers.length, 20);
 		for (int i = 0; i < max; i++) {
 			final Player other = otherPlayers[i];
 			if (other.getId() == pid) continue;
+			if (occlude && !VisibilityHelper.hasLineOfSight(realm.getTileManager(),
+					player.getPos().x, player.getPos().y,
+					other.getPos().x + other.getSize() / 2f, other.getPos().y + other.getSize() / 2f)) continue;
 			try {
 				final UpdatePacket stripped = realm.getOrBuildStrippedUpdate(other);
 				if (stripped == null) continue;

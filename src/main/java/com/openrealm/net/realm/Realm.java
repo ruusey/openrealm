@@ -56,6 +56,7 @@ import com.openrealm.net.client.packet.UpdatePacket;
 import com.openrealm.net.entity.NetObjectMovement;
 import com.openrealm.net.server.PvpEffectsManager;
 import com.openrealm.net.server.ServerGameLogic;
+import com.openrealm.net.server.VisibilityHelper;
 import com.openrealm.util.GameObjectUtils;
 import com.openrealm.util.WorkerThread;
 
@@ -684,6 +685,13 @@ public class Realm {
             final List<EnemyDist> enemyCandidates = new ArrayList<>();
             final List<BulletDist> bulletCandidatesInner = new ArrayList<>();
 
+            // Wall occlusion: hide enemies/players/loot the requesting player can't
+            // see through a wall. Skipped entirely in wall-less realms (the open
+            // overworld) so the only cost lands in dungeons/boss rooms. Portals and
+            // bullets are never occluded (navigation aids / in-flight projectiles).
+            final boolean occlude = requestingPlayerId >= 0 && this.tileManager != null
+                    && this.tileManager.hasWalls();
+
             for (int i = 0; i < candidates.size(); i++) {
                 final long id = candidates.get(i);
                 Player p = this.players.get(id);
@@ -691,7 +699,14 @@ public class Realm {
                     if (p.isHiddenFromOthers() && p.getId() != requestingPlayerId) continue;
                     float dx = p.getPos().x - center.x;
                     float dy = p.getPos().y - center.y;
-                    if (dx * dx + dy * dy <= radiusSq) playersToLoadList.add(p);
+                    if (dx * dx + dy * dy <= radiusSq) {
+                        if (occlude && p.getId() != requestingPlayerId
+                                && !VisibilityHelper.hasLineOfSight(this.tileManager, center.x, center.y,
+                                        p.getPos().x + p.getSize() / 2f, p.getPos().y + p.getSize() / 2f)) {
+                            continue;
+                        }
+                        playersToLoadList.add(p);
+                    }
                     continue;
                 }
                 Enemy e = this.enemies.get(id);
@@ -699,7 +714,13 @@ public class Realm {
                     float dx = e.getPos().x - center.x;
                     float dy = e.getPos().y - center.y;
                     final float distSq = dx * dx + dy * dy;
-                    if (distSq <= radiusSq) enemyCandidates.add(new EnemyDist(e, distSq));
+                    if (distSq <= radiusSq) {
+                        if (occlude && !VisibilityHelper.hasLineOfSight(this.tileManager, center.x, center.y,
+                                e.getPos().x + e.getSize() / 2f, e.getPos().y + e.getSize() / 2f)) {
+                            continue;
+                        }
+                        enemyCandidates.add(new EnemyDist(e, distSq));
+                    }
                     continue;
                 }
                 Bullet b = this.bullets.get(id);
@@ -722,6 +743,10 @@ public class Realm {
                     float dx = lc.getPos().x - center.x;
                     float dy = lc.getPos().y - center.y;
                     if (dx * dx + dy * dy <= radiusSq && lc.isVisibleToPlayer(requestingPlayerId)) {
+                        if (occlude && !VisibilityHelper.hasLineOfSight(this.tileManager, center.x, center.y,
+                                lc.getPos().x, lc.getPos().y)) {
+                            continue;
+                        }
                         containersToLoad.add(lc);
                     }
                 }
@@ -793,6 +818,11 @@ public class Realm {
         final float radiusSq = radius * radius;
         final float bulletRadius = radius * 2f;
         final float bulletRadiusSq = bulletRadius * bulletRadius;
+        // Wall occlusion: hide enemies/players/loot the requesting player can't see
+        // through a wall (anti-ESP + can't-see-into-the-next-room). No-op in wall-less
+        // realms so the open overworld pays nothing. Portals/bullets are never occluded.
+        final boolean occlude = requestingPlayerId >= 0 && this.tileManager != null
+                && this.tileManager.hasWalls();
         final List<Long> innerCandidates = this.spatialGrid.queryRadius(center.x, center.y, radius);
         for (int i = 0; i < innerCandidates.size(); i++) {
             final long id = innerCandidates.get(i);
@@ -801,14 +831,27 @@ public class Realm {
                 if (p.isHiddenFromOthers() && p.getId() != requestingPlayerId) continue;
                 final float dx = p.getPos().x - center.x;
                 final float dy = p.getPos().y - center.y;
-                if (dx * dx + dy * dy <= radiusSq) out.getPlayers().add(id);
+                if (dx * dx + dy * dy <= radiusSq) {
+                    if (occlude && p.getId() != requestingPlayerId
+                            && !VisibilityHelper.hasLineOfSight(this.tileManager, center.x, center.y,
+                                    p.getPos().x + p.getSize() / 2f, p.getPos().y + p.getSize() / 2f)) {
+                        continue;
+                    }
+                    out.getPlayers().add(id);
+                }
                 continue;
             }
             final Enemy e = this.enemies.get(id);
             if (e != null) {
                 final float dx = e.getPos().x - center.x;
                 final float dy = e.getPos().y - center.y;
-                if (dx * dx + dy * dy <= radiusSq) out.getEnemies().add(id);
+                if (dx * dx + dy * dy <= radiusSq) {
+                    if (occlude && !VisibilityHelper.hasLineOfSight(this.tileManager, center.x, center.y,
+                            e.getPos().x + e.getSize() / 2f, e.getPos().y + e.getSize() / 2f)) {
+                        continue;
+                    }
+                    out.getEnemies().add(id);
+                }
                 continue;
             }
             final Bullet b = this.bullets.get(id);
@@ -830,6 +873,10 @@ public class Realm {
                 final float dx = lc.getPos().x - center.x;
                 final float dy = lc.getPos().y - center.y;
                 if (dx * dx + dy * dy <= radiusSq && lc.isVisibleToPlayer(requestingPlayerId)) {
+                    if (occlude && !VisibilityHelper.hasLineOfSight(this.tileManager, center.x, center.y,
+                            lc.getPos().x, lc.getPos().y)) {
+                        continue;
+                    }
                     out.getContainers().add(id);
                 }
             }
@@ -950,6 +997,10 @@ public class Realm {
             return getGameObjectsAsPacketsCircular(center, radius);
         }
         final float radiusSq = radius * radius;
+        // Occlude positions server-side so a modified client can't read entities behind
+        // a wall from the movement stream. center is the viewer's own position, so its
+        // LOS-to-self is always clear — the player's own movement is never dropped.
+        final boolean occlude = this.tileManager != null && this.tileManager.hasWalls();
         final List<Long> candidates = this.spatialGrid.queryRadius(center.x, center.y, radius);
         final List<NetObjectMovement> mvts = new ArrayList<>();
         for (int i = 0; i < candidates.size(); i++) {
@@ -958,7 +1009,11 @@ public class Realm {
             if (p != null) {
                 float dx = p.getPos().x - center.x;
                 float dy = p.getPos().y - center.y;
-                if (dx * dx + dy * dy <= radiusSq) mvts.add(getOrBuildMovement(p));
+                if (dx * dx + dy * dy <= radiusSq && (!occlude
+                        || VisibilityHelper.hasLineOfSight(this.tileManager, center.x, center.y,
+                                p.getPos().x + p.getSize() / 2f, p.getPos().y + p.getSize() / 2f))) {
+                    mvts.add(getOrBuildMovement(p));
+                }
                 if (p.getTeleported()) p.setTeleported(false);
                 continue;
             }
@@ -966,7 +1021,11 @@ public class Realm {
             if (e != null) {
                 float dx = e.getPos().x - center.x;
                 float dy = e.getPos().y - center.y;
-                if (dx * dx + dy * dy <= radiusSq) mvts.add(getOrBuildMovement(e));
+                if (dx * dx + dy * dy <= radiusSq && (!occlude
+                        || VisibilityHelper.hasLineOfSight(this.tileManager, center.x, center.y,
+                                e.getPos().x + e.getSize() / 2f, e.getPos().y + e.getSize() / 2f))) {
+                    mvts.add(getOrBuildMovement(e));
+                }
                 if (e.getTeleported()) e.setTeleported(false);
                 continue;
             }
@@ -1845,6 +1904,7 @@ public class Realm {
                 pos = this.tileManager.getSafePosition();
             }
             final Enemy enemy = GameObjectUtils.getEnemyFromId(ss.getEnemyId(), pos);
+            enemy.setStaticSpawn(true);
             float diff = this.getZoneDifficulty(pos.x, pos.y);
             enemy.setDifficulty(diff);
             enemy.setHealth((int) (enemy.getHealth() * diff));
@@ -1945,6 +2005,8 @@ public class Realm {
                 }
             }
         }
+        // Set-piece may have written wall tiles — force a re-scan for LOS gating.
+        this.tileManager.invalidateWallCache();
     }
 
     // Returns [savedBase[h][w], savedCollision[h][w]].
@@ -1985,6 +2047,8 @@ public class Realm {
                 } catch (Exception e) { /* skip */ }
             }
         }
+        // Restoring may have removed the set-piece's walls — force a re-scan.
+        this.tileManager.invalidateWallCache();
     }
 
     public void spawnRandomEnemy() {

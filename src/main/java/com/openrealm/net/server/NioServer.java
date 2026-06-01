@@ -13,6 +13,7 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import com.openrealm.game.contants.GlobalConstants;
 import com.openrealm.util.WorkerThread;
@@ -27,6 +28,11 @@ import lombok.extern.slf4j.Slf4j;
 public class NioServer implements Runnable {
 
     public static final String LOCALHOST = "127.0.0.1";
+
+    // Monotonic, never-reused connection sequence. A count-based index reused a
+    // freed slot while another live client still held it, aliasing two players
+    // onto one clientKey (see WebSocketGameServer for the full write-up).
+    private static final AtomicLong CONNECTION_SEQ = new AtomicLong();
 
     private ServerSocketChannel serverChannel;
     private Selector selector;
@@ -148,7 +154,7 @@ public class NioServer implements Runnable {
         clientChannel.setOption(StandardSocketOptions.TCP_NODELAY, true);
 
         final String remoteAddr = clientChannel.socket().getInetAddress().getHostAddress();
-        final String clientKey = remoteAddr + "/" + this.getRemoteAddrIndex(remoteAddr);
+        final String clientKey = remoteAddr + "/" + CONNECTION_SEQ.incrementAndGet();
         final ClientSession session = new ClientSession(clientChannel, clientKey);
 
         this.clients.put(clientKey, session);
@@ -177,13 +183,4 @@ public class NioServer implements Runnable {
         }
     }
 
-    private int getRemoteAddrIndex(String remoteAddr) {
-        int count = 0;
-        for (String addr : this.clients.keySet()) {
-            if (addr.contains(remoteAddr)) {
-                count++;
-            }
-        }
-        return count;
-    }
 }

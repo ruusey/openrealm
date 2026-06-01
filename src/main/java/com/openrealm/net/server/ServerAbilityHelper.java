@@ -496,6 +496,15 @@ public final class ServerAbilityHelper {
 					final float dx = enemy.getPos().x - pos.x;
 					final float dy = enemy.getPos().y - pos.y;
 					if (dx * dx + dy * dy > aoeRadius * aoeRadius) continue;
+					// Wall occlusion: an enemy a wall separates from the CASTER can't be hit, so an
+					// AoE dropped over a wall into the next room does nothing. LOS runs from the
+					// caster (not the blast point); hasWalls() is cached so this is free in open realms.
+					if (targetRealm.getTileManager() != null && targetRealm.getTileManager().hasWalls()
+							&& !VisibilityHelper.hasLineOfSight(targetRealm.getTileManager(),
+								player.getPos().x + player.getSize() / 2f,
+								player.getPos().y + player.getSize() / 2f,
+								enemy.getPos().x + enemy.getSize() / 2f,
+								enemy.getPos().y + enemy.getSize() / 2f)) continue;
 					for (AbilityEffect aoeEff : ab.effectList()) {
 						if (!"STATUS_APPLY".equalsIgnoreCase(aoeEff.getType())) continue;
 						if (!"ENEMIES_HIT".equalsIgnoreCase(aoeEff.getTarget())) continue;
